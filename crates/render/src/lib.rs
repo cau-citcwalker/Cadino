@@ -20,6 +20,7 @@ pub mod pen;
 mod plotstyle;
 mod point;
 pub mod raster;
+mod solid;
 mod text;
 mod tolerance;
 pub mod units;
@@ -27,7 +28,7 @@ mod wide;
 
 use cadcraft_color::{Color, Rgb};
 use cadcraft_doc::{Drawing, Entity, EntityKind, Handle, Lineweight, Prim, Space};
-use cadcraft_geom::{Bounds2, Mat3, Polyline, Vec2};
+use cadcraft_geom::{Bounds2, Mat3, Polyline, Vec2, ViewDir};
 use pen::Pen;
 
 pub use dim::{ArrowGeom, Arrowhead, DimGeometry, DimText, LineRole, arrowhead, dimension_geometry, dimension_geometry_with, format_linear_value};
@@ -226,6 +227,11 @@ pub struct Options {
     /// rebuild the view no longer needs). A cancelled build returns a partial list, which the
     /// caller must discard; see [`Options::cancelled`].
     pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Model space seen from this direction (orthographic): the list is in view-plane
+    /// coordinates. Plan (the default) keeps world coordinates.
+    pub view_dir: ViewDir,
+    /// 3D solids as shaded faces instead of edges (VSCURRENT).
+    pub shaded: bool,
 }
 
 impl Options {
@@ -249,6 +255,8 @@ impl Default for Options {
             skip_viewport: None,
             transparency: false,
             cancel: None,
+            view_dir: ViewDir::PLAN,
+            shaded: false,
         }
     }
 }
@@ -338,6 +346,9 @@ impl Builder<'_> {
         }
     }
     fn polyline(&mut self, ctx: &Ctx, color: Ink, lw: f32, pts: &[Vec2]) {
+        self.polyline_at(ctx, color, lw, pts, ctx.xf);
+    }
+    fn polyline_at(&mut self, ctx: &Ctx, color: Ink, lw: f32, pts: &[Vec2], xf: Mat3) {
         if pts.len() < 2 {
             return;
         }
@@ -345,7 +356,7 @@ impl Builder<'_> {
         let (color, lw) = self.styled(color, lw);
         let start = self.list.verts.len() as u32;
         for p in pts {
-            let q = ctx.xf.apply(*p);
+            let q = xf.apply(*p);
             self.list.bounds.add(q);
             self.list.verts.push(q);
         }
@@ -527,7 +538,7 @@ fn build_space(d: &Drawing, space: &Space, opts: &Options, plotting: bool) -> Di
                 }
                 continue;
             }
-            entity(&mut b, &top_ctx(d, Mat3::IDENTITY, e.handle, &[], &[]), e);
+            entity(&mut b, &top_ctx(d, opts.view_dir.plane_xf(), e.handle, &[], &[]), e);
         }
     }
     // A layout is drawn in paper units, so its pens become geometry now.
@@ -558,7 +569,7 @@ fn build_parallel(b: &mut Builder, d: &Drawing, store: &cadcraft_doc::EntityStor
             let mut part =
                 Builder { list: DisplayList::default(), opts, plotting, styles: None, named: None, shared_budget: Some(&budget), transparency: 0 };
             for e in chunk {
-                entity(&mut part, &top_ctx(d, Mat3::IDENTITY, e.handle, &[], &[]), e);
+                entity(&mut part, &top_ctx(d, opts.view_dir.plane_xf(), e.handle, &[], &[]), e);
             }
             part.list
         })
@@ -902,7 +913,7 @@ pub fn build_entities<'a, I: IntoIterator<Item = &'a Entity>>(d: &Drawing, ents:
     };
     let mut b = Builder { list: DisplayList::default(), opts, plotting: false, styles: None, named: None, shared_budget: None, transparency: 0 };
     for e in ents {
-        entity(&mut b, &top_ctx(d, Mat3::IDENTITY, e.handle, &[], &[]), e);
+        entity(&mut b, &top_ctx(d, opts.view_dir.plane_xf(), e.handle, &[], &[]), e);
     }
     b.list
 }
@@ -1155,6 +1166,7 @@ fn entity_parts(b: &mut Builder, ctx: &Ctx, e: &Entity) {
                 }
             }
         }
+        EntityKind::Solid3d(s) => solid::draw(b, ctx, s, rgb, lw),
         EntityKind::Solid(s) | EntityKind::Trace(s) => {
             let c = &s.corners;
             let q = [c[0].xy(), c[1].xy(), c[3].xy(), c[2].xy()];

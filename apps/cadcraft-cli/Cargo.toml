@@ -15,3 +15,7 @@ cadcraft-io = { workspace = true }
 cadcraft-mcp = { workspace = true }
 cadcraft-render = { workspace = true }
 serde_json = { workspace = true }
+
+# 3D modelling: the OpenCASCADE kernel (C++, native only).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+cadcraft-kernel = { workspace = true, features = ["occt"] }

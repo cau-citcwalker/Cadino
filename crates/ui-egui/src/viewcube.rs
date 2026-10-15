@@ -4,20 +4,16 @@
 //! Every overlay registers a widget that senses clicks *and* drags, so egui hands the pointer to
 //! the overlay instead of the canvas underneath (a click on the ViewCube must never also pick or
 //! start a selection window in the drawing). What the overlays do goes through commands:
-//! `zoom.extents` (Top face, Home), `ui.toggle.viewcube`, `ui.toggle.ucsicon`.
+//! `plan` (Top face), `view.swiso` (Home), `ui.toggle.viewcube`, `ui.toggle.ucsicon`; dragging
+//! the compass ring orbits the model view.
 //!
-//! CADCraft's model view is a 2D plan view of the World Coordinate System: there is no view
-//! twist, no 3D view direction and no user coordinate system yet, so the compass ring explains
-//! that instead of rotating, and the WCS menu lists the only coordinate system there is.
+//! There is no user coordinate system yet, so the WCS menu lists the only one there is.
 
 use egui::{Color32, CursorIcon, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use serde_json::json;
 
 use crate::CadApp;
 use crate::theme::Tokens;
-
-/// Shown when the compass ring is clicked or dragged.
-pub const NO_TWIST: &str = "ViewCube: rotating the view needs a view twist, which the 2D plan view doesn't support yet.";
 
 /// Where the ViewCube's parts are on the canvas.
 #[derive(Clone, Copy, Debug)]
@@ -107,15 +103,21 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui, l: &Layout) {
     let pressed_on = resp.interact_pointer_pos().and_then(|o| l.part_at(o));
     if resp.clicked() {
         match pressed_on {
-            Some(Part::Face | Part::Home) => {
-                let _ = app.run("zoom.extents", json!({}));
+            // Top: plan view of the WCS; Home: the south-west isometric.
+            Some(Part::Face) => {
+                let _ = app.run("plan", json!({}));
             }
-            Some(Part::Ring) => app.session.echo(NO_TWIST),
-            None => {}
+            Some(Part::Home) => {
+                let _ = app.run("view.swiso", json!({}));
+            }
+            Some(Part::Ring) | None => {}
         }
     }
-    if resp.drag_started() && pressed_on == Some(Part::Ring) {
-        app.session.echo(NO_TWIST);
+    // Dragging the ring orbits the view.
+    if resp.dragged() && pressed_on == Some(Part::Ring) && app.session.space() == cadcraft_doc::Space::Model {
+        let d = resp.drag_delta();
+        let k = crate::canvas::ORBIT_DEG_PER_PX;
+        let _ = cadcraft_engine::orbit(&mut app.session, -f64::from(d.x) * k, f64::from(d.y) * k);
     }
     let mut action = None;
     resp.context_menu(|ui| {
@@ -259,20 +261,21 @@ mod tests {
         let (mut app, ctx) = app_and_ctx();
         let l = Layout::new(canvas(&app));
         let fitted = view(&app);
-        // Zoomed in, the Top face fits the drawing again (zoom extents) and nothing is picked.
+        // Zoomed in, the Top face fits the drawing again (plan view, zoom extents) and nothing is
+        // picked.
         let _ = app.run("zoom.in", json!({}));
         assert_ne!(view(&app), fitted);
         click(&mut app, &ctx, l.center, egui::PointerButton::Primary);
         assert_eq!(view(&app), fitted, "Top face zooms to extents");
         assert!(app.session.pending_window.is_none(), "the click didn't start a selection window");
         assert!(app.session.selection().is_empty());
-        // Home does the same.
-        let _ = app.run("zoom.in", json!({}));
+        // Home turns to the south-west isometric view.
         click(&mut app, &ctx, l.home.center(), egui::PointerButton::Primary);
-        assert_eq!(view(&app), fitted, "Home zooms to extents");
-        // The ring explains that the 2D view can't rotate, and doesn't touch the drawing.
+        assert!(!app.session.state().unwrap().view_dir.is_plan(), "Home is an isometric view");
+        click(&mut app, &ctx, l.center, egui::PointerButton::Primary);
+        assert!(app.session.state().unwrap().view_dir.is_plan());
+        // A click on the ring doesn't touch the drawing.
         click(&mut app, &ctx, l.center + vec2(0.0, -l.ring), egui::PointerButton::Primary);
-        assert_eq!(app.session.log.last().map(String::as_str), Some(NO_TWIST));
         assert!(app.session.pending_window.is_none());
         assert_eq!(view(&app), fitted);
         // A click in the drawing still reaches the drawing.

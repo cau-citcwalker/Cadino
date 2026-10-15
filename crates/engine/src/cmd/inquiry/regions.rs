@@ -19,17 +19,17 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("union", "Union", run_union)
             .menu(&["Modify", "Solid Editing", "Union"])
             .alias(&["uni"])
-            .params("{handles?} (regions)")
+            .params("{handles?} (regions or 3D solids)")
             .interactive(|_| Ok(Box::new(SelectRun::new("union", "UNION")))),
         CommandSpec::new("subtract", "Subtract", run_subtract)
             .menu(&["Modify", "Solid Editing", "Subtract"])
             .alias(&["su"])
-            .params("{from: [handles], remove: [handles]} (regions)")
+            .params("{from: [handles], remove: [handles]} (regions or 3D solids)")
             .interactive(|_| Ok(Box::new(SubtractM::default()))),
         CommandSpec::new("intersect", "Intersect", run_intersect)
             .menu(&["Modify", "Solid Editing", "Intersect"])
             .alias(&["in"])
-            .params("{handles?} (regions)")
+            .params("{handles?} (regions or 3D solids)")
             .interactive(|_| Ok(Box::new(SelectRun::new("intersect", "INTERSECT")))),
         CommandSpec::new("massprop", "Region/Mass Properties", run_massprop)
             .menu(&["Tools", "Inquiry", "Region/Mass Properties"])
@@ -146,6 +146,14 @@ fn apply(s: &mut Session, keep: Handle, r: Region, erase: &[Handle]) -> Result<(
 }
 
 fn fold(s: &mut Session, hs: &[Handle], op: Op) -> Result<Value> {
+    let bop = match op {
+        Op::Union => cadcraft_kernel::BoolOp::Union,
+        Op::Subtract => cadcraft_kernel::BoolOp::Subtract,
+        Op::Intersect => cadcraft_kernel::BoolOp::Intersect,
+    };
+    if let Some(v) = super::super::solids::fold(s, hs, bop)? {
+        return Ok(v);
+    }
     let rs = regions(s, hs)?;
     let Some(((h0, first), rest)) = rs.split_first() else { return Err(other("Select at least one region.")) };
     let mut acc = first.clone();
@@ -176,6 +184,9 @@ fn handles(p: &Value, key: &str) -> Result<Vec<Handle>> {
 }
 
 fn subtract(s: &mut Session, from: &[Handle], remove: &[Handle]) -> Result<Value> {
+    if let Some(v) = super::super::solids::subtract(s, from, remove)? {
+        return Ok(v);
+    }
     let (a, b) = (regions(s, from)?, regions(s, remove)?);
     let Some(((h0, first), rest)) = a.split_first() else { return Err(other("Select regions to subtract from.")) };
     let mut acc = first.clone();

@@ -33,7 +33,7 @@ pub mod units;
 use std::sync::Arc;
 
 use cadcraft_doc::{Common, Drawing, Entity, EntityKind, Handle, Space};
-use cadcraft_geom::{Bounds2, Vec2};
+use cadcraft_geom::{Bounds2, Vec2, ViewDir};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -41,7 +41,7 @@ pub use cadcraft_doc as doc;
 pub use cadcraft_geom as geom;
 pub use cadcraft_render as render;
 pub use cmd::hatch::{HatchPicks, PatternChoice, PickMode, pattern_choices};
-pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command};
+pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command, orbit};
 pub use prompt::{Accept, Drag, Input, Interactive, Picker, Prompt, Step};
 
 #[derive(Debug, thiserror::Error)]
@@ -142,6 +142,11 @@ pub struct DocState {
     /// The Block Editor (BEDIT), when it is open: `doc` is then the editor's drawing, and the
     /// drawing itself waits in it ([`DocState::drawing`]).
     pub block_edit: Option<blockedit::BlockEdit>,
+    /// Model space's view direction (VPOINT, the preset views, 3DORBIT); plan by default.
+    /// The model views' centres are in this view's plane.
+    pub view_dir: ViewDir,
+    /// 3D solids shaded instead of drawn as edges (VSCURRENT).
+    pub shaded: bool,
 }
 
 static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -168,6 +173,8 @@ impl DocState {
             uid: NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             binary_dxf: false,
             block_edit: None,
+            view_dir: ViewDir::PLAN,
+            shaded: false,
         }
     }
     /// The drawing has changes not saved to its file, or the Block Editor has changes not yet
@@ -1654,21 +1661,26 @@ impl Session {
         }
         let ap = self.pixel_size() * self.settings.pickbox.max(1.0) * 1.5;
         match select::pick(self.doc()?, &space, p, ap) {
-            Some(h) => {
-                // With group selection the object's selectable groups come (or go) with it.
-                let hs = cmd::groups::expand(self, vec![h]);
-                let mut sel = if pickadd || shift { self.selection() } else { Vec::new() };
-                let had = sel.contains(&h);
-                if shift && (pickadd || had) {
-                    sel.retain(|x| !hs.contains(x));
-                } else if !had {
-                    sel.extend(hs);
-                }
-                self.set_selection(sel);
-            }
+            Some(h) => self.idle_pick(h, shift),
             None => self.pending_window = Some(PendingWindow { corner: p, during_command: false }),
         }
         Ok(())
+    }
+
+    /// An object picked with no command running (by [`Session::idle_click`], or by the UI in a
+    /// 3D view, where it picks from what it draws): add it to or take it from the selection.
+    pub fn idle_pick(&mut self, h: Handle, shift: bool) {
+        let pickadd = self.settings.pickadd;
+        // With group selection the object's selectable groups come (or go) with it.
+        let hs = cmd::groups::expand(self, vec![h]);
+        let mut sel = if pickadd || shift { self.selection() } else { Vec::new() };
+        let had = sel.contains(&h);
+        if shift && (pickadd || had) {
+            sel.retain(|x| !hs.contains(x));
+        } else if !had {
+            sel.extend(hs);
+        }
+        self.set_selection(sel);
     }
 
     /// Remember the selection used by a command as "Previous".
@@ -1695,7 +1707,7 @@ impl Session {
 
     pub fn zoom_extents(&mut self) -> Result<()> {
         let space = self.space();
-        let ext = self.doc()?.extents(&space);
+        let ext = self.view_extents(&space)?;
         let (w, h) = self.viewport_px;
         let ext = if ext.is_empty() { self.zoom_limits()? } else { ext };
         let st = self.state_mut()?;
@@ -1703,6 +1715,19 @@ impl Session {
         let height = ext.height().max(ext.width() / aspect.max(1e-6)).max(1e-6) * 1.05;
         st.set_zoom_frame(View { center: ext.center(), height });
         Ok(())
+    }
+
+    /// The extents of `space` in its view plane: the drawing's extents, or in a 3D model view
+    /// the bounds of what that view draws.
+    pub fn view_extents(&self, space: &Space) -> Result<Bounds2> {
+        let st = self.state()?;
+        if *space != Space::Model || st.view_dir.is_plan() {
+            return Ok(st.doc.extents(space));
+        }
+        let ext = st.doc.extents(space);
+        let tolerance = if ext.is_empty() { 0.01 } else { (ext.width() + ext.height()).max(1e-9) * 1e-3 };
+        let opts = cadcraft_render::Options { tolerance, text: false, view_dir: st.view_dir, ..Default::default() };
+        Ok(cadcraft_render::build(&st.doc, space, &opts).bounds)
     }
 
     /// Zoom by `factor` (> 1 zooms in) keeping `about` fixed on screen.

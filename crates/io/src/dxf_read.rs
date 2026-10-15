@@ -515,6 +515,7 @@ fn entity(kind: &str, tags: &[Tag]) -> Option<(Common, EntityKind)> {
                 text: t.s(1).unwrap_or_default().chars().take(MAX_FRAME_CHARS).collect(),
             })
         }
+        "3DSOLID" if let Some(k) = crate::dxf_solid::read(tags) => k,
         other => EntityKind::Unknown(Unknown {
             dxf_type: other.to_string(),
             tags: tags.iter().map(|tg| RawTag { code: tg.code, value: tg.str() }).collect(),

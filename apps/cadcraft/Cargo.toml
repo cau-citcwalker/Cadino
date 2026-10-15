@@ -32,6 +32,8 @@ zbus = { version = "=5.19.0", default-features = false, features = ["async-io", 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rfd = { workspace = true }
 sys-locale = "0.3"
+# 3D modelling: the OpenCASCADE kernel (C++, native only).
+cadcraft-kernel = { workspace = true, features = ["occt"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21", default-features = false }

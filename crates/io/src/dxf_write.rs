@@ -694,6 +694,11 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
             thickness(w, e);
             text_tags(w, t, None, None);
         }
+        EntityKind::Solid3d(s) => {
+            w.s(0, "3DSOLID");
+            common(w, e, owner, paper, "AcDbModelerGeometry");
+            w.t.extend(crate::dxf_solid::tags(s));
+        }
         // Closed polylines, one per loop (`dxf_region`): REGION's own data is ACIS.
         EntityKind::Region(r) => {
             for (i, tags) in crate::dxf_region::polylines(r).into_iter().enumerate() {

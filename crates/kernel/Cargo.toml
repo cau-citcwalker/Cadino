@@ -1,0 +1,20 @@
+[package]
+name = "cadcraft-kernel"
+description = "3D solid modelling for CAD-rhino: OpenCASCADE behind a data-only API"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# The OpenCASCADE kernel (LGPL-2.1, C++; native builds only). Without it every operation
+# returns `KernelError::Unavailable`.
+occt = ["dep:opencascade", "dep:glam"]
+
+[dependencies]
+cadcraft-geom = { workspace = true }
+thiserror = { workspace = true }
+opencascade = { version = "0.3", optional = true }
+glam = { version = "0.24", optional = true }
+
+[lints]
+workspace = true

@@ -35,12 +35,15 @@ pub use props::MatchProps;
 mod qselect;
 mod selecttools;
 mod settings;
+mod solids;
 mod spline_opts;
 mod table;
 mod tolerance;
 mod trimextend;
 mod utility;
 mod view;
+mod view3d;
+pub use view3d::orbit;
 
 pub mod curves;
 pub mod helpers;
@@ -175,6 +178,8 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(qselect::specs());
         v.extend(selecttools::specs());
         v.extend(view::specs());
+        v.extend(view3d::specs());
+        v.extend(solids::specs());
         v.extend(draw::specs());
         v.extend(draw2::specs());
         v.extend(annotate::specs());

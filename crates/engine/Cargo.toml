@@ -8,6 +8,10 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Build the OpenCASCADE kernel in (3D modelling commands, and their tests).
+occt = ["cadcraft-kernel/occt"]
+
 [dependencies]
 cadcraft-geom = { workspace = true }
 cadcraft-color = { workspace = true }
@@ -16,6 +20,7 @@ cadcraft-dxf = { workspace = true }
 cadcraft-constraints = { workspace = true }
 cadcraft-fonts = { workspace = true }
 cadcraft-render = { workspace = true }
+cadcraft-kernel = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

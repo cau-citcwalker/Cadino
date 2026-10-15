@@ -1,2 +1,6 @@
 [alias]
 xtask = "run --package xtask --"
+
+[env]
+# OpenCASCADE's CMakeLists predate CMake 3.5; CMake 4 refuses them without this.
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"

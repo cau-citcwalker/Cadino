@@ -13,6 +13,7 @@ repository = "https://github.com/storytold/cadcraft"
 [workspace.dependencies]
 # internal
 cadcraft-geom = { path = "crates/geom" }
+cadcraft-kernel = { path = "crates/kernel" }
 cadcraft-dxf = { path = "crates/dxf" }
 cadcraft-dwg = { path = "crates/dwg" }
 cadcraft-color = { path = "crates/color" }
