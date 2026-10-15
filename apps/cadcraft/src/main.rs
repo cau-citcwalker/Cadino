@@ -226,6 +226,8 @@ fn control_flag(current: Option<u16>, value: Option<String>) -> Option<u16> {
 }
 
 fn main() -> eframe::Result {
+    // Before anything else: started as the 3D modelling worker, this serves one request and exits.
+    cadcraft_kernel::worker_main();
     // First, so every start-up record is captured; see `logging`.
     let logger = logging::install();
     // lossy, so a value that is not Unicode is reported like any other bad port instead of ignored

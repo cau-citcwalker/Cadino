@@ -64,10 +64,13 @@ impl ViewDir {
         if n == Vec3::ZERO || !n.is_finite() { ViewDir::PLAN } else { ViewDir { dir: n } }
     }
 
-    /// Angle in the XY plane from +X, and angle above the XY plane (radians).
+    /// Angle in the XY plane from +X, and angle above the XY plane (radians). Looking straight
+    /// down or up the azimuth is the one plan view continues into: from the south (-90°), where
+    /// +X stays to the right.
     pub fn angles(&self) -> (f64, f64) {
         let d = self.dir;
-        (d.y.atan2(d.x), d.z.clamp(-1.0, 1.0).asin())
+        let az = if d.x.abs() < 1e-12 && d.y.abs() < 1e-12 { -std::f64::consts::FRAC_PI_2 } else { d.y.atan2(d.x) };
+        (az, d.z.clamp(-1.0, 1.0).asin())
     }
 
     pub fn is_plan(&self) -> bool {
@@ -99,6 +102,23 @@ impl ViewDir {
     pub fn plane_xf(&self) -> Mat3 {
         let (x, y, _) = self.axes();
         Mat3 { a: x.x, b: y.x, c: x.y, d: y.y, e: 0.0, f: 0.0 }
+    }
+
+    /// The world XY point (z = 0) seen at view-plane point `v`. Where the view sees the XY plane
+    /// edge-on (or nearly), the least-squares one: the point on the plane's projected line.
+    pub fn unproject_xy(&self, v: Vec2) -> Vec2 {
+        let m = self.plane_xf();
+        if m.det().abs() > 1e-6
+            && let Some(i) = m.inverse()
+        {
+            return i.apply(v);
+        }
+        // Rank one: the pseudo-inverse is the transpose over the squared Frobenius norm.
+        let n2 = m.a * m.a + m.b * m.b + m.c * m.c + m.d * m.d;
+        if n2 < 1e-24 {
+            return v;
+        }
+        Vec2::new((m.a * v.x + m.b * v.y) / n2, (m.c * v.x + m.d * v.y) / n2)
     }
 
     /// The world → view rotation as a 4x4 transform (rows: right, up, toward the viewer).
@@ -138,6 +158,27 @@ mod tests {
         assert!(near(v.plane_xf().apply(p), v.project(p.to3(0.0))));
         let (az, el) = v.angles();
         assert!((az - -135f64.to_radians()).abs() < 1e-12 && (el - 35.264f64.to_radians()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn plan_continues_into_the_view_from_the_south() {
+        let (az, el) = ViewDir::PLAN.angles();
+        let tilted = ViewDir::from_angles(az, el - 0.1);
+        // Tilting plan keeps +X to the right.
+        assert!(tilted.project(Vec3::new(1.0, 0.0, 0.0)).x > 0.99);
+    }
+
+    #[test]
+    fn unproject_inverts_project_and_handles_edge_on_views() {
+        let iso = ViewDir::new(Vec3::new(-1.0, -1.0, 1.0));
+        let p = Vec2::new(3.0, -4.0);
+        assert!(near(iso.unproject_xy(iso.project(p.to3(0.0))), p));
+        // Front: view x is world x, world y is lost (0).
+        let front = ViewDir::new(Vec3::new(0.0, -1.0, 0.0));
+        assert!(near(front.unproject_xy(Vec2::new(5.0, 2.0)), Vec2::new(5.0, 0.0)));
+        // Left: view x runs along -Y.
+        let left = ViewDir::new(Vec3::new(-1.0, 0.0, 0.0));
+        assert!(near(left.unproject_xy(Vec2::new(5.0, 2.0)), Vec2::new(0.0, -5.0)));
     }
 
     #[test]

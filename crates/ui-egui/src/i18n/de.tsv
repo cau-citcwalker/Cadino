@@ -10,7 +10,6 @@
 	% of all commits	% aller Commits
 	* Wildcard Match	* Wildcard-Abgleich
 	*VARIES*	*VARIIERT*
-	+  |  Top  |  2D Wireframe	+  |  Oben  |  2D-Drahtmodell
 	+Bin	+Binär
 	+LOC	+Zeilen
 	1 Viewport	1 Ansichtsfenster
@@ -1034,3 +1033,19 @@
 	Justify	Blocksatz
 	Text color	Textfarbe
 	Click the ruler to add a tab stop, right-click to remove one	Klick auf das Lineal setzt einen Tabstopp, Rechtsklick entfernt ihn
+	2D Wireframe	2D-Drahtmodell
+	BACK	HINTEN
+	BOTTOM	UNTEN
+	Back	Hinten
+	Bottom	Unten
+	Custom View	Benutzerdefinierte Ansicht
+	FRONT	VORNE
+	Front	Vorne
+	LEFT	LINKS
+	NE Isometric	Isometrisch NO
+	NW Isometric	Isometrisch NW
+	RIGHT	RECHTS
+	SE Isometric	Isometrisch SO
+	SW Isometric	Isometrisch SW
+	Shaded	Schattiert
+	Top	Oben

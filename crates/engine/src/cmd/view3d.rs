@@ -1,10 +1,10 @@
 //! The 3D view (CAD-rhino): VPOINT, PLAN, the preset views, 3DORBIT and VSCURRENT.
 //!
-//! The view direction belongs to model space ([`crate::DocState::view_dir`]); view centres are
-//! in its view plane, so a new direction zooms to extents, and an orbit keeps the point at the
-//! centre of the screen where it is.
+//! The view direction belongs to the Model tab ([`crate::DocState::view_dir`]; layouts and their
+//! viewports are drawn in plan); view centres are in its view plane, so a new direction zooms to
+//! extents, and an orbit keeps the point at the centre of the screen where it is.
 
-use cadcraft_doc::Space;
+use cadcraft_doc::{Drawing, EntityKind, Space};
 use cadcraft_geom::{Vec3, ViewDir};
 use serde_json::{Value, json};
 
@@ -62,18 +62,24 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 fn model_only(s: &Session) -> Result<()> {
-    if s.space() == Space::Model { Ok(()) } else { Err(EngineError::Other("3D views are available in model space only.".into())) }
+    if s.layout_space() == Space::Model { Ok(()) } else { Err(EngineError::Other("3D views are available on the Model tab only.".into())) }
 }
 
 fn dir_json(v: ViewDir) -> Value {
     json!({ "direction": [v.dir.x, v.dir.y, v.dir.z] })
 }
 
-/// Look along `v` and zoom to extents.
+/// Look along `v` and zoom to extents (ZOOM Previous returns to the view and direction before).
 pub(crate) fn set(s: &mut Session, v: ViewDir) -> Result<Value> {
     model_only(s)?;
-    s.state_mut()?.view_dir = v;
-    s.zoom_extents()?;
+    let st = s.state_mut()?;
+    let (before, dir) = (st.view(), st.view_dir);
+    st.view_dir = v;
+    st.orbit_target = None;
+    let f = s.extents_frame()?;
+    let st = s.state_mut()?;
+    st.push_history(before, dir);
+    st.set_view_quiet(f);
     Ok(dir_json(v))
 }
 
@@ -100,23 +106,56 @@ fn run_vpoint(s: &mut Session, p: &Value) -> Result<Value> {
     set(s, ViewDir::from_angles(az.to_radians(), el.clamp(-90.0, 90.0).to_radians()))
 }
 
-/// Turn the view by `azimuth` (about Z) and `elevation` degrees, keeping the screen centre's
-/// point on the XY plane at the centre.
+/// The middle of the model in 3D: of its plan extents, halfway up its solids (2D objects lie at
+/// z = 0).
+fn model_center(d: &Drawing) -> Vec3 {
+    let ext = d.extents(&Space::Model);
+    if ext.is_empty() {
+        return Vec3::ZERO;
+    }
+    let (lo, hi) = d
+        .model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EntityKind::Solid3d(x) => Some(x.corners()),
+            _ => None,
+        })
+        .flatten()
+        .fold((0.0f64, 0.0f64), |(lo, hi), p| (lo.min(p.z), hi.max(p.z)));
+    ext.center().to3((lo + hi) / 2.0)
+}
+
+/// Turn the view by `azimuth` (about Z) and `elevation` degrees about the point at the centre of
+/// the screen as deep as the middle of the model, which stays at the centre. No turn changes
+/// nothing.
 pub fn orbit(s: &mut Session, azimuth: f64, elevation: f64) -> Result<()> {
     model_only(s)?;
-    if !(azimuth.is_finite() && elevation.is_finite()) {
+    if !(azimuth.is_finite() && elevation.is_finite()) || (azimuth == 0.0 && elevation == 0.0) {
         return Ok(());
     }
     let st = s.state_mut()?;
     let old = st.view_dir;
     let view = st.view();
-    let target = old.plane_xf().inverse().map(|i| i.apply(view.center)).unwrap_or(view.center).to3(0.0);
+    // On the centre's line of sight (the view axes are orthonormal, so `old` projects it back to
+    // the centre whatever the direction, edge-on views included).
+    let (x, y, d) = old.axes();
+    let center = match st.orbit_center {
+        Some((rev, c)) if rev == st.revision => c,
+        _ => {
+            let c = model_center(&st.doc);
+            st.orbit_center = Some((st.revision, c));
+            c
+        }
+    };
+    let depth = old.depth(center);
+    let target = x * view.center.x + y * view.center.y + d * if depth.is_finite() { depth } else { 0.0 };
     let (az, el) = old.angles();
     // Short of straight up or down, so "up" (world Z) stays defined while orbiting.
     let limit = 89.9f64.to_radians();
     let el = (el + elevation.to_radians()).clamp(-limit, limit);
     let new = ViewDir::from_angles(az + azimuth.to_radians(), el);
     st.view_dir = new;
+    st.orbit_target = Some(target);
     st.set_view_quiet(crate::View { center: new.project(target), height: view.height });
     Ok(())
 }

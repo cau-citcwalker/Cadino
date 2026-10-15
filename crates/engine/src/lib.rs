@@ -135,7 +135,8 @@ pub struct DocState {
     /// MSPACE: the layout viewport whose model space is being edited (None = paper space).
     pub mspace: Option<Handle>,
     pub views: Vec<(Space, View)>,
-    pub view_history: Vec<View>,
+    /// Views for ZOOM Previous, with the model space view direction each was seen along.
+    pub view_history: Vec<(View, ViewDir)>,
     pub uid: u64,
     /// The drawing is saved as binary DXF (it was opened from one, or last saved as one).
     pub binary_dxf: bool,
@@ -147,6 +148,12 @@ pub struct DocState {
     pub view_dir: ViewDir,
     /// 3D solids shaded instead of drawn as edges (VSCURRENT).
     pub shaded: bool,
+    /// The model's 3D centre orbits pivot about, for the revision it was measured at (orbiting
+    /// calls for it every frame of a drag).
+    pub orbit_center: Option<(u64, cadcraft_geom::Vec3)>,
+    /// The point the last orbit kept at the centre of the screen (cleared by other changes of
+    /// direction): the UI shows the old list about it until the new one is built.
+    pub orbit_target: Option<cadcraft_geom::Vec3>,
 }
 
 static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -175,6 +182,8 @@ impl DocState {
             block_edit: None,
             view_dir: ViewDir::PLAN,
             shaded: false,
+            orbit_center: None,
+            orbit_target: None,
         }
     }
     /// The drawing has changes not saved to its file, or the Block Editor has changes not yet
@@ -214,6 +223,11 @@ impl DocState {
     /// The space edits, picks and snaps act on: model space inside an active viewport.
     pub fn edit_space(&self) -> Space {
         if self.active_viewport().is_some() { Space::Model } else { self.space.clone() }
+    }
+    /// The direction the screen shows the edit space along: [`Self::view_dir`] on the Model tab;
+    /// layouts and their viewports are drawn in plan. View centres are in its view plane.
+    pub fn screen_dir(&self) -> ViewDir {
+        if self.space == Space::Model { self.view_dir } else { ViewDir::PLAN }
     }
     /// The active MSPACE viewport, if it still exists in the current layout.
     pub fn active_viewport(&self) -> Option<(Handle, cadcraft_doc::Viewport)> {
@@ -293,12 +307,16 @@ impl DocState {
             return false;
         }
         if old != v {
-            self.view_history.push(old);
-            if self.view_history.len() > 50 {
-                self.view_history.remove(0);
-            }
+            self.push_history(old, self.view_dir);
         }
         true
+    }
+    /// Remember view `v`, seen along `dir`, for ZOOM Previous (the last 50).
+    pub fn push_history(&mut self, v: View, dir: ViewDir) {
+        self.view_history.push((v, dir));
+        if self.view_history.len() > 50 {
+            self.view_history.remove(0);
+        }
     }
     /// The active MSPACE viewport when ZOOM works on its own view, as in AutoCAD: extents and
     /// windows fit the viewport, and zooms keep its centre. A locked viewport keeps its scale, so
@@ -1667,6 +1685,29 @@ impl Session {
         Ok(())
     }
 
+    /// Objects the UI picked from what it draws (3D views) at a command's object prompt: they
+    /// bring their groups as a picked point does, then go to the command as a pick.
+    pub fn input_view_pick(&mut self, hs: Vec<Handle>) -> Result<()> {
+        let hs = cmd::groups::expand(self, hs);
+        self.input(Input::Pick(hs))
+    }
+
+    /// Objects a selection window took with no command running, picked by the UI from what it
+    /// draws (3D views): added to the selection, or taken from it with Shift (PICKADD on), as
+    /// [`Session::idle_click`] does with a window it closes itself.
+    pub fn idle_window_pick(&mut self, hs: Vec<Handle>, shift: bool) {
+        self.pending_window = None;
+        let pickadd = self.settings.pickadd;
+        let hs = cmd::groups::expand(self, hs);
+        let mut sel = if pickadd || shift { self.selection() } else { Vec::new() };
+        if shift && pickadd {
+            sel.retain(|h| !hs.contains(h));
+        } else {
+            sel.extend(hs.into_iter().filter(|h| !sel.contains(h)).collect::<Vec<_>>());
+        }
+        self.set_selection(sel);
+    }
+
     /// An object picked with no command running (by [`Session::idle_click`], or by the UI in a
     /// 3D view, where it picks from what it draws): add it to or take it from the selection.
     pub fn idle_pick(&mut self, h: Handle, shift: bool) {
@@ -1692,7 +1733,8 @@ impl Session {
 
     // ---------------- views ----------------
 
-    /// The limits of the space being edited: the sheet in paper space, else LIMMIN/LIMMAX.
+    /// The limits of the space being edited: the sheet in paper space, else LIMMIN/LIMMAX (as a
+    /// 3D model view shows them).
     pub fn zoom_limits(&self) -> Result<Bounds2> {
         let d = self.doc()?;
         if let Space::Paper(name) = self.space()
@@ -1702,31 +1744,39 @@ impl Session {
         }
         let lo = d.header.point("LIMMIN").map(|p| p.xy()).unwrap_or(Vec2::ZERO);
         let hi = d.header.point("LIMMAX").map(|p| p.xy()).unwrap_or(Vec2::new(12.0, 9.0));
-        Ok(Bounds2::new(lo, hi))
+        let m = self.state()?.screen_dir().plane_xf();
+        Ok(Bounds2::from_points(Bounds2::new(lo, hi).corners().map(|c| m.apply(c))))
     }
 
     pub fn zoom_extents(&mut self) -> Result<()> {
+        let f = self.extents_frame()?;
+        self.state_mut()?.set_zoom_frame(f);
+        Ok(())
+    }
+
+    /// The view ZOOM Extents sets (see [`DocState::zoom_frame`]): the extents, or the limits of
+    /// an empty drawing.
+    pub(crate) fn extents_frame(&self) -> Result<View> {
         let space = self.space();
         let ext = self.view_extents(&space)?;
         let (w, h) = self.viewport_px;
         let ext = if ext.is_empty() { self.zoom_limits()? } else { ext };
-        let st = self.state_mut()?;
-        let aspect = st.zoom_aspect(w / h.max(1.0));
+        let aspect = self.state()?.zoom_aspect(w / h.max(1.0));
         let height = ext.height().max(ext.width() / aspect.max(1e-6)).max(1e-6) * 1.05;
-        st.set_zoom_frame(View { center: ext.center(), height });
-        Ok(())
+        Ok(View { center: ext.center(), height })
     }
 
     /// The extents of `space` in its view plane: the drawing's extents, or in a 3D model view
     /// the bounds of what that view draws.
     pub fn view_extents(&self, space: &Space) -> Result<Bounds2> {
         let st = self.state()?;
-        if *space != Space::Model || st.view_dir.is_plan() {
+        let dir = st.screen_dir();
+        if *space != Space::Model || dir.is_plan() {
             return Ok(st.doc.extents(space));
         }
         let ext = st.doc.extents(space);
         let tolerance = if ext.is_empty() { 0.01 } else { (ext.width() + ext.height()).max(1e-9) * 1e-3 };
-        let opts = cadcraft_render::Options { tolerance, text: false, view_dir: st.view_dir, ..Default::default() };
+        let opts = cadcraft_render::Options { tolerance, view_dir: dir, ..Default::default() };
         Ok(cadcraft_render::build(&st.doc, space, &opts).bounds)
     }
 

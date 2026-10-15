@@ -2,7 +2,7 @@
 //! switching.
 
 use cadcraft_doc::{Space, entity_bounds};
-use cadcraft_geom::{Bounds2, Vec2};
+use cadcraft_geom::{Bounds2, Mat3, PolyVertex, Vec2};
 use serde_json::{Value, json};
 
 use super::machines::{SelectRun, number};
@@ -107,9 +107,21 @@ pub fn specs() -> Vec<CommandSpec> {
     v
 }
 
+/// The extents in the screen's view plane.
 fn ext_bounds(s: &Session) -> Result<Bounds2> {
-    let space = s.space();
-    Ok(s.doc()?.extents(&space))
+    s.view_extents(&s.space())
+}
+
+/// World XY to the screen's view plane, where view centres are (a 3D model view; else the
+/// identity).
+fn plane(s: &Session) -> Result<Mat3> {
+    Ok(s.state()?.screen_dir().plane_xf())
+}
+
+/// The view-plane window two picked world corners make.
+fn window(s: &Session, a: Vec2, b: Vec2) -> Result<Bounds2> {
+    let m = plane(s)?;
+    Ok(Bounds2::new(m.apply(a), m.apply(b)))
 }
 
 fn fit(s: &mut Session, b: Bounds2) -> Result<()> {
@@ -135,11 +147,15 @@ pub(crate) fn zoom(s: &mut Session, p: &Value) -> Result<Value> {
         "window" | "w" => {
             let a = point_req("zoom", p, "p1")?;
             let b = point_req("zoom", p, "p2")?;
-            fit(s, Bounds2::new(a, b))?;
+            fit(s, window(s, a, b)?)?;
         }
         "previous" | "p" => {
             let st = s.state_mut()?;
-            if let Some(v) = st.view_history.pop() {
+            if let Some((v, dir)) = st.view_history.pop() {
+                if st.space == Space::Model {
+                    st.view_dir = dir;
+                    st.orbit_target = None;
+                }
                 st.set_view_quiet(v);
             } else {
                 return Ok(json!({"message": "No previous view saved."}));
@@ -152,7 +168,7 @@ pub(crate) fn zoom(s: &mut Session, p: &Value) -> Result<Value> {
             st.set_zoom_frame(View { center: v.center, height: v.height / f });
         }
         "center" | "c" | "dynamic" | "d" => {
-            let c = point_req("zoom", p, "center")?;
+            let c = plane(s)?.apply(point_req("zoom", p, "center")?);
             let cur = s.state()?.zoom_frame().height;
             let h = if p.get("factor").is_some() { factor_height(s, p, cur)? } else { f64_or(p, "height", cur) };
             s.state_mut()?.set_zoom_frame(View { center: c, height: h.max(1e-9) });
@@ -172,8 +188,16 @@ pub(crate) fn zoom(s: &mut Session, p: &Value) -> Result<Value> {
         }
         "object" | "o" => {
             let hs = targets(s, p)?;
-            let d = s.doc()?;
-            let b = hs.iter().filter_map(|h| d.entity(*h)).fold(Bounds2::EMPTY, |a, e| a.union(&entity_bounds(d, e, 0)));
+            let st = s.state()?;
+            let d = &st.doc;
+            let ents: Vec<&cadcraft_doc::Entity> = hs.iter().filter_map(|h| d.entity(*h)).map(|e| &**e).collect();
+            let mut b = ents.iter().fold(Bounds2::EMPTY, |a, e| a.union(&entity_bounds(d, e, 0)));
+            let dir = st.screen_dir();
+            if !dir.is_plan() && !b.is_empty() {
+                // What a 3D view draws of them (a solid's height too).
+                let opts = cadcraft_render::Options { tolerance: (b.width() + b.height()).max(1e-9) * 1e-3, view_dir: dir, ..Default::default() };
+                b = cadcraft_render::build_entities(d, ents, &opts).bounds;
+            }
             fit(s, b.expand(b.height().max(b.width()) * 0.05))?;
         }
         _ => return Err(bad("zoom", "unknown mode")),
@@ -245,17 +269,19 @@ fn pan_frac(s: &mut Session, f: Vec2) -> Result<Value> {
     ok()
 }
 
+/// PAN: `center` and `from`/`to` are world points; `delta` moves the view plane.
 fn run_pan(s: &mut Session, p: &Value) -> Result<Value> {
+    let m = plane(s)?;
     let st = s.state_mut()?;
     let v = st.view();
     let c = if let Some(c) = point_param(p, "center") {
-        c
+        m.apply(c)
     } else if let Some(d) = point_param(p, "delta") {
         v.center - d
     } else {
         let a = point_req("pan", p, "from")?;
         let b = point_req("pan", p, "to")?;
-        v.center - (b - a)
+        v.center - (m.apply(b) - m.apply(a))
     };
     st.set_view(View { center: c, height: v.height });
     ok()
@@ -332,7 +358,8 @@ enum ZoomStage {
 const REALTIME_PROMPT: &str = "Drag up to zoom in or down to zoom out; press Esc or Enter to exit";
 
 /// Zoom Dynamic: the view box shown over the drawing extents. A point places the box, the next
-/// one sizes it (its left edge stays), and so on; Enter shows what the box holds.
+/// one sizes it (its left edge stays), and so on; Enter shows what the box holds. Everything is
+/// in the screen's view plane.
 #[derive(Clone, Copy)]
 struct DynBox {
     /// The screen view and the zoom frame before the overview.
@@ -368,11 +395,8 @@ impl ZoomM {
     /// Start Realtime: one view history entry for the whole drag session (Zoom Previous).
     fn realtime(&mut self, s: &mut Session) -> Result<Step> {
         let st = s.state_mut()?;
-        let v = st.view();
-        st.view_history.push(v);
-        if st.view_history.len() > 50 {
-            st.view_history.remove(0);
-        }
+        let (v, dir) = (st.view(), st.view_dir);
+        st.push_history(v, dir);
         self.stage = ZoomStage::Realtime;
         Ok(Step::Continue)
     }
@@ -409,6 +433,7 @@ impl Interactive for ZoomM {
             ZoomStage::Realtime => return Prompt::new(REALTIME_PROMPT, Accept { enter: true, ..Accept::default() }),
             ZoomStage::Dynamic(b) if b.sizing => {
                 let left = Vec2::new(b.center.x - b.height * b.aspect / 2.0, b.center.y);
+                let left = s.state().map(|st| st.screen_dir().unproject_xy(left)).unwrap_or(left);
                 return Prompt::new("Specify size of view box", Accept::POINT).default("accept").base(left);
             }
             ZoomStage::Dynamic(_) => return Prompt::new("Specify center of view box", Accept::POINT).default("accept"),
@@ -437,14 +462,14 @@ impl Interactive for ZoomM {
                 // Back to the view before the overview without a history entry, then zoom from it.
                 let st = s.state_mut()?;
                 st.set_view_quiet(b.screen);
-                if st.view_history.last() == Some(&b.screen) {
+                if st.view_history.last().is_some_and(|(v, _)| *v == b.screen) {
                     st.view_history.pop();
                 }
                 st.set_zoom_frame(View { center: b.center, height: b.height });
                 return Ok(Step::Done);
             }
             (ZoomStage::Dynamic(mut b), Input::Point(p)) => {
-                (b.center, b.height) = b.moved(*p);
+                (b.center, b.height) = b.moved(plane(s)?.apply(*p));
                 b.sizing = !b.sizing;
                 self.stage = ZoomStage::Dynamic(b);
                 return Ok(Step::Continue);
@@ -509,7 +534,7 @@ impl Interactive for ZoomM {
                     Ok(Step::Continue)
                 }
                 Some(a) => {
-                    fit(s, Bounds2::new(a, p))?;
+                    fit(s, window(s, a, p)?)?;
                     Ok(Step::Done)
                 }
             },
@@ -525,9 +550,13 @@ impl Interactive for ZoomM {
             _ => Ok(Step::Continue),
         }
     }
-    fn preview(&self, _s: &Session, c: Vec2) -> Vec<cadcraft_doc::EntityKind> {
-        use super::helpers::{line, lwpoly, rect_vertices};
-        let rect = |r: Bounds2| lwpoly(rect_vertices(r.min, r.max), true);
+    fn preview(&self, s: &Session, c: Vec2) -> Vec<cadcraft_doc::EntityKind> {
+        use super::helpers::{line, lwpoly};
+        // View-plane shapes, drawn as the world XY shapes the screen shows as them.
+        let dir = s.state().map(|st| st.screen_dir()).unwrap_or_default();
+        let to_world = |p: Vec2| dir.unproject_xy(p);
+        let rect = |r: Bounds2| lwpoly(r.corners().into_iter().map(|p| PolyVertex::new(to_world(p))).collect(), true);
+        let c = dir.plane_xf().apply(c);
         if let ZoomStage::Dynamic(b) = self.stage {
             // The extents, the view before, and the box: where it is and where the cursor puts it.
             let (center, height) = b.moved(c);
@@ -539,12 +568,12 @@ impl Interactive for ZoomM {
                 rect(next),
             ];
             if !b.sizing {
-                out.push(line(next.min, next.max));
-                out.push(line(Vec2::new(next.min.x, next.max.y), Vec2::new(next.max.x, next.min.y)));
+                out.push(line(to_world(next.min), to_world(next.max)));
+                out.push(line(to_world(Vec2::new(next.min.x, next.max.y)), to_world(Vec2::new(next.max.x, next.min.y))));
             }
             return out;
         }
-        self.first.map(|a| vec![rect(Bounds2::new(a, c))]).unwrap_or_default()
+        self.first.map(|a| vec![rect(Bounds2::new(dir.plane_xf().apply(a), c))]).unwrap_or_default()
     }
 }
 

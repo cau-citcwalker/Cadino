@@ -18,7 +18,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use cadcraft_color::Rgb;
 use cadcraft_doc::{Drawing, Space};
-use cadcraft_geom::{Bounds2, Vec2};
+use cadcraft_geom::{Bounds2, Vec2, ViewDir};
 use cadcraft_render::{DisplayList, Kind, Options};
 
 /// What a build needs: the drawing (shared, never copied), the space and the options.
@@ -46,6 +46,8 @@ pub(super) struct MeshRequest {
 /// A finished build.
 pub(super) struct Built {
     pub list: DisplayList,
+    /// The view direction it was built in.
+    pub view_dir: ViewDir,
     pub build_ms: f64,
     pub mesh: Option<BuiltMesh>,
 }
@@ -124,7 +126,7 @@ fn run(req: Request) -> Option<Built> {
             Some(BuiltMesh { data, origin, bg, lwdisplay: m.lwdisplay, infinite, ms: crate::now_ms() - t1 })
         }
     };
-    Some(Built { list, build_ms, mesh })
+    Some(Built { list, view_dir: req.opts.view_dir, build_ms, mesh })
 }
 
 /// Start building `req` on a worker thread for `key` / `window`; the worker asks `ctx` for a

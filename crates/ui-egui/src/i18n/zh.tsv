@@ -10,7 +10,6 @@
 	% of all commits	% 的所有提交
 	* Wildcard Match	* 通配符匹配
 	*VARIES*	*多值*
-	+  |  Top  |  2D Wireframe	+  |  俯视  |  二维线框
 	+Bin	+Bin
 	+LOC	+LOC
 	1 Viewport	1 个视口
@@ -1116,3 +1115,19 @@
 	Polar angle measurement	极轴角测量
 	Relative to last segment	相对于上一线段
 	Show command prompting near the crosshairs	在光标附近显示命令提示
+	2D Wireframe	二维线框
+	BACK	后视
+	BOTTOM	仰视
+	Back	后视
+	Bottom	仰视
+	Custom View	自定义视图
+	FRONT	前视
+	Front	前视
+	LEFT	左视
+	NE Isometric	东北等轴测
+	NW Isometric	西北等轴测
+	RIGHT	右视
+	SE Isometric	东南等轴测
+	SW Isometric	西南等轴测
+	Shaded	着色
+	Top	俯视

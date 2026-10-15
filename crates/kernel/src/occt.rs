@@ -1,13 +1,14 @@
 //! The OpenCASCADE backend (through the `opencascade` crate).
 //!
-//! ponytail: OpenCASCADE runs in this process. An operation it can't do usually comes back as
-//! an error or an empty shape, but a C++ exception the bindings don't catch (some fillets do
-//! this) ends the process. Upgrade path: run these functions in a worker process; the API is
-//! data-only for that reason.
+//! An operation OpenCASCADE can't do usually comes back as an error or an empty shape, but a C++
+//! exception the bindings don't catch (some fillets do this) ends the process: the apps run
+//! these functions in a worker process (see `worker`).
 
+use std::collections::hash_map::RandomState;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::BuildHasher;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use cadcraft_geom::{Mesh3, Vec3};
 use glam::{DVec3, dvec3};
@@ -84,10 +85,13 @@ pub fn boolean(op: BoolOp, a: Placed, b: Placed) -> Result<Built> {
 
 pub fn fillet(s: Placed, radius: f64) -> Result<Built> {
     let shape = placed(s)?;
+    // A sphere or a torus (one face) has no edge to round, and OpenCASCADE throws on that.
+    if shape.faces().nth(1).is_none() {
+        return Err(KernelError::Invalid("this solid has no edges to round".into()));
+    }
     // ponytail: a radius as large as the smallest box dimension makes OpenCASCADE throw; keep
-    // well under it. Upgrade path: per-edge radii and a worker process.
-    let bb = bounding_box::aabb(&shape);
-    let size = bb.max() - bb.min();
+    // well under it. Upgrade path: per-edge radii.
+    let size = size(&shape).unwrap_or(DVec3::ZERO);
     if radius >= 0.5 * size.x.min(size.y).min(size.z) {
         return Err(KernelError::Invalid("the radius is too large for this solid".into()));
     }
@@ -140,44 +144,72 @@ fn placed(p: Placed) -> Result<Shape> {
     Ok(s)
 }
 
-static TEMP: AtomicU64 = AtomicU64::new(0);
-
-/// A temporary file path unique to this process and call; removed when dropped.
+/// A new private folder in the temporary directory for the B-rep files OpenCASCADE reads and
+/// writes, removed with them when dropped. Made fresh (never an existing path, so nothing planted
+/// at a guessed name in a shared temporary directory is followed) and, on Unix, owner-only.
 struct Temp(PathBuf);
 
 impl Temp {
-    fn new(ext: &str) -> Temp {
-        let n = TEMP.fetch_add(1, Ordering::Relaxed);
-        Temp(std::env::temp_dir().join(format!("cadrhino-{}-{n}.{ext}", std::process::id())))
+    fn new() -> Result<Temp> {
+        let mut last = None;
+        for n in 0..8u64 {
+            let salt = RandomState::new().hash_one(n);
+            let dir = std::env::temp_dir().join(format!("cadrhino-{}-{salt:016x}", std::process::id()));
+            #[cfg(unix)]
+            let made = std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&dir);
+            #[cfg(not(unix))]
+            let made = std::fs::create_dir(&dir);
+            match made {
+                Ok(()) => return Ok(Temp(dir)),
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(KernelError::Failed(format!("no temporary folder: {}", last.map(|e| e.to_string()).unwrap_or_default())))
     }
 }
 
 impl Drop for Temp {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
 fn write_brep(s: &Shape) -> Result<String> {
-    let t = Temp::new("brep");
-    s.write_brep_text(&t.0).map_err(failed("B-rep write"))?;
-    std::fs::read_to_string(&t.0).map_err(|e| KernelError::Failed(format!("B-rep write: {e}")))
+    let t = Temp::new()?;
+    let path = t.0.join("out.brep");
+    s.write_brep_text(&path).map_err(failed("B-rep write"))?;
+    std::fs::read_to_string(&path).map_err(|e| KernelError::Failed(format!("B-rep write: {e}")))
 }
 
+/// A stored shape; one without faces (an empty compound, a null shape) is refused, as nothing
+/// can be built on it.
 fn read_brep(text: &str) -> Result<Shape> {
     if text.trim().is_empty() {
         return Err(KernelError::Invalid("the solid has no B-rep data".into()));
     }
-    let t = Temp::new("brep");
-    std::fs::write(&t.0, text).map_err(|e| KernelError::Failed(format!("B-rep read: {e}")))?;
-    Shape::read_brep_text(&t.0).map_err(failed("B-rep read"))
+    let t = Temp::new()?;
+    let path = t.0.join("in.brep");
+    std::fs::File::create_new(&path).and_then(|mut f| f.write_all(text.as_bytes())).map_err(|e| KernelError::Failed(format!("B-rep read: {e}")))?;
+    let s = Shape::read_brep_text(&path).map_err(failed("B-rep read"))?;
+    if s.faces().next().is_none() {
+        return Err(KernelError::Invalid("the solid has no faces".into()));
+    }
+    Ok(s)
 }
 
-/// Chord deflection for meshing: a thousandth of the shape's size.
-fn deflection(s: &Shape) -> f64 {
+/// The size of the shape's bounding box; `None` when the box is empty (OpenCASCADE throws on
+/// reading an empty box's corners).
+fn size(s: &Shape) -> Option<DVec3> {
     let bb = bounding_box::aabb(s);
-    let d = (bb.max() - bb.min()).length();
-    if d.is_finite() && d > 0.0 { (d * 1e-3).max(1e-7) } else { 1e-3 }
+    (!bb.is_void()).then(|| bb.max() - bb.min())
+}
+
+/// Chord deflection for meshing: 5e-4 of the shape's size, so spheres and tori look round.
+/// ponytail: one fixed ratio for every size; triangles grow as 1/deflection (painter sort and
+/// picking are CPU-side), a view-dependent level of detail if big models get slow.
+fn deflection(s: &Shape) -> f64 {
+    let d = size(s).map_or(0.0, |v| v.length());
+    if d.is_finite() && d > 0.0 { (d * 5e-4).max(1e-7) } else { 1e-3 }
 }
 
 /// Triangles face by face, and the edges as the boundaries of each face's triangles (shared
@@ -233,8 +265,7 @@ fn chain<K: std::hash::Hash + Eq + Copy>(segs: &[(Vec3, Vec3)], key: impl Fn(Vec
         }
         let mut line = VecDeque::from([*a, *b]);
         for forward in [true, false] {
-            loop {
-                let Some(end) = (if forward { line.back() } else { line.front() }).copied() else { break };
+            while let Some(end) = (if forward { line.back() } else { line.front() }).copied() {
                 let k = key(end);
                 let next = at.get(&k).and_then(|v| v.iter().copied().find(|j| !used.get(*j).copied().unwrap_or(true)));
                 let Some(j) = next else { break };
@@ -291,6 +322,45 @@ mod tests {
         // Disjoint after the move: the intersection is empty.
         assert!(boolean(BoolOp::Intersect, placed(&a), b).is_err());
         assert!(boolean(BoolOp::Union, placed(&a), b).is_ok());
+    }
+
+    #[test]
+    fn sphere_and_torus_are_not_filleted() {
+        // OpenCASCADE throws on them: they have no edge to round.
+        let s = primitive(&Primitive::Sphere { center: Vec3::ZERO, radius: 5.0 }).unwrap();
+        assert!(matches!(fillet(placed(&s), 1.0), Err(KernelError::Invalid(_))));
+        let t = primitive(&Primitive::Torus { center: Vec3::ZERO, radius: 10.0, tube: 2.0 }).unwrap();
+        assert!(matches!(fillet(placed(&t), 0.5), Err(KernelError::Invalid(_))));
+    }
+
+    #[test]
+    fn empty_shapes_are_refused() {
+        // Reading the corners of an empty bounding box throws in OpenCASCADE.
+        let empty = Shape::empty();
+        assert_eq!(deflection(&empty), 1e-3);
+        let text = write_brep(&empty).unwrap();
+        assert!(text.contains("CASCADE Topology"));
+        assert!(matches!(tessellate(&text), Err(KernelError::Invalid(_))));
+        let b = Placed { brep: &text, xform: &Mat4::IDENTITY };
+        assert!(fillet(b, 1.0).is_err());
+        assert!(export_stl(&[b], &std::env::temp_dir().join("cadrhino-never-written.stl")).is_err());
+    }
+
+    #[test]
+    fn temporary_folders_are_new_and_removed() {
+        let (a, b) = (Temp::new().unwrap(), Temp::new().unwrap());
+        assert!(a.0.is_dir() && b.0.is_dir() && a.0 != b.0);
+        let p = a.0.clone();
+        std::fs::write(p.join("x"), "x").unwrap();
+        drop(a);
+        assert!(!p.exists());
+    }
+
+    #[test]
+    fn spheres_are_meshed_finely() {
+        let s = primitive(&Primitive::Sphere { center: Vec3::ZERO, radius: 5.0 }).unwrap();
+        // About 5 800 at 5e-4 of the size; a thousandth gave half of that, visibly faceted.
+        assert!(s.mesh.tris.len() > 4000, "{} triangles", s.mesh.tris.len());
     }
 
     #[test]

@@ -9,6 +9,7 @@
 //!
 //! There is no user coordinate system yet, so the WCS menu lists the only one there is.
 
+use cadcraft_geom::{Vec3, ViewDir};
 use egui::{Color32, CursorIcon, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use serde_json::json;
 
@@ -66,10 +67,51 @@ pub enum Part {
 impl Part {
     fn tip(self) -> &'static str {
         match self {
-            Part::Face => "Top: plan view of the drawing (zoom extents)",
-            Part::Home => "Home: zoom to the drawing extents",
-            Part::Ring => "Compass: view rotation isn't available in the 2D plan view yet",
+            Part::Face => "Face: look straight at the face shown (zoom extents)",
+            Part::Home => "Home: the south-west isometric view",
+            Part::Ring => "Compass: drag to orbit the view",
         }
+    }
+}
+
+/// The preset views as the viewport label names them, with their directions toward the viewer
+/// (VPOINT's presets).
+const VIEWS: [(&str, [f64; 3]); 10] = [
+    ("Top", [0.0, 0.0, 1.0]),
+    ("Bottom", [0.0, 0.0, -1.0]),
+    ("Front", [0.0, -1.0, 0.0]),
+    ("Back", [0.0, 1.0, 0.0]),
+    ("Left", [-1.0, 0.0, 0.0]),
+    ("Right", [1.0, 0.0, 0.0]),
+    ("SW Isometric", [-1.0, -1.0, 1.0]),
+    ("SE Isometric", [1.0, -1.0, 1.0]),
+    ("NE Isometric", [1.0, 1.0, 1.0]),
+    ("NW Isometric", [-1.0, 1.0, 1.0]),
+];
+
+/// The name of view `v` (translated): a preset view's, else "Custom View".
+pub(crate) fn view_name(v: ViewDir) -> &'static str {
+    let name = VIEWS.iter().find(|(_, [x, y, z])| (ViewDir::new(Vec3::new(*x, *y, *z)).dir - v.dir).len() < 1e-6).map_or("Custom View", |(n, _)| n);
+    crate::i18n::t(name)
+}
+
+/// The label of the cube face view `v` looks at most directly (the top or bottom first).
+fn face_name(v: ViewDir) -> &'static str {
+    face(v).0
+}
+
+/// The face view `v` looks at most directly: its label and the command that looks straight at
+/// it (the top's is PLAN).
+fn face(v: ViewDir) -> (&'static str, &'static str) {
+    let d = v.dir;
+    if d.z.abs() >= d.x.abs().max(d.y.abs()) {
+        if d.z >= 0.0 { (crate::tl!("TOP"), "plan") } else { (crate::tl!("BOTTOM"), "view.bottom") }
+    } else if d.y.abs() >= d.x.abs() {
+        if d.y < 0.0 { (crate::tl!("FRONT"), "view.front") } else { (crate::tl!("BACK"), "view.back") }
+    } else if d.x < 0.0 {
+        (crate::tl!("LEFT"), "view.left")
+    } else {
+        (crate::tl!("RIGHT"), "view.right")
     }
 }
 
@@ -93,7 +135,17 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui, l: &Layout) {
     let face_col = if part == Some(Part::Face) { Color32::from_rgb(0xb8, 0xbc, 0xc2) } else { Color32::from_rgb(0x9a, 0x9e, 0xa4) };
     p.rect_filled(l.face, 2.0, face_col);
     p.rect_stroke(l.face, 2.0, Stroke::new(1.0, Color32::from_rgb(0x6c, 0x70, 0x76)), egui::StrokeKind::Inside);
-    p.text(c, egui::Align2::CENTER_CENTER, crate::tl!("TOP"), egui::FontId::proportional(13.0), Color32::from_rgb(0x50, 0x54, 0x5a));
+    // The face the view looks at, its name shrunk to fit.
+    let dir = match app.session.state() {
+        Ok(st) if st.space == cadcraft_doc::Space::Model => st.view_dir,
+        _ => ViewDir::PLAN,
+    };
+    let ink = Color32::from_rgb(0x50, 0x54, 0x5a);
+    let mut g = p.layout_no_wrap(face_name(dir).to_owned(), egui::FontId::proportional(13.0), ink);
+    if g.size().x > l.face.width() - 4.0 {
+        g = p.layout_no_wrap(face_name(dir).to_owned(), egui::FontId::proportional(13.0 * (l.face.width() - 4.0) / g.size().x), ink);
+    }
+    p.galley(c - g.size() / 2.0, g, ink);
     paint_home(&p, l.home, part == Some(Part::Home));
 
     let resp = match part {
@@ -101,11 +153,14 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui, l: &Layout) {
         None => resp,
     };
     let pressed_on = resp.interact_pointer_pos().and_then(|o| l.part_at(o));
+    // A drag belongs to the part it started on, wherever the pointer goes.
+    let dragged_from = ui.input(|i| i.pointer.press_origin()).and_then(|o| l.part_at(o));
     if resp.clicked() {
         match pressed_on {
-            // Top: plan view of the WCS; Home: the south-west isometric.
+            // The face shown: look straight at it (the top: plan view of the WCS); Home: the
+            // south-west isometric.
             Some(Part::Face) => {
-                let _ = app.run("plan", json!({}));
+                let _ = app.run(face(dir).1, json!({}));
             }
             Some(Part::Home) => {
                 let _ = app.run("view.swiso", json!({}));
@@ -113,8 +168,8 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui, l: &Layout) {
             Some(Part::Ring) | None => {}
         }
     }
-    // Dragging the ring orbits the view.
-    if resp.dragged() && pressed_on == Some(Part::Ring) && app.session.space() == cadcraft_doc::Space::Model {
+    // Dragging the ring orbits the view (the Model tab's: MSPACE viewports show plan).
+    if resp.dragged() && dragged_from == Some(Part::Ring) && app.session.layout_space() == cadcraft_doc::Space::Model {
         let d = resp.drag_delta();
         let k = crate::canvas::ORBIT_DEG_PER_PX;
         let _ = cadcraft_engine::orbit(&mut app.session, -f64::from(d.x) * k, f64::from(d.y) * k);
@@ -122,7 +177,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui, l: &Layout) {
     let mut action = None;
     resp.context_menu(|ui| {
         if ui.button("Home").clicked() {
-            action = Some(("zoom.extents", json!({})));
+            action = Some(("view.swiso", json!({})));
             ui.close();
         }
         if ui.button("Hide ViewCube").clicked() {
@@ -282,6 +337,39 @@ mod tests {
         let empty = canvas(&app).center() + vec2(0.0, -300.0);
         click(&mut app, &ctx, empty, egui::PointerButton::Primary);
         assert!(app.session.pending_window.is_some(), "an empty-space click starts a selection window");
+    }
+
+    /// A drag orbits when it started on the compass ring, wherever the pointer goes from there,
+    /// and never when it started elsewhere and crossed the ring (#66).
+    #[test]
+    fn ring_drags_orbit_from_where_they_started() {
+        let (mut app, ctx) = app_and_ctx();
+        let l = Layout::new(canvas(&app));
+        let m = egui::Modifiers::default();
+        let drag = |app: &mut CadApp, from: Pos2, to: Pos2| {
+            let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: m };
+            frame(app, &ctx, vec![egui::Event::PointerMoved(from)]);
+            frame(app, &ctx, vec![button(from, true)]);
+            frame(app, &ctx, vec![egui::Event::PointerMoved(to)]);
+            frame(app, &ctx, vec![button(to, false)]);
+        };
+        let plan = |app: &CadApp| app.session.state().unwrap().view_dir.is_plan();
+        drag(&mut app, l.center, l.center + vec2(0.0, -l.ring));
+        assert!(plan(&app), "a drag from the face doesn't orbit");
+        let north = l.center + vec2(0.0, -l.ring);
+        drag(&mut app, north, north + vec2(-80.0, 0.0));
+        assert!(!plan(&app), "a drag from the ring orbits out of it");
+    }
+
+    #[test]
+    fn views_are_named_by_their_preset_or_custom() {
+        let v = |x, y, z| ViewDir::new(Vec3::new(x, y, z));
+        assert_eq!(view_name(ViewDir::PLAN), "Top");
+        assert_eq!(view_name(v(-2.0, -2.0, 2.0)), "SW Isometric");
+        assert_eq!(view_name(v(1.0, 0.0, 0.0)), "Right");
+        assert_eq!(view_name(v(1.0, 0.0, 0.3)), "Custom View");
+        assert_eq!((face_name(v(-1.0, -1.0, 1.0)), face_name(v(0.0, 0.0, -1.0)), face_name(v(0.2, -1.0, 0.1))), ("TOP", "BOTTOM", "FRONT"));
+        assert_eq!((face_name(v(0.0, 1.0, 0.5)), face_name(v(-1.0, 0.2, 0.0)), face_name(v(1.0, 0.0, 0.0))), ("BACK", "LEFT", "RIGHT"));
     }
 
     #[test]

@@ -14,7 +14,6 @@
 	% of all commits	% av alla commits
 	* Wildcard Match	* Jokerteckenmatchning
 	*VARIES*	*VARIERAR*
-	+  |  Top  |  2D Wireframe	+  |  Ovanifrån  |  2D-trådmodell
 	+Bin	+Bin
 	+LOC	+LOC
 	1 Viewport	1 vyfönster
@@ -1245,3 +1244,19 @@ menu	View	Visa
 menu	Draw	Rita
 menu	Dimension	Måttsättning
 menu	Modify	Ändra
+	2D Wireframe	2D-trådmodell
+	BACK	BAK
+	BOTTOM	NEDAN
+	Back	Bakifrån
+	Bottom	Underifrån
+	Custom View	Anpassad vy
+	FRONT	FRAM
+	Front	Framifrån
+	LEFT	VÄNSTER
+	NE Isometric	Isometrisk NO
+	NW Isometric	Isometrisk NV
+	RIGHT	HÖGER
+	SE Isometric	Isometrisk SO
+	SW Isometric	Isometrisk SV
+	Shaded	Skuggad
+	Top	Ovanifrån

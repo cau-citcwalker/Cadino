@@ -10,7 +10,6 @@
 	% of all commits	% de todos los commits
 	* Wildcard Match	* Coincidencia con comodines
 	*VARIES*	*VARIOS*
-	+  |  Top  |  2D Wireframe	+  |  Superior  |  Estructura alámbrica 2D
 	+Bin	+Bin
 	+LOC	+Líneas
 	1 Viewport	1 ventana gráfica
@@ -1243,3 +1242,19 @@
 	Search for pattern	Buscar patrón
 	Not a number or distance: {text}	No es un número ni una distancia: {text}
 	Query Texts	Consultar textos
+	2D Wireframe	Estructura alámbrica 2D
+	BACK	POST.
+	BOTTOM	INF.
+	Back	Posterior
+	Bottom	Inferior
+	Custom View	Vista personalizada
+	FRONT	FRONTAL
+	Front	Frontal
+	LEFT	IZQ.
+	NE Isometric	Isométrica NE
+	NW Isometric	Isométrica NO
+	RIGHT	DER.
+	SE Isometric	Isométrica SE
+	SW Isometric	Isométrica SO
+	Shaded	Sombreado
+	Top	Superior

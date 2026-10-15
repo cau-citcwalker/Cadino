@@ -36,7 +36,6 @@ menu	Modify	Edita
 	% of all commits	% di tutti i commit
 	* Wildcard Match	* Corrispondenza con caratteri jolly
 	*VARIES*	*VARIA*
-	+  |  Top  |  2D Wireframe	+  |  Alto  |  Wireframe 2D
 	+Bin	+Bin
 	+LOC	+LOC
 	1 Viewport	1 finestra
@@ -1237,3 +1236,19 @@ menu	Modify	Edita
 	Search for pattern	Cerca modello
 	Run Script...	Esegui script...
 	Select closed objects (regions, closed polylines, circles).	Selezionare oggetti chiusi (regioni, polilinee chiuse, cerchi).
+	2D Wireframe	Wireframe 2D
+	BACK	RETRO
+	BOTTOM	BASSO
+	Back	Posteriore
+	Bottom	Basso
+	Custom View	Vista personalizzata
+	FRONT	FRONTE
+	Front	Anteriore
+	LEFT	SINISTRA
+	NE Isometric	Isometrica NE
+	NW Isometric	Isometrica NO
+	RIGHT	DESTRA
+	SE Isometric	Isometrica SE
+	SW Isometric	Isometrica SO
+	Shaded	Ombreggiato
+	Top	Alto

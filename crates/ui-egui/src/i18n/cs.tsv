@@ -31,7 +31,6 @@
 	% of all commits	% všech commitů
 	* Wildcard Match	* Shoda se zástupnými znaky
 	*VARIES*	*RŮZNÉ*
-	+  |  Top  |  2D Wireframe	+  |  Shora  |  2D drátový model
 	+Bin	+Bin
 	+LOC	+LOC
 	1 Viewport	1 výřez
@@ -1217,3 +1216,19 @@ menu	Modify	Modifikace
 	Search for pattern	Hledat vzor
 	Not a number or distance: {text}	Není číslo ani vzdálenost: {text}
 	Query Texts	Dotaz na texty
+	2D Wireframe	2D drátový model
+	BACK	ZEZADU
+	BOTTOM	ZDOLA
+	Back	Zezadu
+	Bottom	Zdola
+	Custom View	Vlastní pohled
+	FRONT	ZEPŘEDU
+	Front	Zepředu
+	LEFT	ZLEVA
+	NE Isometric	SV izometrie
+	NW Isometric	SZ izometrie
+	RIGHT	ZPRAVA
+	SE Isometric	JV izometrie
+	SW Isometric	JZ izometrie
+	Shaded	Stínovaný
+	Top	Shora

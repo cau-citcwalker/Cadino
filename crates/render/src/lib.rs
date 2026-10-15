@@ -277,6 +277,11 @@ fn max_scale(m: &Mat3) -> f64 {
 struct Ctx<'a> {
     d: &'a Drawing,
     xf: Mat3,
+    /// `xf` without the view's projection: the block references' transforms (and a viewport's
+    /// model → paper transform), which `xf` then projects with `opts.view_dir.plane_xf()`.
+    /// Sizes in drawing units (tolerance, dashes, relative points) are measured by this, so a
+    /// view seeing the XY plane edge-on doesn't shrink them to nothing.
+    plan: Mat3,
     block_color: Color,
     block_layer: Option<String>,
     block_lw: Lineweight,
@@ -498,6 +503,7 @@ fn top_ctx<'a>(d: &'a Drawing, xf: Mat3, top: Handle, frozen: &'a [String], vp_c
     Ctx {
         d,
         xf,
+        plan: Mat3::IDENTITY,
         block_color: Color::Index(7),
         block_layer: None,
         block_lw: Lineweight::Default,
@@ -722,7 +728,7 @@ fn contents(b: &mut Builder, d: &Drawing, vp: &cadcraft_doc::Viewport, area: Bou
     // PSLTSCALE on: model-space dashes are scaled so they measure the same on paper as in
     // paper space, whatever the viewport scale.
     let lt_factor = if d.header.i64("PSLTSCALE", 1) != 0 { 1.0 / s } else { 1.0 };
-    let ctx = || Ctx { lt_factor, ..top_ctx(d, xf, VIEWPORT_CONTENT, &vp.frozen_layers, &vp.layer_colors) };
+    let ctx = || Ctx { lt_factor, plan: xf, ..top_ctx(d, xf, VIEWPORT_CONTENT, &vp.frozen_layers, &vp.layer_colors) };
     let seen = |me: &Entity| {
         if matches!(me.kind, EntityKind::Viewport(_)) {
             return false;
@@ -1046,7 +1052,7 @@ fn entity_parts(b: &mut Builder, ctx: &Ctx, e: &Entity) {
     // model space seen through it, else the drawing's (CANNOSCALE in model space, 1:1 on paper).
     if ctx.depth == 0 && cadcraft_doc::is_annotative(e) {
         let mode = if ctx.top == VIEWPORT_CONTENT {
-            cadcraft_doc::anno_draw(e, 1.0 / ctx.xf.scale_factor().max(1e-12), ctx.d.anno_all_visible())
+            cadcraft_doc::anno_draw(e, 1.0 / ctx.plan.scale_factor().max(1e-12), ctx.d.anno_all_visible())
         } else {
             ctx.d.anno_draw(e)
         };
@@ -1072,12 +1078,12 @@ fn entity_parts(b: &mut Builder, ctx: &Ctx, e: &Entity) {
         Some(over) => over,
         None => lt,
     };
-    let tol = b.opts.tolerance / ctx.xf.scale_factor().max(1e-12);
+    let tol = b.opts.tolerance / ctx.plan.scale_factor().max(1e-12);
     let lw = if b.opts.lineweights { lw } else { 0.0 };
     // Stroke a polyline with the entity's linetype.
     let stroke = |b: &mut Builder, pts: &[Vec2]| match &lt {
         Some(lt) => {
-            let min = b.opts.min_dash / ctx.xf.scale_factor().max(1e-12);
+            let min = b.opts.min_dash / ctx.plan.scale_factor().max(1e-12);
             for dash in linetype::apply(pts, lt, ltscale, min) {
                 if dash.len() == 1 {
                     if let Some(p) = dash.first() {
@@ -1137,7 +1143,7 @@ fn entity_parts(b: &mut Builder, ctx: &Ctx, e: &Entity) {
                 match &lt {
                     // Dashed: each dash a filled piece of the band; dots a line across it.
                     Some(lt) => {
-                        let min = b.opts.min_dash / ctx.xf.scale_factor().max(1e-12);
+                        let min = b.opts.min_dash / ctx.plan.scale_factor().max(1e-12);
                         let (tris, ticks) = wide::dashed(p, tol, lt, ltscale, min);
                         b.tris(ctx, rgb, &tris);
                         for t in &ticks {
@@ -1252,7 +1258,7 @@ fn entity_parts(b: &mut Builder, ctx: &Ctx, e: &Entity) {
         }
         EntityKind::Point(p) => {
             // Relative sizes follow the view: undo the block / viewport scale.
-            let view = b.opts.view_height / ctx.xf.scale_factor().max(1e-12);
+            let view = b.opts.view_height / ctx.plan.scale_factor().max(1e-12);
             let size = point::size(ctx.d.header.f64("PDSIZE", 0.0), view);
             let fig = point::figure(ctx.d.header.i64("PDMODE", 0), size, p.p.xy(), p.angle, tol);
             if fig.dot {
@@ -1380,7 +1386,7 @@ pub fn dimension_in(d: &Drawing, dm: &cadcraft_doc::Dimension) -> DimGeometry {
 fn stroke_with(b: &mut Builder, ctx: &Ctx, rgb: Ink, lw: f32, lt: Option<&cadcraft_doc::Linetype>, ltscale: f64, pts: &[Vec2]) {
     match lt {
         Some(lt) => {
-            let min = b.opts.min_dash / ctx.xf.scale_factor().max(1e-12);
+            let min = b.opts.min_dash / ctx.plan.scale_factor().max(1e-12);
             for dash in linetype::apply(pts, lt, ltscale, min) {
                 match dash.as_slice() {
                     [p] => b.point(ctx, rgb, *p),
@@ -1496,6 +1502,7 @@ fn sub_ctx<'a>(ctx: &Ctx<'a>, e: &Entity, m: Mat3) -> Ctx<'a> {
     Ctx {
         d: ctx.d,
         xf: ctx.xf.then_before(m),
+        plan: ctx.plan.then_before(m),
         block_color: color,
         block_layer: layer,
         block_lw: lw,

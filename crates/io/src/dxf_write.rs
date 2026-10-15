@@ -697,7 +697,7 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
         EntityKind::Solid3d(s) => {
             w.s(0, "3DSOLID");
             common(w, e, owner, paper, "AcDbModelerGeometry");
-            w.t.extend(crate::dxf_solid::tags(s));
+            w.t.extend(crate::dxf_solid::tags(s, cx.target));
         }
         // Closed polylines, one per loop (`dxf_region`): REGION's own data is ACIS.
         EntityKind::Region(r) => {
@@ -1746,25 +1746,34 @@ fn tags_for(d: &Drawing, version: Version, target: Version) -> Vec<Tag> {
     let group_dict = w.h();
     let layout_dict = w.h();
     let table_style_dict = w.h();
-    // CADCraft data in XRECORDs of the named object dictionary: (key, handle, text chunks).
-    let mut xrecords: Vec<(&str, String, Vec<String>)> = Vec::new();
+    // CADCraft data in XRECORDs of the named object dictionary: (key, handle, groups).
+    let mut xrecords: Vec<(String, String, Vec<Tag>)> = Vec::new();
+    let strs = |chunks: Vec<String>| chunks.into_iter().map(|c| Tag::s(1, c)).collect::<Vec<_>>();
     // The drawing's own next handle: table records and objects are numbered above it, so
     // reading it back (instead of $HANDSEED) keeps their handles across saves (#495).
-    xrecords.push((dxf_ext::HANDSEED_KEY, w.h(), vec![format!("{:X}", d.handseed)]));
+    xrecords.push((dxf_ext::HANDSEED_KEY.into(), w.h(), strs(vec![format!("{:X}", d.handseed)])));
     if let Some(name) = d.header.get("CMLEADERSTYLE").and_then(HVal::as_str) {
-        xrecords.push((dxf_ext::MLEADER_STYLE_KEY, w.h(), vec![name.to_string()]));
+        xrecords.push((dxf_ext::MLEADER_STYLE_KEY.into(), w.h(), strs(vec![name.to_string()])));
     }
     if let Some(chunks) = dxf_ext::constraint_chunks(&d.constraints, &d.parametric) {
-        xrecords.push((dxf_ext::CONSTRAINTS_KEY, w.h(), chunks));
+        xrecords.push((dxf_ext::CONSTRAINTS_KEY.into(), w.h(), strs(chunks)));
     }
     if let Some(chunks) = dxf_ext::layer_state_chunks(&d.layer_states) {
-        xrecords.push((dxf_ext::LAYER_STATES_KEY, w.h(), chunks));
+        xrecords.push((dxf_ext::LAYER_STATES_KEY.into(), w.h(), strs(chunks)));
     }
     if let Some(chunks) = dxf_ext::plot_style_chunks(&d.plot_style_tables) {
-        xrecords.push((dxf_ext::PLOT_STYLES_KEY, w.h(), chunks));
+        xrecords.push((dxf_ext::PLOT_STYLES_KEY.into(), w.h(), strs(chunks)));
     }
     if let Some(chunks) = dxf_ext::anno_chunks(d) {
-        xrecords.push((dxf_ext::ANNOTATION_KEY, w.h(), chunks));
+        xrecords.push((dxf_ext::ANNOTATION_KEY.into(), w.h(), strs(chunks)));
+    }
+    // 3D solids' B-rep text, by solid (`dxf_solid`).
+    for e in &every {
+        if let EntityKind::Solid3d(s) = &e.kind
+            && !s.brep.is_empty()
+        {
+            xrecords.push((format!("{}{}", crate::dxf_solid::KEY, e.handle.hex()), w.h(), crate::dxf_solid::lines(&s.brep)));
+        }
     }
     // The annotation scale list: the ACAD_SCALELIST dictionary of SCALE objects.
     let scale_dict = w.h();
@@ -2233,7 +2242,7 @@ fn tags_for(d: &Drawing, version: Version, target: Version) -> Vec<Tag> {
     w.s(3, "ACAD_TABLESTYLE");
     w.s(350, table_style_dict.clone());
     for (key, h, _) in &xrecords {
-        w.s(3, *key);
+        w.s(3, key);
         w.s(350, h);
     }
     w.s(3, "ACAD_SCALELIST");
@@ -2298,18 +2307,16 @@ fn tags_for(d: &Drawing, version: Version, target: Version) -> Vec<Tag> {
         w.group("ACAD_REACTORS", 330, &[&pstyle_dict]);
         w.s(330, pstyle_dict.clone());
     }
-    // Parametric constraints and parameters, saved layer states, plot style tables (CADCraft
-    // data).
-    for (_, h, chunks) in &xrecords {
+    // Parametric constraints and parameters, saved layer states, plot style tables, solids'
+    // B-reps (CADCraft data).
+    for (_, h, groups) in &xrecords {
         w.s(0, "XRECORD");
         w.s(5, h);
         w.group("ACAD_REACTORS", 330, &[&root_dict]);
         w.s(330, root_dict.clone());
         w.s(100, "AcDbXrecord");
         w.i(280, 1);
-        for c in chunks {
-            w.s(1, c.clone());
-        }
+        w.t.extend(groups.iter().cloned());
     }
     scale_list(&mut w, &scales, &scale_dict, &root_dict);
     // Dimension associativity: extension dictionary + DIMASSOC per dimension.
@@ -2681,5 +2688,13 @@ pub fn entity_groups(d: &Drawing, e: &Entity) -> (String, Vec<Tag>) {
     entity(&mut w, d, e, "0", paper, &cx);
     let mut tags = w.t.into_iter();
     let kind = tags.next().filter(|t| t.code == 0).map(|t| t.value.as_str()).unwrap_or_default();
-    (kind, tags.take_while(|t| t.code != 0).filter(|t| t.code != 330).collect())
+    let mut tags: Vec<Tag> = tags.take_while(|t| t.code != 0).filter(|t| t.code != 330).collect();
+    // A solid's B-rep is in an XRECORD of the file; the list carries it as modeler data (as
+    // AutoCAD's carries ACIS), so `(entmod)` keeps it.
+    if let EntityKind::Solid3d(s) = &e.kind
+        && let Some(at) = tags.iter().position(|t| t.code == 70)
+    {
+        tags.splice(at + 1..at + 1, crate::dxf_solid::lines(&s.brep));
+    }
+    (kind, tags)
 }

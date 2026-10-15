@@ -101,6 +101,8 @@ fn bounds_in<'a>(d: &'a Drawing, e: &Entity, depth: usize, blocks: &mut HashMap<
         EntityKind::Text(t) => text_box(t, t.value.chars().count()),
         EntityKind::AttDef(a) => text_box(&a.text, a.tag.chars().count()),
         EntityKind::MText(t) => mtext_box(t),
+        // The whole mesh, not only the edges: a sphere's single seam edge is a line in plan.
+        EntityKind::Solid3d(s) => s.bounds(),
         EntityKind::Insert(ins) => {
             if depth >= MAX_BLOCK_DEPTH {
                 return Bounds2::EMPTY;

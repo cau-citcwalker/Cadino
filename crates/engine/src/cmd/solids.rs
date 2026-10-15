@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use cadcraft_doc::{EntityKind, Handle, Solid3d};
-use cadcraft_geom::{Mat4, Polyline, Segment, Vec2, Vec3};
+use cadcraft_geom::{EPS, Mat4, PolyVertex, Polyline, Vec2, Vec3};
 use cadcraft_kernel::{BoolOp, Built, Placed, Primitive, Seg};
 use serde_json::{Map, Value, json};
 
@@ -72,11 +72,11 @@ pub fn specs() -> Vec<CommandSpec> {
             .interactive(|_| Ok(Box::new(ProfileM::new(ProfileOp::Fillet)))),
         CommandSpec::new("stepout", "Export STEP", run_stepout)
             .menu(&["File", "Export", "STEP"])
-            .params("{path, handles?} (3D solids; all of them when none are given)")
+            .params("{path, handles?} (3D solids: those given or selected, else all of them)")
             .noundo(),
         CommandSpec::new("stlout", "Export STL", run_stlout)
             .menu(&["File", "Export", "STL"])
-            .params("{path, handles?} (3D solids; all of them when none are given)")
+            .params("{path, handles?} (3D solids: those given or selected, else all of them)")
             .noundo(),
         CommandSpec::new("stepin", "Import STEP", run_stepin).menu(&["File", "Import", "STEP"]).params("{path}"),
     ]
@@ -144,51 +144,110 @@ fn run_torus(s: &mut Session, p: &Value) -> Result<Value> {
     add(s, cadcraft_kernel::primitive(&Primitive::Torus { center, radius, tube }).map_err(kernel)?)
 }
 
-/// A closed planar curve as a kernel profile; `None` for other objects.
-fn profile(k: &EntityKind) -> Option<Vec<Seg>> {
-    let from_polyline = |pl: Polyline, z: f64| -> Vec<Seg> {
-        pl.segments()
-            .iter()
-            .map(|s| match s {
-                Segment::Line(l) => Seg::Line { a: l.a.to3(z), b: l.b.to3(z) },
-                Segment::Arc { .. } => Seg::Arc { a: s.start().to3(z), mid: s.mid().to3(z), b: s.end().to3(z) },
-            })
-            .collect()
-    };
-    match k {
-        EntityKind::Circle(c) => Some(vec![Seg::Circle { center: c.center, radius: c.radius, normal: Vec3::Z }]),
-        EntityKind::LwPolyline(p) if p.closed && p.vertices.len() >= 2 => {
-            Some(from_polyline(Polyline { vertices: p.vertices.clone(), closed: true }, p.elevation))
+/// A closed loop of polyline vertices as kernel pieces at height `z`. Pieces end exactly on the
+/// vertices (the kernel joins them by position), coincident vertices are dropped, and arcs too
+/// flat for the kernel to tell from their chord are lines. An error when no area is left.
+fn loop_segs(vs: &[PolyVertex], z: f64) -> Result<Vec<Seg>> {
+    // A vertex on the one before it keeps that position and takes the later bulge.
+    let mut pts: Vec<PolyVertex> = Vec::with_capacity(vs.len());
+    for v in vs {
+        match pts.last_mut() {
+            Some(l) if l.p.near(v.p, EPS) => l.bulge = v.bulge,
+            _ => pts.push(*v),
         }
+    }
+    if pts.len() > 1 && pts.first().zip(pts.last()).is_some_and(|(a, b)| a.p.near(b.p, EPS)) {
+        pts.pop();
+    }
+    // A nearly flat arc is a line: below a sagitta (|bulge| * chord / 2) of a millionth of the
+    // chord its three points are collinear to the kernel, and past a radius of 1e8 the ends it
+    // recomputes on the circle miss the vertices by more than it joins pieces across (1e-7).
+    let n = pts.len();
+    for i in 0..n {
+        let next = pts.get((i + 1) % n).map(|w| w.p);
+        if let (Some(v), Some(w)) = (pts.get_mut(i), next) {
+            let radius = v.p.dist(w) * (1.0 + v.bulge * v.bulge) / (4.0 * v.bulge.abs());
+            if !(v.bulge.abs() >= 1e-6 && radius <= 1e8) {
+                v.bulge = 0.0;
+            }
+        }
+    }
+    let pl = Polyline { vertices: pts, closed: true };
+    let b = pl.bounds();
+    let size = b.width().max(b.height());
+    // NaN (non-finite vertices) encloses nothing either.
+    let encloses = pl.area().abs() > 1e-12 * size * size;
+    if !encloses {
+        return Err(EngineError::Other("A profile encloses no area.".into()));
+    }
+    Ok(pl
+        .vertices
+        .iter()
+        .enumerate()
+        .filter_map(|(i, v)| {
+            let (a, b) = (v.p, pl.vertices.get((i + 1) % n)?.p);
+            Some(if v.bulge == 0.0 {
+                Seg::Line { a: a.to3(z), b: b.to3(z) }
+            } else {
+                // The arc's middle, a sagitta from the chord's.
+                let mid = a.mid(b) - (b - a).perp() * (v.bulge / 2.0);
+                Seg::Arc { a: a.to3(z), mid: mid.to3(z), b: b.to3(z) }
+            })
+        })
+        .collect())
+}
+
+/// A closed planar curve as a kernel profile; `None` for other objects.
+fn profile(k: &EntityKind) -> Result<Option<Vec<Seg>>> {
+    Ok(match k {
+        EntityKind::Circle(c) => Some(vec![Seg::Circle { center: c.center, radius: c.radius, normal: Vec3::Z }]),
+        EntityKind::LwPolyline(p) if p.closed && p.vertices.len() >= 2 => Some(loop_segs(&p.vertices, p.elevation)?),
         EntityKind::Region(r) => match r.loops.as_slice() {
-            [l] => Some(from_polyline(Polyline { vertices: l.vertices.clone(), closed: true }, 0.0)),
+            [l] => Some(loop_segs(&l.vertices, 0.0)?),
             _ => None,
         },
         _ => None,
-    }
+    })
 }
 
-/// Replace each profile among `hs` by the solid `make` builds from it (keeping its layer and
-/// other properties). Objects that aren't closed planar curves are skipped.
+fn locked_err() -> EngineError {
+    EngineError::Other("The objects are on a locked layer.".into())
+}
+
+/// Replace each profile among `hs` by the solid `make` builds from it, in the profile's space
+/// (keeping its layer and other properties). Objects that aren't closed planar curves, and those
+/// on locked layers, are skipped. Every solid is made before the drawing changes, so an error
+/// leaves it as it was.
 fn from_profiles(s: &mut Session, cmd: &str, hs: &[Handle], make: impl Fn(&[Seg]) -> cadcraft_kernel::Result<Built>) -> Result<Value> {
-    let mut made = Vec::new();
-    let mut skipped = 0usize;
-    for h in hs {
-        let Some(e) = s.doc()?.entity(*h).cloned() else { continue };
-        let Some(prof) = profile(&e.kind) else {
+    let mut built = Vec::new();
+    let (mut skipped, mut locked) = (0usize, 0usize);
+    let d = s.doc()?;
+    for (i, h) in hs.iter().enumerate() {
+        // A handle given twice is one profile.
+        if hs.get(..i).is_some_and(|before| before.contains(h)) {
+            continue;
+        }
+        let (Some(e), Some(space)) = (d.entity(*h), d.space_of(*h)) else { continue };
+        if super::curves::is_locked(s, *h) {
+            locked += 1;
+            continue;
+        }
+        let Some(prof) = profile(&e.kind)? else {
             skipped += 1;
             continue;
         };
-        let b = make(&prof).map_err(kernel)?;
-        let space = s.state()?.edit_space();
-        let d = s.doc_mut()?;
-        made.push(d.add(&space, e.common.clone(), solid(b))?.hex());
-        d.remove_entity(*h);
+        built.push((*h, space, e.common.clone(), make(&prof).map_err(kernel)?));
     }
-    if made.is_empty() {
-        return Err(bad(cmd, "select closed polylines, circles or single-loop regions"));
+    if built.is_empty() {
+        return Err(if locked > 0 { locked_err() } else { bad(cmd, "select closed polylines, circles or single-loop regions") });
     }
-    Ok(json!({ "handles": made, "skipped": skipped }))
+    let d = s.doc_mut()?;
+    let mut made = Vec::with_capacity(built.len());
+    for (h, space, common, b) in built {
+        made.push(d.add(&space, common, solid(b))?.hex());
+        d.remove_entity(h);
+    }
+    Ok(json!({ "handles": made, "skipped": skipped, "locked": locked }))
 }
 
 fn run_extrude(s: &mut Session, p: &Value) -> Result<Value> {
@@ -224,15 +283,20 @@ fn placed(x: &Solid3d) -> Placed<'_> {
 fn run_filletedge(s: &mut Session, p: &Value) -> Result<Value> {
     let hs = targets(s, p)?;
     let r = f64_req("filletedge", p, "radius")?;
-    let xs = solids(s, &hs)?;
+    let mut xs = solids(s, &hs)?;
+    let all = xs.len();
+    xs.retain(|(h, _)| !super::curves::is_locked(s, *h));
     if xs.is_empty() {
-        return Err(bad("filletedge", "select 3D solids"));
+        return Err(if all > 0 { locked_err() } else { bad("filletedge", "select 3D solids") });
     }
-    for (h, x) in &xs {
-        let b = cadcraft_kernel::fillet(placed(x), r).map_err(kernel)?;
-        s.doc_mut()?.modify_entity(*h, |e| e.kind = solid(b))?;
+    // Every solid first, so an error leaves the drawing as it was.
+    let built = xs.iter().map(|(h, x)| Ok((*h, cadcraft_kernel::fillet(placed(x), r).map_err(kernel)?))).collect::<Result<Vec<_>>>()?;
+    let n = built.len();
+    let d = s.doc_mut()?;
+    for (h, b) in built {
+        d.modify_entity(h, |e| e.kind = solid(b))?;
     }
-    Ok(json!({ "filleted": xs.len() }))
+    Ok(json!({ "filleted": n, "locked": all - n }))
 }
 
 /// UNION and INTERSECT of the solids among `hs`; `None` when there are none (regions then).
@@ -253,6 +317,9 @@ pub(crate) fn fold(s: &mut Session, hs: &[Handle], op: BoolOp) -> Result<Option<
 pub(crate) fn subtract(s: &mut Session, from: &[Handle], remove: &[Handle]) -> Result<Option<Value>> {
     let (a, b) = (solids(s, from)?, solids(s, remove)?);
     let Some(((h0, first), rest)) = a.split_first() else { return Ok(None) };
+    if b.is_empty() {
+        return Err(EngineError::Other("Select 3D solids to subtract.".into()));
+    }
     if b.iter().any(|(h, _)| a.iter().any(|(x, _)| x == h)) {
         return Err(EngineError::Other("A solid can't be subtracted from itself.".into()));
     }
@@ -281,10 +348,15 @@ fn finish(s: &mut Session, keep: Handle, r: Solid3d, all: &[Handle]) -> Result<O
     Ok(Some(json!({ "handle": keep.hex(), "message": "" })))
 }
 
-/// The solids to export: `handles` (or the selection), else every solid in model space.
+/// The solids to export: those among `handle`/`handles`, else the selected ones, else every
+/// solid in model space.
 fn export_set(s: &Session, p: &Value) -> Result<Vec<Solid3d>> {
-    let hs = targets(s, p)?;
-    let hs = if hs.is_empty() { s.doc()?.model.iter().map(|e| e.handle).collect() } else { hs };
+    // An empty list (as MCP clients send optional arrays) counts as none given.
+    let given = ["handle", "handles"].iter().any(|k| p.get(k).is_some_and(|v| !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty())));
+    let mut hs = targets(s, p)?;
+    if !given && solids(s, &hs)?.is_empty() {
+        hs = s.doc()?.model.iter().map(|e| e.handle).collect();
+    }
     let xs: Vec<Solid3d> = solids(s, &hs)?.into_iter().map(|(_, x)| x).collect();
     if xs.is_empty() { Err(EngineError::Other("There are no 3D solids to export.".into())) } else { Ok(xs) }
 }
@@ -360,7 +432,15 @@ impl Interactive for Ask {
             return Ok(Step::Continue);
         }
         let spec = find_command(self.id).ok_or_else(|| EngineError::UnknownCommand(self.id.into()))?;
-        (spec.run)(s, &Value::Object(self.vals.clone()))?;
+        if let Err(e) = (spec.run)(s, &Value::Object(self.vals.clone())) {
+            // Any value after the first point may be the bad one (a flat BOX corner, a zero
+            // height): ask for them again from the second prompt.
+            let first = self.qs.first().map(|q| match q {
+                Q::Point(k, _) | Q::Dist(k, _) => *k,
+            });
+            self.vals.retain(|k, _| Some(k.as_str()) == first);
+            return Err(e);
+        }
         Ok(Step::Done)
     }
     fn preview(&self, _s: &Session, cursor: Vec2) -> Vec<EntityKind> {
@@ -454,6 +534,9 @@ impl Interactive for ProfileM {
         }
         match (self.op, i) {
             (ProfileOp::Revolve, Input::Point(p)) if self.axis.len() < 2 => {
+                if self.axis.first().is_some_and(|a| a.near(p, EPS)) {
+                    return Err(EngineError::Other("The axis needs two different points.".into()));
+                }
                 self.axis.push(p);
                 Ok(Step::Continue)
             }
@@ -473,7 +556,8 @@ fn axis_json(a: &[Vec2]) -> Value {
     Value::Array(a.iter().map(|p| json!([p.x, p.y])).collect())
 }
 
-#[cfg(all(test, feature = "occt"))]
+#[cfg(test)]
+#[cfg(feature = "occt")]
 mod tests {
     use cadcraft_doc::Space;
 
@@ -549,5 +633,204 @@ mod tests {
         assert!(s.execute("sphere", &json!({ "center": [0, 0], "radius": -2 })).is_err());
         assert!(s.execute("box", &json!({ "corner1": [0, 0], "corner2": [1, 1] })).is_err());
         assert!(solids_in(&s).is_empty());
+    }
+}
+
+/// Kernel-free checks: profiles, prompts, locked layers and selections (no solid is modelled).
+#[cfg(test)]
+mod plain_tests {
+    use std::cell::Cell;
+
+    use cadcraft_doc::{Region, Space};
+
+    use super::*;
+
+    fn pv(x: f64, y: f64, bulge: f64) -> PolyVertex {
+        PolyVertex::with_bulge(Vec2::new(x, y), bulge)
+    }
+
+    fn ends(s: &Seg) -> (Vec3, Vec3) {
+        match *s {
+            Seg::Line { a, b } | Seg::Arc { a, b, .. } => (a, b),
+            Seg::Circle { center, .. } => (center, center),
+        }
+    }
+
+    fn arc_mid(s: &Seg) -> Vec2 {
+        match *s {
+            Seg::Arc { mid, .. } => mid.xy(),
+            _ => panic!("not an arc: {s:?}"),
+        }
+    }
+
+    #[test]
+    fn near_flat_arcs_are_lines_and_pieces_meet_exactly() {
+        // A tiny bulge (DXF noise) on an axis-aligned chord: three collinear arc points used to
+        // reach the kernel.
+        let segs = loop_segs(&[pv(0.0, 0.0, 1e-10), pv(10.0, 0.0, 0.0), pv(10.0, 10.0, 0.5), pv(0.0, 10.0, 0.0)], 2.0).unwrap();
+        assert!(matches!(segs[0], Seg::Line { .. }), "{segs:?}");
+        // So is a long chord's slight arc (its radius would put the kernel's ends off the vertices).
+        let long = loop_segs(&[pv(0.0, 0.0, 1e-5), pv(1e4, 0.0, 0.0), pv(1e4, 1e4, 0.0)], 0.0).unwrap();
+        assert!(matches!(long[0], Seg::Line { .. }), "{long:?}");
+        // Every piece starts exactly where the one before ends.
+        for (i, s) in segs.iter().enumerate() {
+            let next = &segs[(i + 1) % segs.len()];
+            assert_eq!(ends(s).1, ends(next).0, "piece {i}");
+        }
+        // An arc's middle point is the one the polyline draws.
+        for (bulge, i) in [(0.5, 2), (-0.3, 0), (2.5, 0), (-4.0, 0)] {
+            let vs = if i == 2 {
+                vec![pv(0.0, 0.0, 0.0), pv(10.0, 0.0, 0.0), pv(10.0, 10.0, bulge), pv(0.0, 10.0, 0.0)]
+            } else {
+                vec![pv(1.0, 2.0, bulge), pv(4.0, -1.0, 0.0), pv(4.0, 5.0, 0.0)]
+            };
+            let pl = Polyline { vertices: vs.clone(), closed: true };
+            let segs = loop_segs(&vs, 0.0).unwrap();
+            assert!(arc_mid(&segs[i]).near(pl.segments()[i].mid(), 1e-9), "bulge {bulge}: {segs:?}");
+        }
+    }
+
+    #[test]
+    fn coincident_vertices_are_dropped_and_flat_loops_refused() {
+        // A vertex repeated with a bulge, and a closing vertex on the first one.
+        let segs = loop_segs(&[pv(0.0, 0.0, 0.5), pv(0.0, 0.0, 0.0), pv(10.0, 0.0, 0.0), pv(10.0, 10.0, 0.0), pv(0.0, 0.0, 0.3)], 0.0).unwrap();
+        assert_eq!(segs.len(), 3, "{segs:?}");
+        assert!(segs.iter().all(|s| ends(s).0 != ends(s).1));
+        // Two vertices with bulges enclose a disc.
+        assert_eq!(loop_segs(&[pv(0.0, 0.0, 1.0), pv(2.0, 0.0, 1.0)], 0.0).unwrap().len(), 2);
+        // No area: collinear, two points, all on one spot.
+        assert!(loop_segs(&[pv(0.0, 0.0, 0.0), pv(5.0, 0.0, 0.0), pv(10.0, 0.0, 0.0)], 0.0).is_err());
+        assert!(loop_segs(&[pv(0.0, 0.0, 0.0), pv(5.0, 0.0, 0.0)], 0.0).is_err());
+        assert!(loop_segs(&[pv(1.0, 1.0, 0.7), pv(1.0, 1.0, 0.2)], 0.0).is_err());
+        // Arcs too round to send flatten to lines over one chord: nothing left.
+        assert!(loop_segs(&[pv(0.0, 0.0, 1e9), pv(2.0, 0.0, 1e9)], 0.0).is_err());
+    }
+
+    fn circle(s: &mut Session, x: f64) -> Handle {
+        s.add_entity(super::super::helpers::circle(Vec2::new(x, 0.0), 1.0)).unwrap()
+    }
+
+    #[test]
+    fn a_failing_profile_leaves_the_drawing_unchanged() {
+        let mut s = Session::new();
+        let (a, b) = (circle(&mut s, 0.0), circle(&mut s, 10.0));
+        let before = s.doc().unwrap().clone();
+        let calls = Cell::new(0);
+        let r = from_profiles(&mut s, "extrude", &[a, b], |_| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 2 { Err(cadcraft_kernel::KernelError::Failed("no".into())) } else { Ok(Built::default()) }
+        });
+        assert!(r.is_err());
+        assert_eq!(*s.doc().unwrap(), before);
+        // So does a profile with no area.
+        let flat = s.add_entity(super::super::helpers::lwpoly(vec![pv(0.0, 0.0, 0.0), pv(5.0, 0.0, 0.0)], true)).unwrap();
+        let before = s.doc().unwrap().clone();
+        assert!(from_profiles(&mut s, "extrude", &[a, flat], |_| Ok(Built::default())).is_err());
+        assert_eq!(*s.doc().unwrap(), before);
+    }
+
+    #[test]
+    fn profiles_on_locked_layers_stay_and_solids_go_to_the_profiles_space() {
+        let mut s = Session::new();
+        s.new_drawing(true);
+        let free = circle(&mut s, 0.0);
+        s.execute("layout.set", &json!({ "name": "Layout1" })).unwrap();
+        let paper = circle(&mut s, 5.0);
+        s.execute("layout.set", &json!({ "name": "Model" })).unwrap();
+        let locked = circle(&mut s, 10.0);
+        s.doc_mut().unwrap().modify_entity(locked, |e| e.common.layer = "Defpoints".into()).unwrap();
+        s.doc_mut().unwrap().layer_mut("Defpoints").unwrap().locked = true;
+        let r = from_profiles(&mut s, "extrude", &[free, locked, paper], |_| Ok(Built::default())).unwrap();
+        assert_eq!(r["locked"], 1, "{r}");
+        let d = s.doc().unwrap();
+        assert!(d.entity(locked).is_some(), "the locked circle stays");
+        assert!(d.entity(free).is_none() && d.entity(paper).is_none());
+        let solids_in = |sp: &Space| d.space(sp).unwrap().iter().filter(|e| matches!(e.kind, EntityKind::Solid3d(_))).count();
+        assert_eq!(solids_in(&Space::Model), 1);
+        assert_eq!(solids_in(&Space::Paper("Layout1".into())), 1);
+    }
+
+    #[test]
+    fn a_rejected_value_is_asked_again() {
+        let mut s = Session::new();
+        s.start("sphere").unwrap();
+        s.input(Input::Point(Vec2::new(1.0, 1.0))).unwrap();
+        let _ = s.input(Input::Text("0".into()));
+        let p = s.current_prompt().unwrap();
+        assert!(p.message.contains("radius"), "{}", p.message);
+        s.input(Input::Cancel).unwrap();
+    }
+
+    #[test]
+    fn a_flat_box_asks_for_its_corner_again() {
+        // The height is fine; the other corner made the box flat.
+        let mut s = Session::new();
+        s.start("box").unwrap();
+        s.input(Input::Point(Vec2::new(0.0, 0.0))).unwrap();
+        s.input(Input::Point(Vec2::new(5.0, 0.0))).unwrap();
+        let _ = s.input(Input::Text("10".into()));
+        assert!(s.doc().unwrap().model.iter().next().is_none(), "no solid was made");
+        let p = s.current_prompt().unwrap();
+        assert!(p.message.contains("other corner"), "{}", p.message);
+        s.input(Input::Cancel).unwrap();
+    }
+
+    #[test]
+    fn a_profile_given_twice_is_extruded_once() {
+        let mut s = Session::new();
+        let c = circle(&mut s, 5.0);
+        // Without the kernel the extrusion fails, but only after the handles are deduplicated:
+        // the error is the kernel's, not a second solid.
+        let r = s.execute("extrude", &json!({ "handles": [c.hex(), c.hex()], "height": 5 }));
+        if cadcraft_kernel::available() {
+            assert_eq!(r.unwrap()["handles"].as_array().map(Vec::len), Some(1));
+        } else {
+            assert!(r.is_err());
+        }
+    }
+
+    #[test]
+    fn revolve_refuses_an_axis_of_one_point() {
+        let mut s = Session::new();
+        let c = circle(&mut s, 5.0);
+        s.set_selection(vec![c]);
+        s.start("revolve").unwrap();
+        s.input(Input::Point(Vec2::ZERO)).unwrap();
+        let _ = s.input(Input::Point(Vec2::ZERO));
+        let p = s.current_prompt().unwrap();
+        assert!(p.message.contains("axis endpoint"), "{}", p.message);
+        s.input(Input::Cancel).unwrap();
+    }
+
+    fn solid(s: &mut Session) -> Handle {
+        s.add_entity(EntityKind::Solid3d(Solid3d::default())).unwrap()
+    }
+
+    #[test]
+    fn locked_solids_and_mixed_selections_are_refused_before_the_kernel() {
+        let mut s = Session::new();
+        let (a, b) = (solid(&mut s), solid(&mut s));
+        let r = s.add_entity(EntityKind::Region(Region::from_loop(vec![pv(0.0, 0.0, 0.0), pv(1.0, 0.0, 0.0), pv(1.0, 1.0, 0.0)]))).unwrap();
+        let err = |r: Result<Value>| r.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(err(s.execute("union", &json!({ "handles": [a.hex(), b.hex(), r.hex()] }))).contains("can't be combined"));
+        assert!(err(s.execute("subtract", &json!({ "from": [a.hex()], "remove": [r.hex()] }))).contains("can't be combined"));
+        let l = s.execute("line", &json!({ "points": [[0, 0], [1, 1]] })).unwrap()["handles"][0].clone();
+        assert!(err(s.execute("subtract", &json!({ "from": [a.hex()], "remove": [l] }))).contains("Select 3D solids"));
+        s.doc_mut().unwrap().layer_mut("0").unwrap().locked = true;
+        assert!(err(s.execute("union", &json!({ "handles": [a.hex(), b.hex()] }))).contains("locked"));
+        assert!(err(s.execute("filletedge", &json!({ "handles": [a.hex()], "radius": 1 }))).contains("locked"));
+        assert_eq!(s.doc().unwrap().model.iter().filter(|e| matches!(e.kind, EntityKind::Solid3d(_))).count(), 2);
+    }
+
+    #[test]
+    fn export_falls_back_to_every_solid_when_none_is_selected() {
+        let mut s = Session::new();
+        solid(&mut s);
+        solid(&mut s);
+        let l = s.execute("line", &json!({ "points": [[0, 0], [1, 1]] })).unwrap()["handles"][0].clone();
+        s.set_selection(vec![Handle::parse_hex(l.as_str().unwrap()).unwrap()]);
+        assert_eq!(export_set(&s, &json!({})).unwrap().len(), 2);
+        // Handles given that hold no solid are an error.
+        assert!(export_set(&s, &json!({ "handles": [l] })).is_err());
     }
 }

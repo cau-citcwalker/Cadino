@@ -307,6 +307,10 @@ impl DocState {
         self.tiles = host.tiles;
         self.views = host.views;
         self.view_history = host.view_history;
+        // The direction the model view centres are in, and how solids were shown.
+        self.view_dir = host.view_dir;
+        self.orbit_target = None;
+        self.shaded = host.shaded;
         self.revision += 1;
         Ok(())
     }

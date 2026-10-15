@@ -679,6 +679,7 @@ dependencies = [
  "cadcraft-geom",
  "cadcraft-kernel",
  "cadcraft-render",
+ "log",
  "miniz_oxide 0.8.9",
  "quick-xml",
  "serde",
@@ -694,6 +695,8 @@ dependencies = [
  "cadcraft-geom",
  "glam",
  "opencascade",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 

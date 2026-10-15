@@ -1738,6 +1738,12 @@ pub fn read(bytes: &[u8]) -> Result<Drawing> {
             _ => {}
         }
     }
+    // 3D solids' B-reps, from CADCraft's XRECORDs.
+    let breps = objs.breps();
+    for (_, _, e) in blocks.iter_mut().flat_map(|b| b.3.iter_mut()).chain(entities.iter_mut()) {
+        crate::dxf_solid::attach(e, &breps);
+    }
+    crate::dxf_solid::mesh_all(blocks.iter_mut().flat_map(|b| b.3.iter_mut()).chain(entities.iter_mut()).map(|(_, _, e)| e));
     // A file CADCraft wrote names its own next handle (#495): its table records and objects
     // are numbered above it and rebuilt on save, so following $HANDSEED would drift every save.
     let own_seed = objs.xrecord_text(crate::dxf_ext::HANDSEED_KEY).and_then(|t| Handle::parse_hex(t.trim()));
@@ -1996,6 +2002,12 @@ impl Objects {
             text.push_str(&t.str());
         }
         Some(text)
+    }
+
+    /// The B-rep XRECORDs of 3D solids (`dxf_solid`): solid handle → the record's groups.
+    fn breps(&self) -> HashMap<Handle, &[Tag]> {
+        let solid = |name: &str| Handle::parse_hex(name.strip_prefix(crate::dxf_solid::KEY)?);
+        self.names.iter().filter_map(|(h, n)| Some((solid(n)?, self.xrecords.get(h)?.as_slice()))).collect()
     }
 
     fn apply(self, d: &mut Drawing, rx: &Rx) {

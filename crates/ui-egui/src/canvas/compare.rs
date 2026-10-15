@@ -16,11 +16,11 @@ use crate::theme::Tokens;
 /// Objects drawn per side; a larger difference shows its areas only.
 const MAX_DRAWN: usize = 20_000;
 
-/// The display lists of the differences, rebuilt when the drawing, the comparison or the zoom
-/// band changes.
+/// The display lists of the differences, rebuilt when the drawing, the comparison, the zoom
+/// band or the view direction changes.
 #[derive(Clone, Default)]
 struct Cache {
-    key: (u64, u64, usize, usize, i64),
+    key: (u64, u64, usize, usize, i64, [u64; 3]),
     ours: Option<Arc<DisplayList>>,
     theirs: Option<Arc<DisplayList>>,
 }
@@ -37,10 +37,12 @@ pub(super) fn paint(app: &mut CadApp, ctx: &egui::Context, p: &egui::Painter, xf
     // Dim everything; the differences are drawn on top.
     p.rect_filled(rect, 0.0, t.canvas.gamma_multiply(0.75));
     let band = xf.scale.max(1e-300).log2().round() as i64;
-    let key = (st.uid, st.revision, Arc::as_ptr(&c.other) as usize, c.differences(), band);
+    let d = xf.dir.dir;
+    let key = (st.uid, st.revision, Arc::as_ptr(&c.other) as usize, c.differences(), band, [d.x.to_bits(), d.y.to_bits(), d.z.to_bits()]);
     let mut cache: Cache = ctx.data_mut(|d| d.get_temp(id())).unwrap_or_default();
     if cache.key != key || cache.ours.is_none() {
-        let opts = cadcraft_render::Options { tolerance: 0.5 / xf.scale.max(1e-12), ..Default::default() };
+        // Built in the view shown, as the canvas's list is.
+        let opts = cadcraft_render::Options { tolerance: 0.5 / xf.scale.max(1e-12), view_dir: xf.dir, ..Default::default() };
         let ours: Vec<Handle> = c.added.iter().copied().chain(c.changed.iter().map(|(a, _)| *a)).take(MAX_DRAWN).collect();
         let theirs: Vec<Handle> = c.removed.iter().copied().chain(c.changed.iter().map(|(_, b)| *b)).take(MAX_DRAWN).collect();
         let list = |d: &cadcraft_engine::doc::Drawing, hs: &[Handle]| {
@@ -57,7 +59,8 @@ pub(super) fn paint(app: &mut CadApp, ctx: &egui::Context, p: &egui::Painter, xf
     }
     // The areas holding differences; the one shown last by next/previous stands out.
     for (i, b) in c.regions.iter().enumerate() {
-        let r = Rect::from_two_pos(xf.to_screen(b.min), xf.to_screen(b.max)).expand(6.0);
+        // All four corners: a 3D view turns the area.
+        let r = Rect::from_points(&b.corners().map(|q| xf.to_screen(q))).expand(6.0);
         if r.intersects(rect) {
             let w = if c.at == Some(i) { 2.5 } else { 1.0 };
             p.rect_stroke(r, 4.0, Stroke::new(w, t.compare_area), egui::StrokeKind::Middle);

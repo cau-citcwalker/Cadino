@@ -6,8 +6,8 @@
 //!
 //! CADCraft's own data lives under the registered application `CADCRAFT` (xdata) and the
 //! named-object-dictionary entries `CADCRAFT_CONSTRAINTS`, `CADCRAFT_LAYERSTATES`,
-//! `CADCRAFT_PLOTSTYLES`, `CADCRAFT_HANDSEED` and `CADCRAFT_MLEADERSTYLE` (XRECORDs). Other
-//! readers keep or ignore them.
+//! `CADCRAFT_PLOTSTYLES`, `CADCRAFT_HANDSEED`, `CADCRAFT_MLEADERSTYLE` and a 3D solid's
+//! `CADCRAFT_BREP_<handle>` (XRECORDs). Other readers keep or ignore them.
 
 use std::collections::HashMap;
 

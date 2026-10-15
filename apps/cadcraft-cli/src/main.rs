@@ -637,6 +637,8 @@ mod mcp_args_tests {
 }
 
 fn main() -> ExitCode {
+    // Before anything else: started as the 3D modelling worker, this serves one request and exits.
+    cadcraft_kernel::worker_main();
     let code = cli();
     if STDOUT_ERROR.load(Ordering::Relaxed) { ExitCode::FAILURE } else { code }
 }

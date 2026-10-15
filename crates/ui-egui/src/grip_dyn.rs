@@ -146,8 +146,11 @@ pub fn draw(app: &mut CadApp, p: &egui::Painter) -> bool {
             // The change in angle on a wider arc than the angle itself.
             let wide = if d.kind == GripDimKind::AngleChange { 2.2 } else { 1.0 };
             let r = a.distance(cs).clamp(24.0, 70.0) * 0.6 * wide;
-            let a0 = -(if d.kind == GripDimKind::AngleChange { d.original } else { 0.0 }) as f32;
-            let a1 = -(d.anchor.angle_to(c)) as f32;
+            // On screen, from the reference direction to the cursor: a 3D view turns and
+            // foreshortens angles.
+            let reference = Vec2::from_angle(if d.kind == GripDimKind::AngleChange { d.original } else { 0.0 });
+            let a0 = (xf.to_screen(d.anchor + reference) - a).angle();
+            let a1 = (cs - a).angle();
             let mut sweep = a1 - a0;
             while sweep > std::f32::consts::PI {
                 sweep -= std::f32::consts::TAU;

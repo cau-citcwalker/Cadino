@@ -31,7 +31,6 @@
 	% of all commits	전체 커밋 중 비율(%)
 	* Wildcard Match	* 와일드카드 일치
 	*VARIES*	*다양함*
-	+  |  Top  |  2D Wireframe	+  |  평면  |  2D 와이어프레임
 	+Bin	+Bin
 	+LOC	+LOC
 	1 Viewport	뷰포트 1개
@@ -1238,3 +1237,31 @@ menu	View	보기
 menu	Draw	그리기
 menu	Dimension	치수
 menu	Modify	수정
+	2D Wireframe	2D 와이어프레임
+	3D Views	3D 뷰
+	BACK	배면
+	BOTTOM	저면
+	Back	배면
+	Bottom	저면
+	Constrained Orbit	제한된 궤도
+	Custom View	사용자 뷰
+	Export STEP	STEP 내보내기
+	Export STL	STL 내보내기
+	FRONT	정면
+	Fillet Edge	모서리 모깎기
+	Fillet Edges	모서리 모깎기
+	Front	정면
+	Import STEP	STEP 가져오기
+	LEFT	좌측면
+	NE Isometric	북동 등각투영
+	NW Isometric	북서 등각투영
+	Plan View	평면도
+	RIGHT	우측면
+	SE Isometric	남동 등각투영
+	STEP	STEP
+	STL	STL
+	SW Isometric	남서 등각투영
+	Shaded	음영처리
+	Top	평면
+	Viewpoint	관측점
+	Visual Styles	비주얼 스타일

@@ -10,7 +10,6 @@
 	% of all commits	% de toutes les révisions
 	* Wildcard Match	* Correspondance générique
 	*VARIES*	*DIVER*
-	+  |  Top  |  2D Wireframe	+  |  Dessus  |  Filaire 2D
 	+Bin	+bin.
 	+LOC	+lignes
 	1 Viewport	1 fenêtre
@@ -1007,3 +1006,19 @@
 	Search for pattern	Rechercher un motif
 	Not a number or distance: {text}	Ni un nombre ni une distance : {text}
 	Query Texts	Interroger les textes
+	2D Wireframe	Filaire 2D
+	BACK	ARRIÈRE
+	BOTTOM	BAS
+	Back	Arrière
+	Bottom	Dessous
+	Custom View	Vue personnalisée
+	FRONT	AVANT
+	Front	Face
+	LEFT	GAUCHE
+	NE Isometric	Isométrique NE
+	NW Isometric	Isométrique NO
+	RIGHT	DROITE
+	SE Isometric	Isométrique SE
+	SW Isometric	Isométrique SO
+	Shaded	Ombré
+	Top	Dessus

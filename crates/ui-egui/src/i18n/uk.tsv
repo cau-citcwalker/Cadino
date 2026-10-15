@@ -33,7 +33,6 @@
 	% of all commits	% усіх комітів
 	* Wildcard Match	* За шаблоном
 	*VARIES*	*РІЗНІ*
-	+  |  Top  |  2D Wireframe	+  |  Зверху  |  2D-каркас
 	+Bin	+двійк.
 	+LOC	+рядків
 	1 Viewport	1 видовий екран
@@ -1330,3 +1329,31 @@
 	Justify	За шириною
 	Text color	Колір тексту
 	Click the ruler to add a tab stop, right-click to remove one	Натисніть на лінійку, щоб додати табуляцію; права кнопка видаляє її
+	2D Wireframe	2D-каркас
+	3D Views	3D-види
+	BACK	ЗЗАДУ
+	BOTTOM	ЗНИЗУ
+	Back	Ззаду
+	Bottom	Знизу
+	Constrained Orbit	Обмежена орбіта
+	Custom View	Користувацький вид
+	Export STEP	Експорт STEP
+	Export STL	Експорт STL
+	FRONT	СПЕРЕДУ
+	Fillet Edge	Скруглення ребра
+	Fillet Edges	Скруглення ребер
+	Front	Спереду
+	Import STEP	Імпорт STEP
+	LEFT	ЗЛІВА
+	NE Isometric	ПнС ізометрія
+	NW Isometric	ПнЗ ізометрія
+	Plan View	Вид у плані
+	RIGHT	СПРАВА
+	SE Isometric	ПдС ізометрія
+	STEP	STEP
+	STL	STL
+	SW Isometric	ПдЗ ізометрія
+	Shaded	Тонований
+	Top	Зверху
+	Viewpoint	Точка зору
+	Visual Styles	Візуальні стилі

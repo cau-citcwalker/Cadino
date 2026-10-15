@@ -10,7 +10,6 @@
 	% of all commits	% de todos os commits
 	* Wildcard Match	* Correspondência com curinga
 	*VARIES*	*VARIADO*
-	+  |  Top  |  2D Wireframe	+  |  Superior  |  Wireframe 2D
 	+Bin	+bin.
 	+LOC	+linhas
 	1 Viewport	1 viewport
@@ -1244,3 +1243,19 @@
 	Query Texts	Consultar textos
 	Run Script...	Executar script...
 	Not a number or distance: {text}	Não é um número nem uma distância: {text}
+	2D Wireframe	Wireframe 2D
+	BACK	TRÁS
+	BOTTOM	INFERIOR
+	Back	Posterior
+	Bottom	Inferior
+	Custom View	Vista personalizada
+	FRONT	FRENTE
+	Front	Frontal
+	LEFT	ESQUERDA
+	NE Isometric	Isométrica NE
+	NW Isometric	Isométrica NO
+	RIGHT	DIREITA
+	SE Isometric	Isométrica SE
+	SW Isometric	Isométrica SO
+	Shaded	Sombreado
+	Top	Superior

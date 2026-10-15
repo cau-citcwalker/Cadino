@@ -131,6 +131,25 @@ fn combine(a: &Region, b: &Region, op: Op) -> Result<Option<Region>> {
 
 const OVERLAP: &str = "Combining regions whose boundaries overlap is not available yet.";
 
+/// Refuse a boolean on regions together with 3D solids, or on one of them on a locked layer.
+fn check(s: &Session, hs: &[Handle]) -> Result<()> {
+    let d = s.doc()?;
+    let (mut regions, mut solids) = (false, false);
+    for h in hs {
+        let Some(e) = d.entity(*h) else { continue };
+        let (r, x) = (matches!(e.kind, EntityKind::Region(_)), matches!(e.kind, EntityKind::Solid3d(_)));
+        if (r || x) && super::super::curves::is_locked(s, *h) {
+            return Err(other("An object is on a locked layer."));
+        }
+        regions |= r;
+        solids |= x;
+    }
+    if regions && solids {
+        return Err(other("Regions and 3D solids can't be combined: select one kind."));
+    }
+    Ok(())
+}
+
 /// Replace the first region with `r` (or erase it when empty) and erase the others.
 fn apply(s: &mut Session, keep: Handle, r: Region, erase: &[Handle]) -> Result<()> {
     let d = s.doc_mut()?;
@@ -151,6 +170,7 @@ fn fold(s: &mut Session, hs: &[Handle], op: Op) -> Result<Value> {
         Op::Subtract => cadcraft_kernel::BoolOp::Subtract,
         Op::Intersect => cadcraft_kernel::BoolOp::Intersect,
     };
+    check(s, hs)?;
     if let Some(v) = super::super::solids::fold(s, hs, bop)? {
         return Ok(v);
     }
@@ -184,6 +204,7 @@ fn handles(p: &Value, key: &str) -> Result<Vec<Handle>> {
 }
 
 fn subtract(s: &mut Session, from: &[Handle], remove: &[Handle]) -> Result<Value> {
+    check(s, &[from, remove].concat())?;
     if let Some(v) = super::super::solids::subtract(s, from, remove)? {
         return Ok(v);
     }

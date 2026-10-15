@@ -10,7 +10,6 @@
 	% of all commits	% всех коммитов
 	* Wildcard Match	* По шаблону
 	*VARIES*	*РАЗНЫЕ*
-	+  |  Top  |  2D Wireframe	+  |  Сверху  |  2D-каркас
 	+Bin	+двоич.
 	+LOC	+строк
 	1 Viewport	1 видовой экран
@@ -1008,3 +1007,19 @@
 	Sheet Books to PDF...	Книги листов в PDF...
 	Not a number or distance: {text}	Не число и не расстояние: {text}
 	Query Texts	Запрос текстов
+	2D Wireframe	2D-каркас
+	BACK	СЗАДИ
+	BOTTOM	СНИЗУ
+	Back	Сзади
+	Bottom	Снизу
+	Custom View	Пользовательский вид
+	FRONT	СПЕРЕДИ
+	Front	Спереди
+	LEFT	СЛЕВА
+	NE Isometric	СВ изометрия
+	NW Isometric	СЗ изометрия
+	RIGHT	СПРАВА
+	SE Isometric	ЮВ изометрия
+	SW Isometric	ЮЗ изометрия
+	Shaded	Тонированный
+	Top	Сверху

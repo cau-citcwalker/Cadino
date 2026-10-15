@@ -22,12 +22,23 @@ pub struct Xf {
     pub scale: f64,
     /// World XY plane → view plane: the identity in plan view, the view direction's projection
     /// of the XY plane in a 3D view.
-    pub plane: Mat3,
+    plane: Mat3,
+    /// View plane → world XY plane: `plane` inverted, or where the view sees the XY plane edge-on
+    /// the least-squares inverse ([`ViewDir::unproject_xy`]).
+    unplane: Mat3,
+    /// The view direction display lists for this transform are built with.
+    dir: ViewDir,
 }
 
 impl Xf {
     pub fn new(rect: Rect, center: Vec2, scale: f64) -> Self {
-        Xf { rect, center, scale, plane: Mat3::IDENTITY }
+        Xf { rect, center, scale, plane: Mat3::IDENTITY, unplane: Mat3::IDENTITY, dir: ViewDir::PLAN }
+    }
+    /// The same transform looking along `dir`.
+    pub fn looking(self, dir: ViewDir) -> Self {
+        // `unproject_xy` is linear: its matrix is where it takes the axes.
+        let (x, y) = (dir.unproject_xy(Vec2::new(1.0, 0.0)), dir.unproject_xy(Vec2::new(0.0, 1.0)));
+        Xf { plane: dir.plane_xf(), unplane: Mat3 { a: x.x, b: x.y, c: y.x, d: y.y, e: 0.0, f: 0.0 }, dir, ..self }
     }
     /// Screen position of a world point (on the XY plane).
     pub fn to_screen(&self, p: Vec2) -> Pos2 {
@@ -43,11 +54,10 @@ impl Xf {
         let c = self.rect.center();
         Vec2::new(self.center.x + f64::from(p.x - c.x) / self.scale, self.center.y - f64::from(p.y - c.y) / self.scale)
     }
-    /// The world point under a screen position, on the XY plane (seen edge-on, the view-plane
-    /// point itself).
+    /// The world point under a screen position, on the XY plane (seen edge-on, the nearest
+    /// point of the plane's line).
     pub fn to_world(&self, p: Pos2) -> Vec2 {
-        let v = self.to_view(p);
-        self.plane.inverse().map_or(v, |i| i.apply(v))
+        self.unplane.apply(self.to_view(p))
     }
     pub fn is_plan(&self) -> bool {
         self.plane == Mat3::IDENTITY
@@ -58,13 +68,36 @@ impl Xf {
     }
 }
 
-/// The model view's projection of the XY plane: the view direction's in model space, the
-/// identity elsewhere (layouts, MSPACE viewports).
-pub(crate) fn model_plane(app: &CadApp) -> Mat3 {
-    match app.session.state() {
-        Ok(st) if st.space == cadcraft_doc::Space::Model => st.view_dir.plane_xf(),
-        _ => Mat3::IDENTITY,
+/// The model view's transform for the canvas `rect` at `view` (its centre is in the view plane),
+/// and the one the canvas shows, picks and snaps with: the same, except while the list for a
+/// new view direction builds in the background (see [`ensure_list`]), when it keeps the current
+/// list's direction about the same point. Plan outside model space (layouts, MSPACE viewports).
+fn view_xfs(app: &CadApp, rect: Rect, view: cadcraft_engine::View) -> (Xf, Xf) {
+    let (dir, pivot) = match app.session.state() {
+        Ok(st) if st.space == cadcraft_doc::Space::Model => (st.view_dir, st.orbit_target),
+        _ => (ViewDir::PLAN, None),
+    };
+    let scale = f64::from(rect.height()) / view.height.max(1e-12);
+    let now = Xf::new(rect, view.center, scale).looking(dir);
+    let built = app.canvas.list_dir;
+    if app.canvas.list.is_none() || built == dir {
+        return (now, now);
     }
+    // The world point at the centre of the view, as the current list sees it: the point the
+    // last orbit turned about, else the one on z = 0.
+    let center = match pivot {
+        Some(t) => built.project(t),
+        None => built.plane_xf().apply(now.unplane.apply(view.center)),
+    };
+    (now, Xf::new(rect, center, scale).looking(built))
+}
+
+/// Whether `v` is inside triangle `abc` (either winding); never for a zero-area triangle, which
+/// draws nothing.
+fn in_tri(v: Vec2, a: Vec2, b: Vec2, c: Vec2) -> bool {
+    let s = |p: Vec2, q: Vec2| (q - p).cross(v - p);
+    let (d1, d2, d3) = (s(a, b), s(b, c), s(c, a));
+    (b - a).cross(c - a) != 0.0 && ((d1 >= 0.0 && d2 >= 0.0 && d3 >= 0.0) || (d1 <= 0.0 && d2 <= 0.0 && d3 <= 0.0))
 }
 
 /// The topmost object drawn within `ap` of view-plane point `v`: how a 3D view picks (the
@@ -72,21 +105,60 @@ pub(crate) fn model_plane(app: &CadApp) -> Mat3 {
 /// ponytail: scans the whole list per pick; a spatial index over the list if 3D views get large.
 fn list_pick(list: &DisplayList, v: Vec2, ap: f64) -> Option<Handle> {
     let near = |a: Vec2, b: Vec2| cadcraft_geom::Line::new(a, b).closest(v).dist(v) <= ap;
-    let inside = |a: Vec2, b: Vec2, c: Vec2| {
-        let s = |p: Vec2, q: Vec2| (q - p).cross(v - p);
-        let (d1, d2, d3) = (s(a, b), s(b, c), s(c, a));
-        !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0))
-    };
     list.prims.iter().rev().filter(|p| p.handle != cadcraft_render::VIEWPORT_CONTENT).find_map(|prim| {
         let pts = list.points(prim);
         let hit = match prim.kind {
             Kind::Polyline => pts.windows(2).any(|w| matches!(w, [a, b] if near(*a, *b))),
-            Kind::Tris => pts.chunks_exact(3).any(|t| matches!(t, [a, b, c] if inside(*a, *b, *c))),
+            Kind::Tris => pts.chunks_exact(3).any(|t| matches!(t, [a, b, c] if in_tri(v, *a, *b, *c))),
             Kind::Point => pts.first().is_some_and(|q| q.dist(v) <= ap),
             Kind::Mask | Kind::Infinite { .. } => false,
         };
         hit.then_some(prim.handle)
     })
+}
+
+/// Whether segment `ab` is inside or crosses box `bx`.
+fn seg_hits_box(a: Vec2, b: Vec2, bx: &Bounds2) -> bool {
+    let c = bx.corners();
+    let ab = cadcraft_geom::Line::new(a, b);
+    bx.contains(a)
+        || bx.contains(b)
+        || c.iter().zip(c.iter().cycle().skip(1)).any(|(p, q)| cadcraft_geom::line_line(&ab, &cadcraft_geom::Line::new(*p, *q)).is_some())
+}
+
+/// The objects the list draws in view-plane box `bx`: wholly inside it (a window), or with
+/// `crossing` inside or crossing it. How a 3D view selects with a window (the engine selects in
+/// plan).
+fn list_window(list: &DisplayList, bx: Bounds2, crossing: bool) -> Vec<Handle> {
+    // Per object: every part inside, any part touching.
+    let mut seen: std::collections::BTreeMap<Handle, (bool, bool)> = std::collections::BTreeMap::new();
+    for prim in list.prims.iter().filter(|p| p.handle != cadcraft_render::VIEWPORT_CONTENT) {
+        let pts = list.points(prim);
+        if pts.is_empty() {
+            continue;
+        }
+        let inside = !matches!(prim.kind, Kind::Infinite { .. }) && pts.iter().all(|q| bx.contains(*q));
+        let touches = inside
+            || (crossing
+                && match prim.kind {
+                    Kind::Polyline => pts.windows(2).any(|w| matches!(w, [a, b] if seg_hits_box(*a, *b, &bx))) || pts.iter().any(|q| bx.contains(*q)),
+                    Kind::Tris | Kind::Mask => pts.chunks_exact(3).any(|t| {
+                        matches!(t, [a, b, c] if seg_hits_box(*a, *b, &bx) || seg_hits_box(*b, *c, &bx) || seg_hits_box(*c, *a, &bx)
+                            || bx.corners().iter().any(|k| in_tri(*k, *a, *b, *c)))
+                    }),
+                    Kind::Point => false,
+                    Kind::Infinite { ray } => match pts {
+                        [base, d, ..] => {
+                            let far = (bx.width() + bx.height()) * 2.0 + base.dist(bx.center());
+                            seg_hits_box(if ray { *base } else { *base - *d * far }, *base + *d * far, &bx)
+                        }
+                        _ => false,
+                    },
+                });
+        let e = seen.entry(prim.handle).or_insert((true, false));
+        *e = (e.0 && inside, e.1 || touches);
+    }
+    seen.into_iter().filter(|(_, (all, any))| if crossing { *any } else { *all }).map(|(h, _)| h).collect()
 }
 
 /// [`list_pick`] at the cursor with the pick box.
@@ -95,12 +167,50 @@ fn view_pick_at(app: &CadApp, xf: &Xf, hover: Option<Pos2>) -> Option<Handle> {
     hover.zip(app.canvas.list.as_ref()).and_then(|(hp, l)| list_pick(l, xf.to_view(hp), ap))
 }
 
+/// Open a selection window at screen point `at` (see [`cadcraft_engine::Session::begin_window`]),
+/// remembering where it is in the view plane; returns whether a window was opened.
+fn begin_view_window(app: &mut CadApp, xf: &Xf, at: Pos2) -> bool {
+    let w = xf.to_world(at);
+    let opened = app.session.begin_window(w);
+    if opened {
+        app.canvas.window_view = Some((w, xf.to_view(at), xf.dir));
+    }
+    opened
+}
+
+/// The pending selection window's first corner in `xf`'s view plane.
+fn window_corner(app: &CadApp, xf: &Xf) -> Option<Vec2> {
+    let pw = app.session.pending_window?;
+    Some(match app.canvas.window_view {
+        Some((w, v, dir)) if w == pw.corner && dir == xf.dir => v,
+        _ => xf.plane.apply(pw.corner),
+    })
+}
+
+/// Close the pending selection window at screen point `at` in a 3D view with what is drawn in it
+/// (see [`list_window`]; dragged right to left, a crossing window): handed to the command asking
+/// for objects, or selected.
+fn close_view_window(app: &mut CadApp, xf: &Xf, at: Pos2, shift: bool) -> cadcraft_engine::Result<()> {
+    let Some(corner) = window_corner(app, xf) else { return Ok(()) };
+    let end = xf.to_view(at);
+    let hs = app.canvas.list.as_ref().map(|l| list_window(l, Bounds2::new(corner, end), end.x < corner.x)).unwrap_or_default();
+    app.session.pending_window = None;
+    app.canvas.window_view = None;
+    if app.session.prompting() {
+        app.session.input_view_pick(hs)
+    } else {
+        app.session.idle_window_pick(hs, shift);
+        Ok(())
+    }
+}
+
 /// Degrees the view turns per point dragged when orbiting.
 pub(crate) const ORBIT_DEG_PER_PX: f64 = 0.4;
 
 /// What a display list was built from: drawing uid, revision, tessellation band, hatch level of
-/// detail band, lineweight display, document and active viewport view (see [`ensure_list`]).
-type ListKey = (u64, u64, i32, i32, bool, bool, usize, u64);
+/// detail band, lineweight display, document, active viewport view and visual style, and view
+/// direction (see [`ensure_list`]).
+type ListKey = (u64, u64, i32, i32, bool, bool, usize, u64, [u64; 3]);
 
 /// Whether two list keys are for the same drawing content (they may differ only in the view).
 fn same_content(a: &ListKey, b: &ListKey) -> bool {
@@ -111,6 +221,11 @@ fn same_content(a: &ListKey, b: &ListKey) -> bool {
 pub struct CanvasState {
     pub list: Option<DisplayList>,
     key: ListKey,
+    /// The view direction `list` was built in (see [`view_xfs`]).
+    list_dir: ViewDir,
+    /// The pending selection window as a 3D view opened it: its world corner, the view-plane
+    /// corner and the view direction (an edge-on view's world point has lost its height).
+    window_view: Option<(Vec2, Vec2, ViewDir)>,
     /// The area `list` was built for (hatch patterns exist only inside it); a view leaving it
     /// rebuilds the list.
     window: Option<Bounds2>,
@@ -219,6 +334,7 @@ impl CanvasState {
             self.infinite = m.infinite;
         }
         self.list = Some(built.list);
+        self.list_dir = built.view_dir;
         self.key = key;
         self.window = window;
         self.build_ms = built.build_ms;
@@ -280,11 +396,6 @@ fn preview_options(scale: f64, view_dir: ViewDir) -> cadcraft_render::Options {
     cadcraft_render::Options { tolerance: 0.5 / scale, min_dash: 2.0 / scale, view_dir, ..Default::default() }
 }
 
-/// The view direction display lists for `xf` are built with: the model view's in a 3D view.
-fn xf_view(xf: &Xf, st: &cadcraft_engine::DocState) -> ViewDir {
-    if xf.is_plan() { ViewDir::PLAN } else { st.view_dir }
-}
-
 /// The display list of preview entities the session builds with the current properties
 /// ([`cadcraft_engine::Session::preview`], the extras of [`cadcraft_engine::Session::drag`]): the
 /// command's rubber band and rebuilt copies of existing objects. They carry CLAYER's properties,
@@ -312,9 +423,9 @@ fn prim_color32(prim: &cadcraft_render::DPrim, bg: Rgb) -> Color32 {
 /// Rebuild the display list when needed. `xf`: the current view; `views`: every area on screen
 /// that shows the list (the current view, other model tiles) with its drawing units per pixel.
 ///
-/// A rebuild only the view asks for (a new zoom band, a pan out of the built area) runs in the
-/// background while the current list is drawn (see [`rebuild`]); a changed drawing, or no list
-/// yet, is built at once.
+/// A rebuild only the view asks for (a new zoom band, a pan out of the built area, a new view
+/// direction) runs in the background while the current list is drawn (see [`rebuild`]); a
+/// changed drawing, or no list yet, is built at once.
 fn ensure_list(app: &mut CadApp, xf: &Xf, views: &[(Bounds2, f64)], ctx: &egui::Context) {
     let px = 1.0 / xf.scale;
     let Ok(st) = app.session.state() else { return };
@@ -337,13 +448,25 @@ fn ensure_list(app: &mut CadApp, xf: &Xf, views: &[(Bounds2, f64)], ctx: &egui::
         {
             (h, vp.view_center.x.to_bits(), vp.view_center.y.to_bits(), vp.view_height.to_bits()).hash(&mut s);
         }
-        // The 3D view and visual style change the list too.
-        let d = st.view_dir.dir;
-        (d.x.to_bits(), d.y.to_bits(), d.z.to_bits(), st.shaded).hash(&mut s);
+        // The visual style changes the list too.
+        st.shaded.hash(&mut s);
         s.finish()
     };
+    // The view direction is part of the view: orbiting builds in the background (see `view_xfs`).
+    let view_dir = if st.space == cadcraft_doc::Space::Model { st.view_dir } else { cadcraft_geom::ViewDir::PLAN };
+    let d = view_dir.dir;
     let (lwdisplay, transparency_display) = (app.session.settings.lwdisplay, app.session.settings.transparency_display);
-    let key: ListKey = (st.uid, st.revision, band(px), lod_band, lwdisplay, transparency_display, std::sync::Arc::as_ptr(&st.doc) as usize, vp_view);
+    let key: ListKey = (
+        st.uid,
+        st.revision,
+        band(px),
+        lod_band,
+        lwdisplay,
+        transparency_display,
+        std::sync::Arc::as_ptr(&st.doc) as usize,
+        vp_view,
+        [d.x.to_bits(), d.y.to_bits(), d.z.to_bits()],
+    );
     // A background build that finished: use it unless the drawing has changed since it started
     // (or the list was dropped to force a rebuild).
     if let Some(job) = &app.canvas.job {
@@ -370,7 +493,14 @@ fn ensure_list(app: &mut CadApp, xf: &Xf, views: &[(Bounds2, f64)], ctx: &egui::
     }
     // Only the view moved: keep drawing the current list and build the new one in the background.
     let view_only = app.canvas.list.is_some() && same_content(&app.canvas.key, &key);
-    if view_only && app.canvas.job.as_ref().is_some_and(|j| j.serves(&key, &visible)) {
+    // While the view turns, a build for an earlier direction runs on and lands first, so an orbit
+    // follows as fast as the builds finish instead of waiting for it to stop.
+    let turning = |j: &rebuild::Job| {
+        let mut k = j.key;
+        k.8 = key.8;
+        j.key.8 != key.8 && k == key
+    };
+    if view_only && app.canvas.job.as_ref().is_some_and(|j| j.serves(&key, &visible) || turning(j)) {
         return;
     }
     // A build for another view, or for a drawing that has since changed, is no longer wanted:
@@ -391,7 +521,7 @@ fn ensure_list(app: &mut CadApp, xf: &Xf, views: &[(Bounds2, f64)], ctx: &egui::
         transparency: app.session.settings.transparency_display,
         skip_viewport: split,
         cancel: None,
-        view_dir: if st.space == cadcraft_doc::Space::Model { st.view_dir } else { cadcraft_geom::ViewDir::PLAN },
+        view_dir,
         shaded: st.shaded,
     };
     if view_only {
@@ -413,6 +543,7 @@ fn ensure_list(app: &mut CadApp, xf: &Xf, views: &[(Bounds2, f64)], ctx: &egui::
     }
     let space = st.space.clone();
     app.canvas.list = Some(cadcraft_render::build(&st.doc, &space, &opts));
+    app.canvas.list_dir = view_dir;
     app.canvas.key = key;
     app.canvas.window = opts.view;
     app.canvas.list_gen = app.canvas.list_gen.wrapping_add(1);
@@ -448,9 +579,9 @@ const VP_SETTLE_MS: f64 = 150.0;
 #[derive(Default)]
 struct VpContent {
     list: DisplayList,
-    /// What the list was built from: drawing, revision, document, viewport, tessellation band
-    /// and lineweight display.
-    key: Option<(u64, u64, usize, Handle, i32, bool, bool)>,
+    /// What the list was built from: drawing, revision, document, viewport, tessellation band,
+    /// lineweight and transparency display, and visual style.
+    key: Option<(u64, u64, usize, Handle, i32, bool, bool, bool)>,
     /// The viewport's view (centre, height) the list was built for, and the paper area it covers.
     view: (Vec2, f64),
     area: Bounds2,
@@ -517,7 +648,7 @@ fn ensure_vp_content(app: &mut CadApp, xf_paper: &Xf, ctx: &egui::Context) -> Op
     };
     let px = 1.0 / xf_paper.scale.max(1e-300);
     let band = px.max(1e-300).log2().floor() as i32;
-    let key = (st.uid, st.revision, std::sync::Arc::as_ptr(&st.doc) as usize, h, band, lwdisplay, transparency);
+    let key = (st.uid, st.revision, std::sync::Arc::as_ptr(&st.doc) as usize, h, band, lwdisplay, transparency, st.shaded);
     let now = crate::now_ms();
     let view = (vp.view_center, vp.view_height);
     if view != c.last_view {
@@ -984,11 +1115,9 @@ fn draw_drag_gpu(
         c.drag_origin = origin;
     }
     // Positions are relative to the origin o: M(o + p) = L·p + (M(o) − o). The list is in the
-    // view plane, so the world transform M acts there as P·M·P⁻¹.
-    let m = match xf.plane.inverse() {
-        Some(inv) if !xf.is_plan() => xf.plane.then_before(drag.matrix).then_before(inv),
-        _ => drag.matrix,
-    };
+    // view plane, so the world transform M acts there as P·M·P⁻¹ (exact on the XY plane; see
+    // [`solid_drag_preview`] for what isn't on it).
+    let m = if xf.is_plan() { drag.matrix } else { xf.plane.then_before(drag.matrix).then_before(xf.unplane) };
     let o = c.drag_origin;
     let t = m.apply(o) - o;
     let center = xf.rect.center();
@@ -1006,6 +1135,32 @@ fn draw_drag_gpu(
             stencil: crate::gpu::Stencil::Off,
         },
     ));
+}
+
+/// A drag of solids in a 3D view, as transformed copies rebuilt in the view: the GPU drag
+/// ([`draw_drag_gpu`]) moves the view plane, which carries a solid's height along wrongly when it
+/// turns or mirrors (anything but a move or a positive uniform scale), and flattens it in a view
+/// that sees the XY plane edge-on. `None`: the GPU drag draws it.
+/// ponytail: rebuilds every dragged object each frame; split the solids out if mixed drags lag.
+fn solid_drag_preview(doc: &cadcraft_doc::Drawing, drag: &cadcraft_engine::Drag, clipboard: &[cadcraft_doc::Entity], xf: &Xf) -> Option<DisplayList> {
+    let m = drag.matrix;
+    if xf.is_plan() || (m.b == 0.0 && m.c == 0.0 && m.a == m.d && m.a > 0.0 && xf.plane.det().abs() > 1e-6) {
+        return None;
+    }
+    let ents: Vec<&cadcraft_doc::Entity> =
+        if drag.clipboard { clipboard.iter().collect() } else { drag.handles.iter().filter_map(|h| doc.entity(*h)).map(|e| e.as_ref()).collect() };
+    if !ents.iter().any(|e| matches!(e.kind, cadcraft_doc::EntityKind::Solid3d(_))) {
+        return None;
+    }
+    let moved: Vec<cadcraft_doc::Entity> = ents
+        .into_iter()
+        .map(|e| {
+            let mut e = e.clone();
+            e.kind.transform(&m);
+            e
+        })
+        .collect();
+    Some(rebuilt_preview(doc, moved.iter(), xf.scale, xf.dir))
 }
 
 /// Identifies the GPU vertex data of list `key` / `list_gen` converted at `origin` against `bg`.
@@ -1330,7 +1485,8 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     let Ok(st) = app.session.state() else { return };
     let view = st.view();
     let scale = f64::from(rect.height()) / view.height.max(1e-12);
-    let xf = Xf { plane: model_plane(app), ..Xf::new(rect, view.center, scale) };
+    // Navigation works in the current view (the canvas may still show the last one).
+    let xf = view_xfs(app, rect, view).0;
     app.canvas.xf = Some(xf);
 
     // ---------- input ----------
@@ -1398,8 +1554,9 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     {
         if let Some(last) = app.canvas.pan_last {
             let d = hp - last;
-            // Shift+middle drag orbits the model view (3DORBIT's transparent form).
-            if mods.shift && app.session.space() == cadcraft_doc::Space::Model {
+            // Shift+middle drag orbits the model view (3DORBIT's transparent form); the Model tab
+            // only, as MSPACE viewports show plan.
+            if mods.shift && app.session.layout_space() == cadcraft_doc::Space::Model {
                 let _ = cadcraft_engine::orbit(&mut app.session, -f64::from(d.x) * ORBIT_DEG_PER_PX, f64::from(d.y) * ORBIT_DEG_PER_PX);
             } else if let Ok(st) = app.session.state_mut() {
                 let v = st.view();
@@ -1435,7 +1592,8 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     // Re-read the view after navigation.
     let view = app.session.state().map(|s| s.view()).unwrap_or(view);
     let scale = f64::from(rect.height()) / view.height.max(1e-12);
-    let xf = Xf { plane: model_plane(app), ..Xf::new(rect, view.center, scale) };
+    // `xf_now` is the current view, which the list is built for; `xf` the one shown.
+    let (xf_now, xf) = view_xfs(app, rect, view);
     app.canvas.xf = Some(xf);
     // The paper (display) transform; equal to `xf` except inside an MSPACE viewport.
     let (xf_paper, active_vp) = match app.session.state() {
@@ -1446,6 +1604,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         }
         Err(_) => (xf, None),
     };
+    let mspace = app.session.state().is_ok_and(|st| st.mspace.is_some());
     // A clipped active viewport's outline (picks and its heavy border follow it).
     let active_clip = app.session.state().ok().and_then(|st| st.active_viewport().and_then(|(h, v)| cadcraft_render::viewport_clip(&st.doc, h, &v)));
     // Double-click a viewport to work inside it; double-click the sheet outside it to return.
@@ -1603,13 +1762,23 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
             {
                 app.cmd.buffer.clear();
             }
-            // Preserve a snap's viewport origin for DIST, and its deferred curve where needed. In a
-            // 3D view an object prompt picks what is drawn under the cursor.
-            let view_pick = app.session.current_prompt().is_some_and(|q| q.picks_objects()) && !xf.is_plan();
-            let result = match (app.canvas.snap, view_pick.then(|| view_pick_at(app, &xf, hover_pos)).flatten()) {
-                (_, Some(h)) => app.session.input(Input::Pick(vec![h])),
-                (Some(hit), None) => app.session.input_snapped(hit),
-                (None, None) => app.session.input(Input::Point(p)),
+            // In a 3D view an object prompt picks what is drawn under the cursor, and its window
+            // takes what is drawn in it (the engine selects in plan).
+            let view_select = !xf.is_plan() && app.session.select_mode.is_none() && app.session.current_prompt().is_some_and(|q| q.picks_objects());
+            let at = hover_pos.filter(|_| view_select);
+            let result = if let Some(hp) = at.filter(|_| app.session.pending_window.is_some()) {
+                close_view_window(app, &xf, hp, mods.shift)
+            } else if let Some(h) = at.and_then(|hp| view_pick_at(app, &xf, Some(hp))) {
+                app.session.input_view_pick(vec![h])
+            } else if at.is_some_and(|hp| begin_view_window(app, &xf, hp)) {
+                // Nothing drawn there: "Select objects" opens a window.
+                Ok(())
+            } else {
+                // Preserve a snap's viewport origin for DIST, and its deferred curve where needed.
+                match app.canvas.snap {
+                    Some(hit) => app.session.input_snapped(hit),
+                    None => app.session.input(Input::Point(p)),
+                }
             };
             if let Err(e) = result {
                 app.session.echo(e.to_string());
@@ -1618,8 +1787,17 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
             crate::dyngrips::click(app, g);
         } else if let Some(g) = grip_at(app, &xf, hover_pos) {
             click_grip(app, g, mods.shift);
-        } else if let Some(h) = (!xf.is_plan() && app.session.pending_window.is_none()).then(|| view_pick_at(app, &xf, hover_pos)).flatten() {
-            app.session.idle_pick(h, mods.shift);
+        } else if let Some(hp) = hover_pos.filter(|_| !xf.is_plan()) {
+            // A 3D view picks and windows what is drawn (the engine selects in plan).
+            if app.session.pending_window.is_some() {
+                if let Err(e) = close_view_window(app, &xf, hp, mods.shift) {
+                    app.session.echo(e.to_string());
+                }
+            } else if let Some(h) = view_pick_at(app, &xf, Some(hp)) {
+                app.session.idle_pick(h, mods.shift);
+            } else {
+                begin_view_window(app, &xf, hp);
+            }
         } else if let Err(e) = app.session.idle_click(raw_world.unwrap_or(p), mods.shift) {
             app.session.echo(e.to_string());
         }
@@ -1635,15 +1813,20 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         && grip_at(app, &xf, Some(origin)).is_none()
         && crate::dyngrips::at(app, &xf, Some(origin)).is_none()
     {
-        app.canvas.drag_window = app.session.begin_window(xf.to_world(origin));
+        app.canvas.drag_window = begin_view_window(app, &xf, origin);
     }
     if app.canvas.drag_window && resp.drag_stopped_by(egui::PointerButton::Primary) {
         app.canvas.drag_window = false;
         if app.session.pending_window.is_some()
             && let Some(end) = ui.input(|i| i.pointer.interact_pos())
         {
-            let end = xf.to_world(end);
-            let done = if app.session.prompting() { app.session.input(Input::Point(end)) } else { app.session.idle_click(end, mods.shift) };
+            let done = if !xf.is_plan() {
+                close_view_window(app, &xf, end, mods.shift)
+            } else if app.session.prompting() {
+                app.session.input(Input::Point(xf.to_world(end)))
+            } else {
+                app.session.idle_click(xf.to_world(end), mods.shift)
+            };
             if let Err(e) = done {
                 app.session.echo(e.to_string());
             }
@@ -1696,12 +1879,18 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     // ---------- paint ----------
     painter.rect_filled(rect, 0.0, t.canvas);
     let t0 = crate::now_ms();
-    let mut views = vec![(xf_paper.view_bounds(), 1.0 / xf_paper.scale)];
+    // The list is built for the current view.
+    let xf_build = if mspace { xf_paper } else { xf_now };
+    let mut views = vec![(xf_build.view_bounds(), 1.0 / xf_build.scale)];
     views.extend(tiles.iter().filter(|(r, tile)| !tile.active && r.width() >= 1.0 && r.height() >= 1.0).map(|(r, tile)| {
-        let xf = tile_xf(*r, tile);
+        let xf = tile_xf(*r, tile, xf_build.dir);
         (xf.view_bounds(), 1.0 / xf.scale)
     }));
-    ensure_list(app, &xf_paper, &views, ui.ctx());
+    ensure_list(app, &xf_build, &views, ui.ctx());
+    // A build that landed turns the view shown.
+    let xf = view_xfs(app, rect, view).1;
+    let xf_paper = if mspace { xf_paper } else { xf };
+    app.canvas.xf = Some(xf);
     let sheet = app.canvas.list.as_ref().and_then(|l| l.sheet);
     let bg = match sheet {
         Some(sh) => {
@@ -1854,7 +2043,8 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     {
         let gs = app.session.settings.gripsize as f32;
         for h in sel.iter().take(200) {
-            if let Some(e) = st.doc.entity(*h) {
+            // A solid's grips are on the XY plane, which a 3D view shows away from the solid.
+            if let Some(e) = st.doc.entity(*h).filter(|e| xf.is_plan() || !matches!(e.kind, cadcraft_doc::EntityKind::Solid3d(_))) {
                 for (gi, g) in e.kind.grips().into_iter().enumerate() {
                     let sp = xf.to_screen(g);
                     if rect.contains(sp) {
@@ -1889,8 +2079,11 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         if let Ok(st) = app.session.state() {
             let serial = app.session.clipboard_source.as_ref().map_or(0, |c| c.serial);
             let transparency = app.session.settings.transparency_display;
-            draw_drag_gpu(&mut app.canvas, &painter, &xf, &st.doc, &drag, (&app.session.clipboard, serial), bg, transparency, xf_view(&xf, st));
-            let list = rebuilt_preview(&st.doc, extra.iter(), scale, xf_view(&xf, st));
+            match solid_drag_preview(&st.doc, &drag, &app.session.clipboard, &xf) {
+                Some(list) => draw_list(&painter, &xf, &list, bg, false),
+                None => draw_drag_gpu(&mut app.canvas, &painter, &xf, &st.doc, &drag, (&app.session.clipboard, serial), bg, transparency, xf.dir),
+            }
+            let list = rebuilt_preview(&st.doc, extra.iter(), scale, xf.dir);
             draw_list(&painter, &xf, &list, bg, false);
         }
     } else if let (Some(c), true) = (app.canvas.cursor, app.session.prompting()) {
@@ -1898,16 +2091,15 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         if !ents.is_empty()
             && let Ok(st) = app.session.state()
         {
-            let list = rebuilt_preview(&st.doc, ents.iter(), scale, xf_view(&xf, st));
+            let list = rebuilt_preview(&st.doc, ents.iter(), scale, xf.dir);
             draw_list(&painter, &xf, &list, bg, false);
         }
     }
-    // Pending selection window.
-    if let (Some(pw), Some(c)) = (app.session.pending_window, raw_world) {
-        let a = xf.to_screen(pw.corner);
-        let b = xf.to_screen(c);
+    // Pending selection window: a crossing window when dragged to the left on screen.
+    if let (Some(corner), Some(b)) = (window_corner(app, &xf), hover_pos.filter(|_| raw_world.is_some())) {
+        let a = xf.view_to_screen(corner);
         let r = Rect::from_two_pos(a, b);
-        let crossing = c.x < pw.corner.x;
+        let crossing = b.x < a.x;
         if let Some(fill) = selection_area_fill(&app.session.settings, crossing) {
             painter.rect_filled(r, 0.0, fill);
         }
@@ -1935,7 +2127,8 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     if app.ui.show_viewcube && sheet.is_none() {
         draw_viewcube(app, ui, rect);
     }
-    viewport_label(&painter, rect);
+    let shaded = app.session.state().is_ok_and(|st| st.shaded);
+    viewport_label(&painter, rect, xf.dir, shaded);
     // Typing and Escape reach the command line even when its overlay is hidden.
     crate::cmdline::keyboard(app, ui.ctx());
     // Command line overlay.
@@ -1991,9 +2184,10 @@ fn tile_rects(app: &CadApp, full: Rect) -> Vec<(Rect, cadcraft_engine::ModelTile
         .collect()
 }
 
-/// The world ↔ screen transform of a model tile drawn in `r`.
-fn tile_xf(r: Rect, tile: &cadcraft_engine::ModelTile) -> Xf {
-    Xf::new(r, tile.view.center, f64::from(r.height()) / tile.view.height.max(1e-12))
+/// The world ↔ screen transform of a model tile drawn in `r`, looking along `dir` (the model
+/// view's: the tiles share its list).
+fn tile_xf(r: Rect, tile: &cadcraft_engine::ModelTile, dir: ViewDir) -> Xf {
+    Xf::new(r, tile.view.center, f64::from(r.height()) / tile.view.height.max(1e-12)).looking(dir)
 }
 
 /// The tiles other than the current one (each with its own view, clipped to it), then the
@@ -2003,13 +2197,13 @@ fn draw_tiles(app: &CadApp, ui: &egui::Ui, tiles: &[(Rect, cadcraft_engine::Mode
     let bg = Rgb(t.canvas.r(), t.canvas.g(), t.canvas.b());
     for (r, tile) in tiles.iter().filter(|(r, tile)| !tile.active && r.width() >= 1.0 && r.height() >= 1.0) {
         let p = ui.painter_at(*r);
-        let xf = tile_xf(*r, tile);
+        let xf = tile_xf(*r, tile, app.canvas.list_dir);
         p.rect_filled(*r, 0.0, t.canvas);
         draw_grid(app, &p, &xf);
         if let Some(list) = &app.canvas.list {
             draw_list(&p, &xf, list, bg, app.session.settings.lwdisplay);
         }
-        viewport_label(&p, *r);
+        viewport_label(&p, *r, xf.dir, app.session.state().is_ok_and(|st| st.shaded));
     }
     let p = ui.painter();
     for (r, tile) in tiles {
@@ -2357,10 +2551,12 @@ fn draw_ucs_icon(p: &egui::Painter, rect: Rect) {
     p.text(o + vec2(0.0, -70.0), egui::Align2::CENTER_BOTTOM, crate::tl!("Y"), f, t.canvas_ink);
 }
 
-fn viewport_label(p: &egui::Painter, rect: Rect) {
+/// The viewport label: the view shown (see [`crate::viewcube::view_name`]) and the visual style.
+fn viewport_label(p: &egui::Painter, rect: Rect, view: ViewDir, shaded: bool) {
     let t = Tokens::get();
     let at = pos2(rect.left() + 10.0, rect.top() + 8.0);
-    p.text(at, egui::Align2::LEFT_TOP, crate::tl!("+  |  Top  |  2D Wireframe"), crate::theme::small(), t.canvas_ink);
+    let style = if shaded { crate::tl!("Shaded") } else { crate::tl!("2D Wireframe") };
+    p.text(at, egui::Align2::LEFT_TOP, format!("+  |  {}  |  {style}", crate::viewcube::view_name(view)), crate::theme::small(), t.canvas_ink);
 }
 
 fn draw_viewcube(app: &mut CadApp, ui: &mut egui::Ui, rect: Rect) {
@@ -2452,7 +2648,8 @@ fn grip_at(app: &CadApp, xf: &Xf, hover: Option<Pos2>) -> Option<(Handle, usize)
     }
     for h in sel.iter().take(200) {
         let e = st.doc.entity(*h)?;
-        if st.doc.layer(&e.common.layer).is_some_and(|l| l.locked) {
+        // No solid grips in a 3D view (see `show`).
+        if st.doc.layer(&e.common.layer).is_some_and(|l| l.locked) || (!xf.is_plan() && matches!(e.kind, cadcraft_doc::EntityKind::Solid3d(_))) {
             continue;
         }
         for (i, g) in e.kind.grips().into_iter().enumerate() {
@@ -2703,6 +2900,269 @@ pub(crate) mod tests {
         app.session.pending_window = Some(cadcraft_engine::PendingWindow { corner: Vec2::ZERO, during_command: true });
         let text = painted_text(&mut app, &ctx, at);
         assert!(text.contains(&format!("   {}  <", arch(c.len()))), "no {} in:\n{text}", arch(c.len()));
+    }
+
+    /// Drives the app frame by frame, a tenth of a second apart, in a 1600×1000 window.
+    #[derive(Default)]
+    struct Frames {
+        ctx: egui::Context,
+        time: f64,
+    }
+
+    impl Frames {
+        fn run(&mut self, app: &mut CadApp, events: Vec<egui::Event>) {
+            self.time += 0.1;
+            app.logic(&self.ctx);
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))),
+                events,
+                time: Some(self.time),
+                ..Default::default()
+            };
+            let mut out = self.ctx.run_ui(raw, |ui| app.ui(ui));
+            out.textures_delta.clear();
+        }
+        fn button(&mut self, app: &mut CadApp, at: Pos2, pressed: bool) {
+            let e = egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::default() };
+            self.run(app, vec![e]);
+        }
+        /// A click, well apart from the one before (not a double click).
+        fn click(&mut self, app: &mut CadApp, at: Pos2) {
+            self.time += 1.0;
+            self.run(app, vec![egui::Event::PointerMoved(at)]);
+            self.button(app, at, true);
+            self.button(app, at, false);
+            self.run(app, Vec::new());
+        }
+        fn drag(&mut self, app: &mut CadApp, from: Pos2, to: Pos2) {
+            self.time += 1.0;
+            self.run(app, vec![egui::Event::PointerMoved(from)]);
+            self.button(app, from, true);
+            self.run(app, vec![egui::Event::PointerMoved(from + (to - from) / 2.0)]);
+            self.run(app, vec![egui::Event::PointerMoved(to)]);
+            self.button(app, to, false);
+            self.run(app, Vec::new());
+        }
+    }
+
+    /// A line in model space between the world points under screen points `a` and `b`.
+    fn line_under(app: &mut CadApp, xf: &Xf, a: Pos2, b: Pos2) -> Handle {
+        let (a, b) = (xf.to_world(a).to3(0.0), xf.to_world(b).to3(0.0));
+        let d = app.session.doc_mut().unwrap();
+        d.add(&cadcraft_doc::Space::Model, cadcraft_doc::Common::default(), cadcraft_doc::EntityKind::Line(cadcraft_doc::Line { a, b })).unwrap()
+    }
+
+    /// A solid that is only an edge from (0, 0, 20) to (10, 0, 20): drawn 20 above its plan.
+    fn raised_edge(app: &mut CadApp) -> Handle {
+        let g = cadcraft_geom::Vec3::new;
+        let mesh = cadcraft_geom::Mesh3 { verts: Vec::new(), tris: Vec::new(), edges: vec![vec![g(0.0, 0.0, 20.0), g(10.0, 0.0, 20.0)]] };
+        let s = cadcraft_doc::Solid3d { brep: "".into(), mesh: std::sync::Arc::new(mesh), xform: cadcraft_geom::Mat4::IDENTITY };
+        let d = app.session.doc_mut().unwrap();
+        d.add(&cadcraft_doc::Space::Model, cadcraft_doc::Common::default(), cadcraft_doc::EntityKind::Solid3d(s)).unwrap()
+    }
+
+    /// The app with an empty drawing looking along `dir`, its list built (at once, not in the
+    /// background).
+    fn app_looking(f: &mut Frames, dir: [f64; 3]) -> CadApp {
+        let mut app = CadApp::new(cadcraft_engine::Session::new(), crate::Services::default());
+        app.session.state_mut().unwrap().view_dir = ViewDir::new(cadcraft_geom::Vec3::new(dir[0], dir[1], dir[2]));
+        f.run(&mut app, Vec::new());
+        app
+    }
+
+    /// Rebuild the list at once (edits made straight in the drawing don't bump the revision).
+    fn rebuild_now(f: &mut Frames, app: &mut CadApp) {
+        app.canvas.list = None;
+        f.run(app, Vec::new());
+    }
+
+    /// Pointing in a view that sees the XY plane edge-on lands on the plane's line right under the
+    /// cursor, in whichever direction the view looks (#35, #36).
+    #[test]
+    fn edge_on_views_point_under_the_cursor() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 100.0));
+        for d in [[0.0, -1.0, 0.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [-1.0, -1.0, 1.0]] {
+            let dir = ViewDir::new(cadcraft_geom::Vec3::new(d[0], d[1], d[2]));
+            let xf = Xf::new(rect, Vec2::new(3.0, 1.0), 10.0).looking(dir);
+            for s in [pos2(30.0, 20.0), pos2(170.0, 80.0)] {
+                let back = xf.to_screen(xf.to_world(s));
+                assert!((back.x - s.x).abs() < 1e-3, "{d:?}: {s:?} came back at {back:?}");
+                if d[2] != 0.0 {
+                    assert!((back.y - s.y).abs() < 1e-3, "{d:?}: {s:?} came back at {back:?}");
+                }
+            }
+        }
+    }
+
+    /// A zero-area triangle (a SOLID with its corners together, a fill seen edge-on) draws nothing
+    /// and picks nothing (#42).
+    #[test]
+    fn list_pick_ignores_zero_area_triangles() {
+        let prim = |h, kind, len| DPrim { handle: Handle(h), color: Rgb(255, 255, 255), aci7: true, lw: 0.0, transparency: 0, kind, start: 0, len };
+        let l = DisplayList {
+            prims: vec![prim(1, Kind::Polyline, 2), prim(2, Kind::Tris, 3)],
+            verts: vec![Vec2::ZERO, Vec2::new(10.0, 0.0)],
+            tris: vec![Vec2::new(5.0, 5.0); 3],
+            ..Default::default()
+        };
+        assert_eq!(list_pick(&l, Vec2::new(50.0, 50.0), 1.0), None);
+        assert_eq!(list_pick(&l, Vec2::new(5.0, 0.5), 1.0), Some(Handle(1)));
+    }
+
+    #[test]
+    fn list_window_takes_what_is_inside_or_crossing() {
+        let prim =
+            |h, kind, start, len| DPrim { handle: Handle(h), color: Rgb(255, 255, 255), aci7: true, lw: 0.0, transparency: 0, kind, start, len };
+        let v = Vec2::new;
+        let l = DisplayList {
+            // 1 inside, 2 crossing, 3 outside, 4 a fill around the whole box, 5 (zero area) in it.
+            prims: vec![
+                prim(1, Kind::Polyline, 0, 2),
+                prim(2, Kind::Polyline, 2, 2),
+                prim(3, Kind::Polyline, 4, 2),
+                prim(4, Kind::Tris, 0, 3),
+                prim(5, Kind::Tris, 3, 3),
+            ],
+            verts: vec![v(1.0, 1.0), v(2.0, 2.0), v(3.0, 3.0), v(9.0, 3.0), v(7.0, 7.0), v(8.0, 8.0)],
+            tris: vec![v(-50.0, -50.0), v(50.0, -50.0), v(0.0, 50.0), v(1.0, 1.0), v(1.0, 1.0), v(1.0, 1.0)],
+            ..Default::default()
+        };
+        let bx = Bounds2::new(v(0.0, 0.0), v(4.0, 4.0));
+        assert_eq!(list_window(&l, bx, false), vec![Handle(1), Handle(5)]);
+        assert_eq!(list_window(&l, bx, true), vec![Handle(1), Handle(2), Handle(4), Handle(5)]);
+    }
+
+    /// In a 3D view a selection window takes what is drawn in the rectangle on screen: a window
+    /// when dragged to the right, a crossing window to the left, wherever world X points (to the
+    /// left in the NE isometric view) (#22, #25, #37).
+    #[test]
+    fn a_3d_view_selects_what_is_drawn_in_the_window() {
+        let mut f = Frames::default();
+        let mut app = app_looking(&mut f, [1.0, 1.0, 1.0]);
+        let xf = app.canvas.xf.unwrap();
+        let c = xf.rect.center();
+        // `a` inside the window, `b` across its right side.
+        let a = line_under(&mut app, &xf, c + vec2(-50.0, -20.0), c + vec2(50.0, 0.0));
+        let b = line_under(&mut app, &xf, c + vec2(0.0, 60.0), c + vec2(250.0, 60.0));
+        rebuild_now(&mut f, &mut app);
+        f.drag(&mut app, c + vec2(-100.0, -60.0), c + vec2(150.0, 100.0));
+        assert_eq!(app.session.selection(), vec![a]);
+        app.session.set_selection(Vec::new());
+        f.drag(&mut app, c + vec2(150.0, 100.0), c + vec2(-100.0, -60.0));
+        let mut sel = app.session.selection();
+        sel.sort();
+        assert_eq!(sel, vec![a, b]);
+        assert!(app.session.pending_window.is_none());
+    }
+
+    /// At "Select objects" in a 3D view, a window's second corner on an object closes the window
+    /// (it used to pick that object and leave the window open) (#38).
+    #[test]
+    fn a_3d_window_closes_on_an_object() {
+        let mut f = Frames::default();
+        let mut app = app_looking(&mut f, [-1.0, -1.0, 1.0]);
+        let xf = app.canvas.xf.unwrap();
+        let c = xf.rect.center();
+        let a = line_under(&mut app, &xf, c + vec2(-50.0, -20.0), c + vec2(50.0, 0.0));
+        let b = line_under(&mut app, &xf, c + vec2(0.0, 60.0), c + vec2(250.0, 60.0));
+        rebuild_now(&mut f, &mut app);
+        app.session.cmdline("erase").unwrap();
+        f.click(&mut app, c + vec2(-100.0, -60.0));
+        assert!(app.session.pending_window.is_some());
+        f.click(&mut app, c + vec2(150.0, 60.0));
+        assert!(app.session.pending_window.is_none());
+        app.session.input(Input::Enter).unwrap();
+        let d = app.session.doc().unwrap();
+        assert!(d.entity(a).is_none() && d.entity(b).is_some());
+    }
+
+    /// Clicking where nothing is drawn in a 3D view starts a window: it doesn't pick a solid by
+    /// its outline on the XY plane, far from where it is drawn (#59); and a solid's grips, which
+    /// are on that plane, don't show or catch the cursor there (#46).
+    #[test]
+    fn a_3d_view_ignores_where_solids_would_be_in_plan() {
+        let mut f = Frames::default();
+        let mut app = app_looking(&mut f, [-1.0, -1.0, 1.0]);
+        let s = raised_edge(&mut app);
+        rebuild_now(&mut f, &mut app);
+        let xf = app.canvas.xf.unwrap();
+        f.click(&mut app, xf.to_screen(Vec2::new(5.0, 0.0)));
+        assert!(app.session.selection().is_empty());
+        assert!(app.session.pending_window.is_some());
+        app.session.pending_window = None;
+        app.session.set_selection(vec![s]);
+        let grip = xf.to_screen(Vec2::ZERO);
+        assert_eq!(grip_at(&app, &xf, Some(grip)), None);
+        let plan = Xf::new(xf.rect, Vec2::ZERO, xf.scale);
+        assert_eq!(grip_at(&app, &plan, Some(plan.to_screen(Vec2::ZERO))), Some((s, 0)));
+    }
+
+    /// Rotating a solid in a 3D view previews it rebuilt as it will be: moving the view plane on
+    /// the GPU would carry its height along sideways (#41, #58, #62).
+    #[test]
+    fn rotating_a_solid_in_a_3d_view_previews_its_height_upright() {
+        let mut f = Frames::default();
+        let mut app = app_looking(&mut f, [-1.0, -1.0, 1.0]);
+        let s = raised_edge(&mut app);
+        let st = app.session.state().unwrap();
+        let xf = app.canvas.xf.unwrap();
+        let drag = |matrix| cadcraft_engine::Drag { handles: vec![s], matrix, extra: Vec::new(), clipboard: false };
+        let turned = solid_drag_preview(&st.doc, &drag(Mat3::rotate(std::f64::consts::FRAC_PI_2)), &[], &xf).unwrap();
+        // (10, 0, 20) turned about Z to (0, 10, 20).
+        let want = st.view_dir.project(cadcraft_geom::Vec3::new(0.0, 10.0, 20.0));
+        assert!(turned.verts.iter().any(|q| q.dist(want) < 1e-9), "{:?} not in {:?}", want, turned.verts);
+        // A move is drawn by the GPU drag, exact for it; so is anything in plan.
+        assert!(solid_drag_preview(&st.doc, &drag(Mat3::translate(Vec2::new(1.0, 2.0))), &[], &xf).is_none());
+        let plan = Xf::new(xf.rect, Vec2::ZERO, xf.scale);
+        assert!(solid_drag_preview(&st.doc, &drag(Mat3::rotate(1.0)), &[], &plan).is_none());
+    }
+
+    /// A new view direction is built in the background; until it lands the canvas shows, picks
+    /// and snaps in the direction of the list it has, about the same point (#43).
+    #[test]
+    fn orbiting_builds_in_the_background() {
+        let mut f = Frames::default();
+        let mut app = app_looking(&mut f, [0.0, 0.0, 1.0]);
+        let xf = app.canvas.xf.unwrap();
+        line_under(&mut app, &xf, xf.rect.center(), xf.rect.center() + vec2(100.0, 0.0));
+        rebuild_now(&mut f, &mut app);
+        let target = xf.to_world(xf.rect.center());
+        cadcraft_engine::orbit(&mut app.session, 30.0, -30.0).unwrap();
+        f.run(&mut app, Vec::new());
+        assert!(app.canvas.building());
+        let shown = app.canvas.xf.unwrap();
+        assert!(shown.is_plan());
+        assert!(shown.to_world(shown.rect.center()).dist(target) < 1e-6);
+        for _ in 0..500 {
+            if !app.canvas.building() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            f.run(&mut app, Vec::new());
+        }
+        f.run(&mut app, Vec::new());
+        let now = app.canvas.xf.unwrap();
+        assert!(!now.is_plan());
+        assert_eq!(app.canvas.list_dir, app.session.state().unwrap().view_dir);
+        assert!(now.to_world(now.rect.center()).dist(target) < 1e-6);
+    }
+
+    /// The viewport label and the ViewCube name the view and the visual style shown (#60).
+    #[test]
+    fn the_viewport_label_names_the_view_and_style() {
+        let mut app = CadApp::new(cadcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        let at = pos2(700.0, 450.0);
+        assert!(painted_text(&mut app, &ctx, at).contains("+  |  Top  |  2D Wireframe"));
+        app.session.state_mut().unwrap().view_dir = ViewDir::new(cadcraft_geom::Vec3::new(-1.0, -1.0, 1.0));
+        app.session.state_mut().unwrap().shaded = true;
+        app.canvas.list = None;
+        let text = painted_text(&mut app, &ctx, at);
+        assert!(text.contains("+  |  SW Isometric  |  Shaded"), "{text}");
+        app.session.state_mut().unwrap().view_dir = ViewDir::new(cadcraft_geom::Vec3::new(0.2, -1.0, 0.1));
+        app.canvas.list = None;
+        let text = painted_text(&mut app, &ctx, at);
+        assert!(text.contains("+  |  Custom View  |  Shaded") && text.contains("FRONT"), "{text}");
     }
 }
 

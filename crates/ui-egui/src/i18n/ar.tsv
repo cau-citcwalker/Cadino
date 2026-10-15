@@ -10,7 +10,6 @@
 	% of all commits	% من كل الإيداعات
 	* Wildcard Match	* مطابقة أحرف البدل
 	*VARIES*	*متفاوت*
-	+  |  Top  |  2D Wireframe	+  |  علوي  |  هيكل سلكي ثنائي الأبعاد
 	+Bin	+Bin
 	+LOC	+LOC
 	1 Viewport	إطار عرض واحد
@@ -1233,3 +1232,19 @@ menu	Modify	تعديل
 menu	View	عرض
 @plural	{n} commit	{n} إيداع|{n} إيداع|{n} إيداعان|{n} إيداعات|{n} إيداعاً|{n} إيداع
 @plural	{n} contributor	{n} مساهم|{n} مساهم|{n} مساهمان|{n} مساهمين|{n} مساهماً|{n} مساهم
+	2D Wireframe	هيكل سلكي ثنائي الأبعاد
+	BACK	خلف
+	BOTTOM	أسفل
+	Back	خلفي
+	Bottom	سفلي
+	Custom View	عرض مخصص
+	FRONT	أمام
+	Front	أمامي
+	LEFT	يسار
+	NE Isometric	متساوي القياس شمالي شرقي
+	NW Isometric	متساوي القياس شمالي غربي
+	RIGHT	يمين
+	SE Isometric	متساوي القياس جنوبي شرقي
+	SW Isometric	متساوي القياس جنوبي غربي
+	Shaded	مظلل
+	Top	علوي

@@ -4,6 +4,8 @@
 //! optionally a layer snapshot (a layer state restored with it). Views are stored in the drawing
 //! and round-trip through the DXF VIEW table. Restoring one is a view change like ZOOM: it goes
 //! into the view history, not the undo stack (a layer snapshot it restores is an undo step).
+//! A model view's centre is kept as a world XY point (the VIEW table here keeps no direction),
+//! so it restores into whatever direction the Model tab looks along.
 
 use cadcraft_doc::{LayerState, NamedView, Space};
 use cadcraft_geom::{Bounds2, Vec2};
@@ -67,7 +69,7 @@ fn run_view(s: &mut Session, p: &Value) -> Result<Value> {
         "save" | "s" | "window" | "w" => {
             let name = str_param(p, "name").map(str::trim).ok_or_else(|| bad("view", "`name` is required"))?;
             let window = match (point_param(p, "p1"), point_param(p, "p2")) {
-                (Some(a), Some(b)) => Some(Bounds2::new(a, b)),
+                (Some(a), Some(b)) => Some((a, b)),
                 _ if option.starts_with('w') => return Err(bad("view", "`p1` and `p2` (the window) are required")),
                 _ => None,
             };
@@ -96,8 +98,9 @@ fn run_view(s: &mut Session, p: &Value) -> Result<Value> {
     }
 }
 
-/// Save the current view (or `window`) as `name`, replacing a view of that name.
-fn save(s: &mut Session, name: &str, window: Option<Bounds2>, snapshot: bool) -> Result<Value> {
+/// Save the current view (or the `window` two world corners make) as `name`, replacing a view
+/// of that name.
+fn save(s: &mut Session, name: &str, window: Option<(Vec2, Vec2)>, snapshot: bool) -> Result<Value> {
     if !valid_name(name) {
         return Err(EngineError::Other(format!("\"{name}\" is not a valid view name.")));
     }
@@ -109,8 +112,11 @@ fn save(s: &mut Session, name: &str, window: Option<Bounds2>, snapshot: bool) ->
         (Space::Paper(l), false) => Some(l.clone()),
         _ => None,
     };
+    let dir = st.screen_dir();
     let (center, height, width) = match window {
-        Some(b) => {
+        Some((a, b)) => {
+            let m = dir.plane_xf();
+            let b = Bounds2::new(m.apply(a), m.apply(b));
             if !(b.width() > 1e-12 && b.height() > 1e-12 && b.min.is_finite() && b.max.is_finite()) {
                 return Err(EngineError::Other("The window has no area.".into()));
             }
@@ -122,6 +128,7 @@ fn save(s: &mut Session, name: &str, window: Option<Bounds2>, snapshot: bool) ->
             (f.center, f.height, f.height * aspect)
         }
     };
+    let center = dir.unproject_xy(center);
     let replaced = find(&st.doc.views, name).map(|v| v.name.clone());
     let d = s.doc_mut()?;
     let layer_state = snapshot.then(|| {
@@ -177,7 +184,8 @@ fn restore(s: &mut Session, name: &str) -> Result<Value> {
             let (w, h) = s.viewport_px;
             let st = s.state_mut()?;
             let aspect = st.zoom_aspect(w / h.max(1.0)).max(1e-9);
-            st.set_zoom_frame(View { center: v.center, height: v.height.max(v.width / aspect) });
+            let center = st.screen_dir().plane_xf().apply(v.center);
+            st.set_zoom_frame(View { center, height: v.height.max(v.width / aspect) });
         }
     }
     let mut msg = format!("View \"{}\" restored.", v.name);
@@ -349,7 +357,7 @@ impl Interactive for ViewM {
                 Input::Point(b) => {
                     let snapshot = s.settings.view_layer_snapshot;
                     let name = std::mem::take(&mut self.name);
-                    report(s, |s| save(s, &name, Some(Bounds2::new(a, b)), snapshot))
+                    report(s, |s| save(s, &name, Some((a, b)), snapshot))
                 }
                 Input::Enter => Ok(Step::Done),
                 _ => Err(EngineError::Other("Requires a point.".into())),

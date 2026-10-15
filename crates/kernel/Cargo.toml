@@ -13,6 +13,9 @@ occt = ["dep:opencascade", "dep:glam"]
 [dependencies]
 cadcraft-geom = { workspace = true }
 thiserror = { workspace = true }
+# Requests and replies of the worker process.
+serde = { workspace = true }
+serde_json = { workspace = true }
 opencascade = { version = "0.3", optional = true }
 glam = { version = "0.24", optional = true }
 
