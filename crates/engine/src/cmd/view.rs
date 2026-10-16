@@ -10,7 +10,7 @@ use super::*;
 use crate::{Accept, Input, Interactive, Prompt, Result, Session, Step, View};
 
 mod named_views;
-mod vports;
+pub(crate) mod vports;
 
 pub(super) use vports::{config_names, config_tiles, model_vports, tile_model};
 

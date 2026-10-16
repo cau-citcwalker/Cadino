@@ -10,7 +10,8 @@
 //! - Enter sends the entry with `@` in front when it is measured from the last point (relative is
 //!   the default; DYNPICOORDS = 1 makes it absolute), and fills an empty box from the cursor.
 //! - A plain number and Enter stays direct distance entry; `@`/`#` entries, keywords and command
-//!   names go through untouched.
+//!   names go through untouched. A 3D entry `x,y,z` keeps its height and is relative like the
+//!   others ([`complete_3d`]).
 //!
 //! - Down Arrow at a prompt with options (DYNPROMPT on) lists them at the cursor ([`OptionsMenu`]).
 //!
@@ -192,6 +193,18 @@ pub fn complete(entry: &Entry<'_>, frame: &Frame, cursor: Vec2, last: Vec2) -> O
     p.is_finite().then(|| format!("#{},{}", p.x, p.y))
 }
 
+/// A 3D entry `x,y,z` (the boxes show X and Y only) is measured from the last point as a split
+/// entry is: sent as `@x,y,z` when the boxes are relative to it (the height then adds to the last
+/// point's), else as typed.
+/// ponytail: with a prompt base other than the last point it is absolute; a `#` form from the
+/// base needs the base's height, which prompts don't carry.
+pub fn complete_3d(text: &str, frame: &Frame, last: Vec2) -> Option<String> {
+    let t = text.trim();
+    let parts: Vec<&str> = t.split(',').collect();
+    let numbers = parts.len() == 3 && parts.iter().all(|p| cadcraft_engine::units::parse_distance(p).is_some());
+    (numbers && frame.relative() && frame.base == Some(last)).then(|| format!("@{t}"))
+}
+
 /// The Dynamic Input options menu (DYNPROMPT): Down Arrow at a prompt with keywords lists them
 /// at the cursor; the arrows move the highlight and Enter or a click sends the keyword.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -318,6 +331,21 @@ mod tests {
         assert!(close(Some(constrain(&e, &f, Vec2::new(100.0, 1.0), true)), Vec2::new(1.0, 6.0)));
         let e = parse("3,4", &f).unwrap();
         assert_eq!(constrain(&e, &f, Vec2::new(-7.0, 9.0), true), Vec2::new(4.0, 5.0));
+    }
+
+    #[test]
+    fn a_3d_entry_is_relative_like_a_2d_one() {
+        let base = Vec2::new(1.0, 1.0);
+        let f = second_point(base);
+        assert_eq!(parse("1,2,3", &f), None, "the boxes don't take it");
+        assert_eq!(complete_3d("1,2,3", &f, base).as_deref(), Some("@1,2,3"));
+        // First point, absolute setting, another base, not three numbers: as typed.
+        assert_eq!(complete_3d("1,2,3", &Frame::default(), base), None);
+        assert_eq!(complete_3d("1,2,3", &Frame { absolute: true, ..f }, base), None);
+        assert_eq!(complete_3d("1,2,3", &f, Vec2::ZERO), None);
+        for t in ["1,2", "@1,2,3", "1,2,x", "1,2,3,4", ""] {
+            assert_eq!(complete_3d(t, &f, base), None, "{t}");
+        }
     }
 
     #[test]

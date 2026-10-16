@@ -188,17 +188,30 @@ pub fn plan_preview(e: &Entity, m: &Mat3) -> Vec<EntityKind> {
     transformed(e, m).map(|t| plan_kinds(&t)).unwrap_or_default()
 }
 
-/// Refuse a 2D shape edit (TRIM, EXTEND, BREAK) of an object in a tilted plane, whose own
-/// coordinates aren't what plan view shows. ponytail: refused, not edited; upgrade: take the
-/// picked and cutting geometry into its plane (`Entity::plan_to_local`) and edit there.
+/// Refuse a 2D shape edit (TRIM, EXTEND, BREAK, FILLET, CHAMFER, JOIN, PEDIT Join and Edit
+/// vertex) of an object in a tilted plane, whose own coordinates aren't what plan view shows.
+/// ponytail: refused, not edited (they combine it with other objects or picked points in plan);
+/// upgrade: take the picked and cutting geometry into its plane ([`to_local`]) and edit there,
+/// as OFFSET, LENGTHEN and DIVIDE/MEASURE do.
 pub fn level_only(e: &Entity) -> crate::Result<()> {
     match e.plan_xf() {
         Some(_) => Err(crate::EngineError::Other(format!(
-            "The {} is in a tilted plane: it can only be moved, rotated, scaled, mirrored or grip-edited in plan.",
+            "The {} is in a tilted plane, which this command can't edit: it can be moved, rotated, scaled, mirrored, grip-edited, offset or lengthened in plan.",
             e.kind.type_name().to_ascii_lowercase()
         ))),
         None => Ok(()),
     }
+}
+
+/// Plan point `p` in `e`'s own plane (its 2D coordinates): [`Entity::plan_to_local`] from the
+/// grip plan view shows nearest `p` (a plane seen edge-on keeps that grip's depth). `p` itself
+/// for objects seen flat in plan.
+pub fn to_local(e: &Entity, p: Vec2) -> Vec2 {
+    if e.plan_xf().is_none() {
+        return p;
+    }
+    let near = e.grips().into_iter().zip(e.kind.grips()).min_by(|a, b| a.0.dist(p).total_cmp(&b.0.dist(p))).map_or(Vec2::ZERO, |(_, l)| l);
+    e.plan_to_local(p, near)
 }
 
 /// Block object `child` placed where block reference `parent` (`ins`, block base point `base`)

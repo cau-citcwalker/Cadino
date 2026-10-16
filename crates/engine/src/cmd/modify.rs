@@ -747,12 +747,34 @@ fn join_point(a: &Segment, b: &Segment) -> Option<Vec2> {
     hits.into_iter().min_by(|x, y| x.dist(a.end()).total_cmp(&y.dist(a.end())))
 }
 
+/// [`offset_kind`] of `e` in its own plane: the plan side point taken into it ([`to_local`]),
+/// the copy at its elevation (one in a tilted plane stays in that plane, a raised one at its
+/// height).
+pub(crate) fn offset_entity(e: &Entity, dist: f64, side: Vec2) -> Option<EntityKind> {
+    let mut k = offset_kind(&e.kind, dist, to_local(e, side))?;
+    if e.plane().is_some() {
+        k.set_elevation(e.kind.elevation());
+    }
+    Some(k)
+}
+
+/// `e` and plan point `p` as seen in `e`'s own plane, for a through distance measured there (as
+/// they are for objects seen flat in plan).
+fn in_plane(e: &Entity, p: Vec2) -> (Entity, Vec2) {
+    if e.plan_xf().is_none() {
+        return (e.clone(), p);
+    }
+    let mut flat = e.clone();
+    flat.common.extrusion = cadcraft_geom::Vec3::Z;
+    (flat, to_local(e, p))
+}
+
 fn run_offset(s: &mut Session, p: &Value) -> Result<Value> {
     let h = targets(s, p)?.first().copied().ok_or_else(|| bad("offset", "`handle` is required"))?;
     let dist = f64_req("offset", p, "distance")?;
     let side = point_req("offset", p, "side")?;
     let e = s.doc()?.entity(h).map(|e| (**e).clone()).ok_or_else(|| bad("offset", "no such object"))?;
-    let k = offset_kind(&e.kind, dist.abs(), side).ok_or_else(|| bad("offset", "cannot offset that object"))?;
+    let k = offset_entity(&e, dist.abs(), side).ok_or_else(|| bad("offset", "cannot offset that object"))?;
     let current_layer = match str_param(p, "layer").map(str::to_ascii_lowercase).as_deref() {
         None | Some("source") => false,
         Some("current") => true,
@@ -1274,13 +1296,21 @@ pub(crate) fn explode_kind(d: &cadcraft_doc::Drawing, e: &Entity) -> Option<Vec<
     match &e.kind {
         EntityKind::LwPolyline(p) => {
             let pl = Polyline { vertices: p.vertices.clone(), closed: p.closed };
+            // The pieces stay where the polyline is: lines get its plane's world points, arcs its
+            // extrusion (kept in `common`) and elevation.
+            let plane = e.plane().unwrap_or(cadcraft_geom::Mat4::IDENTITY);
+            let at = |q: Vec2| plane.apply(q.to3(0.0));
             Some(
                 pl.segments()
                     .into_iter()
                     .map(|s| {
                         let k = match s {
-                            Segment::Line(l) => line(l.a, l.b),
-                            Segment::Arc { arc: a, .. } => arc(&a),
+                            Segment::Line(l) => EntityKind::Line(cadcraft_doc::Line { a: at(l.a), b: at(l.b) }),
+                            Segment::Arc { arc: a, .. } => {
+                                let mut k = arc(&a);
+                                k.set_elevation(e.kind.elevation());
+                                k
+                            }
                         };
                         Entity { handle: Handle(0), common: e.common.clone(), kind: k }
                     })
@@ -1556,6 +1586,11 @@ fn run_breakat(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Join lines/arcs/polylines that share endpoints into one polyline (or merge collinear lines).
 pub(crate) fn join(s: &mut Session, hs: &[Handle]) -> Result<Option<Handle>> {
+    for h in hs {
+        if let Some(e) = s.doc()?.entity(*h) {
+            level_only(e)?;
+        }
+    }
     if let Some(h) = super::modify2::join_curves(s, hs)? {
         return Ok(Some(h));
     }
@@ -2313,14 +2348,15 @@ impl Interactive for OffsetM {
                     let dist = match self.dist {
                         Some(d) => d,
                         None => {
-                            let polys = crate::select::hit_polylines(s.doc()?, &e, 1e-4);
+                            let (flat, q) = in_plane(&e, p);
+                            let polys = crate::select::hit_polylines(s.doc()?, &flat, 1e-4);
                             polys
                                 .iter()
-                                .flat_map(|pl| pl.windows(2).filter_map(|w| Some(Line::new(*w.first()?, *w.get(1)?).dist(p))))
+                                .flat_map(|pl| pl.windows(2).filter_map(|w| Some(Line::new(*w.first()?, *w.get(1)?).dist(q))))
                                 .fold(f64::INFINITY, f64::min)
                         }
                     };
-                    match offset_kind(&e.kind, dist, p) {
+                    match offset_entity(&e, dist, p) {
                         Some(k) => {
                             let before = s.state()?.doc.clone();
                             let (erase, current) = offset_options(s);
@@ -2348,9 +2384,13 @@ impl Interactive for OffsetM {
         let Some(e) = d.entity(h) else { return Vec::new() };
         let dist = match self.dist {
             Some(x) => x,
-            None => crate::select::entity_distance(d, e, c, 1e-3),
+            None => {
+                let (flat, q) = in_plane(e, c);
+                crate::select::entity_distance(d, &flat, q, 1e-3)
+            }
         };
-        offset_kind(&e.kind, dist, c).into_iter().collect()
+        // The copy in its plane, as plan view shows it.
+        offset_entity(e, dist, c).map(|kind| plan_kinds(&Entity { kind, ..(**e).clone() })).unwrap_or_default()
     }
 }
 
@@ -2693,6 +2733,11 @@ impl ChamferCut {
 /// arc or line is added and both objects are left as they were.
 #[allow(clippy::too_many_arguments)]
 fn fillet_corner(s: &mut Session, h1: Handle, p1: Vec2, h2: Handle, p2: Vec2, r: f64, cut: Option<ChamferCut>, trim: bool) -> Result<Option<Handle>> {
+    for h in [h1, h2] {
+        if let Some(e) = s.doc()?.entity(h) {
+            level_only(e)?;
+        }
+    }
     let dist = cut.map(|c| move |u1: Vec2, u2: Vec2| c.distances(u1, u2));
     if let Some(made) = super::modify2::fillet_pline(s, h1, p1, h2, p2, r, dist.as_ref().map(|f| f as super::modify2::ChamferDistances), trim)? {
         return Ok(made);
@@ -2731,6 +2776,7 @@ fn chamfer_polyline(s: &mut Session, h: Handle, cut: ChamferCut) -> Result<usize
     if d.layer(&e.common.layer).is_some_and(|l| l.locked) {
         return Err(EngineError::Other("The object is on a locked layer.".into()));
     }
+    level_only(e)?;
     let EntityKind::LwPolyline(pl) = &e.kind else { return Err(EngineError::Other("Select a 2D polyline.".into())) };
     let vs = &pl.vertices;
     let n = vs.len();

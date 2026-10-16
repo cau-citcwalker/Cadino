@@ -1679,7 +1679,15 @@ fn vport_record(d: &mut Drawing, t: &T) {
     }
     let aspect = t.f(41).filter(|a| a.is_finite() && *a > 0.0).unwrap_or(0.0);
     let clamp = |p: Vec2| Vec2::new(p.x.clamp(0.0, 1.0), p.y.clamp(0.0, 1.0));
-    let tile = VportTile { min: clamp(min), max: clamp(max), center, height, aspect };
+    // The view direction as stored (plan when missing or unusable), and the look from the render
+    // mode: 3/4 flat/Gouraud shaded, 5/6 the same with wireframe edges.
+    // ponytail: R2007+ visual style objects (DXF 348) aren't read: a tile whose style is only
+    // there reads as wireframe; upgrade: resolve 348 to its VISUALSTYLE's type.
+    let v = t.p(16);
+    let view_dir = if v.is_finite() && v != Vec3::ZERO { [v.x, v.y, v.z] } else { [0.0, 0.0, 1.0] };
+    let mode = t.i(281).unwrap_or(0);
+    let (shaded, edges) = (matches!(mode, 3..=6), matches!(mode, 5 | 6));
+    let tile = VportTile { min: clamp(min), max: clamp(max), center, height, aspect, view_dir, shaded, edges };
     let name = if name.eq_ignore_ascii_case(VportConfig::ACTIVE) { VportConfig::ACTIVE.to_string() } else { name };
     let room = d.vports.len() < MAX_OBJECTS;
     match d.vports.iter_mut().find(|c| c.name.eq_ignore_ascii_case(&name)) {

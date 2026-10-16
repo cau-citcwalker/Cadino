@@ -246,6 +246,13 @@ pub fn parse_point(text: &str, last: Vec2) -> Option<Vec2> {
 /// `parse_point` with polar angles read per `angles` (AUNITS, ANGBASE, ANGDIR); `d<<a` and
 /// `d<<<a` measure from +X counterclockwise (in degrees and in AUNITS).
 pub fn parse_point_with(text: &str, last: Vec2, angles: &crate::units::AngleSettings) -> Option<Vec2> {
+    parse_point_z(text, last, None, angles).map(|(p, _)| p)
+}
+
+/// [`parse_point_with`] that reads the height too: `x,y,z` is at `z`; the relative forms are
+/// measured from the last point's height `last_z` (`@dx,dy,dz` adds `dz`; `@dx,dy`, `@d<a` and
+/// `@` keep it); the other forms are on the XY plane (`None`).
+pub fn parse_point_z(text: &str, last: Vec2, last_z: Option<f64>, angles: &crate::units::AngleSettings) -> Option<(Vec2, Option<f64>)> {
     let t = text.trim();
     if t.is_empty() {
         return None;
@@ -260,13 +267,13 @@ pub fn parse_point_with(text: &str, last: Vec2, angles: &crate::units::AngleSett
         (false, t)
     };
     if rel && body.is_empty() {
-        return Some(last);
+        return Some((last, last_z));
     }
-    let p = if let Some((d, a)) = body.split_once('<') {
+    let (p, z) = if let Some((d, a)) = body.split_once('<') {
         let dist = crate::units::parse_distance(d)?;
         // `d<<a` / `d<<<a`: the override prefixes keep their `<<` / `<<<`.
         let ang = if a.starts_with('<') { angles.direction(&format!("<{a}"))? } else { angles.direction(a)? };
-        Vec2::from_angle(ang) * dist
+        (Vec2::from_angle(ang) * dist, None)
     } else {
         let parts: Vec<&str> = body.split(',').collect();
         if parts.len() < 2 || parts.len() > 3 {
@@ -274,13 +281,14 @@ pub fn parse_point_with(text: &str, last: Vec2, angles: &crate::units::AngleSett
         }
         let x = crate::units::parse_distance(parts.first()?)?;
         let y = crate::units::parse_distance(parts.get(1)?)?;
-        if let Some(z) = parts.get(2) {
-            crate::units::parse_distance(z)?;
-        }
-        Vec2::new(x, y)
+        let z = match parts.get(2) {
+            Some(z) => Some(crate::units::parse_distance(z)?),
+            None => None,
+        };
+        (Vec2::new(x, y), z)
     };
-    let r = if rel { last + p } else { p };
-    r.is_finite().then_some(r)
+    let (r, z) = if rel { (last + p, z.map_or(last_z, |dz| Some(last_z.unwrap_or(0.0) + dz))) } else { (p, z) };
+    (r.is_finite() && z.is_none_or(f64::is_finite)).then_some((r, z))
 }
 
 #[cfg(test)]
@@ -304,6 +312,26 @@ mod tests {
         assert_eq!(parse_point("1", last), None);
         assert_eq!(parse_point("a,b", last), None);
         assert_eq!(parse_point("1,2,3,4", last), None);
+    }
+
+    #[test]
+    fn points_keep_their_height() {
+        let (last, a) = (Vec2::new(10.0, 10.0), crate::units::AngleSettings::default());
+        let z = |t: &str, lz: Option<f64>| parse_point_z(t, last, lz, &a);
+        assert_eq!(z("3,4,5", None), Some((Vec2::new(3.0, 4.0), Some(5.0))));
+        assert_eq!(z("#3,4,-5", Some(2.0)), Some((Vec2::new(3.0, 4.0), Some(-5.0))));
+        // Plain x,y is on the XY plane, whatever the last point's height.
+        assert_eq!(z("3,4", Some(7.0)), Some((Vec2::new(3.0, 4.0), None)));
+        // Relative forms are measured from the last point, height included.
+        assert_eq!(z("@1,2,3", Some(7.0)), Some((Vec2::new(11.0, 12.0), Some(10.0))));
+        assert_eq!(z("@1,2,3", None), Some((Vec2::new(11.0, 12.0), Some(3.0))));
+        assert_eq!(z("@1,2", Some(7.0)), Some((Vec2::new(11.0, 12.0), Some(7.0))));
+        assert_eq!(z("@1,2", None), Some((Vec2::new(11.0, 12.0), None)));
+        assert_eq!(z("@", Some(7.0)), Some((last, Some(7.0))));
+        // Hostile heights are refused, not made infinite.
+        assert_eq!(z("1,2,x", None), None);
+        assert_eq!(z("@1,2,1e308", Some(1e308)), None);
+        assert_eq!(z("1,2,nan", None), None);
     }
 
     #[test]

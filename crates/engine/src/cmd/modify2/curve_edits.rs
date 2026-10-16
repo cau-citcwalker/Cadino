@@ -239,6 +239,10 @@ pub(crate) fn join_curves(s: &mut Session, hs: &[Handle]) -> Result<Option<Handl
     if ents.iter().any(|e| curves::is_locked(s, e.handle)) {
         return Err(other("An object is on a locked layer."));
     }
+    // JOIN and SPLINEDIT Join both come here: tilted curves mix plane and world coordinates.
+    for e in &ents {
+        crate::cmd::helpers::level_only(e)?;
+    }
     let ells: Vec<(Handle, Ellipse)> =
         ents.iter().filter_map(|e| if let EntityKind::Ellipse(x) = &e.kind { Some((e.handle, ellipse_of(x))) } else { None }).collect();
     if let Some((src_h, src)) = ells.first().copied()

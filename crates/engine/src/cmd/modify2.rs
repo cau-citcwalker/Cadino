@@ -109,7 +109,8 @@ pub(crate) fn as_lwpoly(k: &EntityKind) -> Option<LwPolyline> {
         EntityKind::LwPolyline(p) => Some(p.clone()),
         EntityKind::Line(_) | EntityKind::Arc(_) => {
             let c = Chain::of(k)?;
-            Some(LwPolyline { vertices: c.vertices(), closed: false, const_width: 0.0, elevation: 0.0, plinegen: false })
+            // The line's or arc's height in its plane stays the polyline's.
+            Some(LwPolyline { vertices: c.vertices(), closed: false, const_width: 0.0, elevation: k.elevation(), plinegen: false })
         }
         _ => None,
     }
@@ -219,6 +220,7 @@ pub(crate) fn spline_vertices(vs: &[PolyVertex], closed: bool, segs: usize) -> V
 /// Join connected lines/arcs/open polylines onto the ends of polyline `h` (kept in place).
 pub(crate) fn pedit_join(s: &mut Session, h: Handle, others: &[Handle], fuzz: f64) -> Result<usize> {
     let e = curves::entity(s, h)?;
+    level_only(&e)?;
     let mut base = as_lwpoly(&e.kind).ok_or_else(|| other("Select a polyline."))?;
     if base.closed {
         return Err(other("Cannot join to a closed polyline."));
@@ -231,7 +233,9 @@ pub(crate) fn pedit_join(s: &mut Session, h: Handle, others: &[Handle], fuzz: f6
             continue;
         }
         let Ok(oe) = curves::entity(s, *o) else { continue };
-        let ok = matches!(&oe.kind, EntityKind::Line(_) | EntityKind::Arc(_)) || matches!(&oe.kind, EntityKind::LwPolyline(p) if !p.closed);
+        // Objects in a tilted plane don't join (their own coordinates aren't where plan shows them).
+        let ok = oe.plan_xf().is_none()
+            && (matches!(&oe.kind, EntityKind::Line(_) | EntityKind::Arc(_)) || matches!(&oe.kind, EntityKind::LwPolyline(p) if !p.closed));
         if ok && let Some(c) = Chain::of(&oe.kind) {
             pool.push((*o, c));
         }
@@ -279,6 +283,11 @@ fn pedit_apply(s: &mut Session, h: Handle, opt: &str, p: &Value) -> Result<Value
     let e = curves::entity(s, h)?;
     if curves::is_locked(s, h) {
         return Err(other("The object is on a locked layer."));
+    }
+    // Join and Edit vertex take other objects and points in plan; the in-plane options (Close,
+    // Width, Fit, Spline, Decurve, Reverse, Ltype gen) work in any plane.
+    if matches!(opt, "join" | "j" | "vertex" | "e") {
+        level_only(&e)?;
     }
     let mut pl = match &e.kind {
         EntityKind::LwPolyline(pl) => pl.clone(),
@@ -375,6 +384,13 @@ fn run_pedit(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("pedit", "`handle` is required"));
     }
     let opt = str_param(p, "option").ok_or_else(|| bad("pedit", "`option` is required"))?.to_ascii_lowercase();
+    // Join and Edit vertex refuse tilted objects: check them all before editing any, so a
+    // refusal leaves the drawing unchanged.
+    if matches!(opt.as_str(), "join" | "j" | "vertex" | "e") {
+        for h in &hs {
+            level_only(&curves::entity(s, *h)?)?;
+        }
+    }
     let mut out = Vec::new();
     for h in hs {
         out.push(pedit_apply(s, h, &opt, p)?);
@@ -559,11 +575,18 @@ impl Interactive for PeditM {
                     "open" | "o" => self.apply(s, "open", json!({}))?,
                     "close" | "c" => self.apply(s, "close", json!({}))?,
                     "join" | "j" => {
+                        // Tilted polylines can't join objects picked in plan.
+                        if let Some(h) = self.h {
+                            level_only(&curves::entity(s, h)?)?;
+                        }
                         self.join = SelectPhase::default();
                         self.phase = PPhase::Join;
                     }
                     "width" | "w" => self.phase = PPhase::Width,
                     "edit vertex" | "e" => {
+                        if let Some(h) = self.h {
+                            level_only(&curves::entity(s, h)?)?;
+                        }
                         self.vertex = 0;
                         self.phase = PPhase::Vertex;
                     }
@@ -845,6 +868,20 @@ fn len_mode(p: &Value) -> Option<LenMode> {
     }
 }
 
+/// [`lengthen_kind`] of `e` in its own plane: its plan points taken into it ([`to_local`]), the
+/// result at its elevation.
+fn lengthen_entity(e: &Entity, pick: Option<Vec2>, mode: LenMode) -> Result<EntityKind> {
+    let mode = match mode {
+        LenMode::To(p) => LenMode::To(to_local(e, p)),
+        m => m,
+    };
+    let mut k = lengthen_kind(&e.kind, pick.map(|p| to_local(e, p)), mode)?;
+    if e.plane().is_some() {
+        k.set_elevation(e.kind.elevation());
+    }
+    Ok(k)
+}
+
 fn run_lengthen(s: &mut Session, p: &Value) -> Result<Value> {
     let h = targets(s, p)?.first().copied().ok_or_else(|| bad("lengthen", "`handle` is required"))?;
     let e = curves::entity(s, h)?;
@@ -855,7 +892,7 @@ fn run_lengthen(s: &mut Session, p: &Value) -> Result<Value> {
     if curves::is_locked(s, h) {
         return Err(other("The object is on a locked layer."));
     }
-    let k = lengthen_kind(&e.kind, point_param(p, "pick"), mode)?;
+    let k = lengthen_entity(&e, point_param(p, "pick"), mode)?;
     let l = measure_len(&k).map(|x| x.0).unwrap_or(0.0);
     set_kind(s, h, k)?;
     Ok(json!({ "handle": h.hex(), "length": l }))
@@ -974,17 +1011,17 @@ impl Interactive for LengthenM {
                     return Ok(Step::Continue);
                 }
                 let mode = self.mode.ok_or_else(|| other("No lengthen mode."))?;
-                let k = curves::entity(s, h)?.kind;
-                let nk = lengthen_kind(&k, Some(*p), mode)?;
+                let e = curves::entity(s, h)?;
+                let nk = lengthen_entity(&e, Some(*p), mode)?;
                 set_kind(s, h, nk)?;
-                self.history.push((h, k));
+                self.history.push((h, e.kind));
                 Ok(Step::Continue)
             }
             (LPhase::DynEnd(h, pick), Input::Point(p)) => {
-                let k = curves::entity(s, h)?.kind;
-                let nk = lengthen_kind(&k, Some(pick), LenMode::To(*p))?;
+                let e = curves::entity(s, h)?;
+                let nk = lengthen_entity(&e, Some(pick), LenMode::To(*p))?;
                 set_kind(s, h, nk)?;
-                self.history.push((h, k));
+                self.history.push((h, e.kind));
                 self.phase = LPhase::Change;
                 Ok(Step::Continue)
             }
@@ -1002,7 +1039,8 @@ impl Interactive for LengthenM {
         if let LPhase::DynEnd(h, pick) = self.phase
             && let Ok(e) = curves::entity(s, h)
         {
-            return lengthen_kind(&e.kind, Some(pick), LenMode::To(c)).map(|k| vec![k]).unwrap_or_default();
+            // In its plane, as plan view shows it.
+            return lengthen_entity(&e, Some(pick), LenMode::To(c)).map(|kind| plan_kinds(&Entity { kind, ..e })).unwrap_or_default();
         }
         Vec::new()
     }
@@ -1789,6 +1827,7 @@ pub(crate) fn fillet_polyline(s: &mut Session, h: Handle, r: f64) -> Result<usiz
         return Err(other("The object is on a locked layer."));
     }
     let e = curves::entity(s, h)?;
+    level_only(&e)?;
     let EntityKind::LwPolyline(pl) = &e.kind else { return Err(other("Select a 2D polyline.")) };
     let vs = &pl.vertices;
     let n = vs.len();

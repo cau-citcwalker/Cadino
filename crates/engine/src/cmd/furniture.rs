@@ -1,21 +1,23 @@
 //! Furniture design: panels, part names and materials, cut lists, and drawings made from the
 //! 3D model (VIEWBASE).
 //!
-//! A PANEL is a board whose face is a profile drawn in plan and whose thickness runs along the
-//! plane's normal; the profile stays (it is the drawing). PART names a solid and gives its
+//! A PANEL is a board whose face is a profile drawn in plan (laid on the top, front or right
+//! plane) or one already standing in a plane of its own (used where it is), and whose thickness
+//! runs along the plane's normal; the profile stays (it is the drawing). PART names a solid and gives its
 //! material; CUTLIST lists the parts by name, material and size; VIEWBASE projects the solids
-//! into front, top, right and isometric views with hidden lines dashed ([`hlr`]).
+//! into front, top, right and isometric views with hidden lines dashed ([`hlr`]), on a layout's
+//! sheet (as AutoCAD's drawing views) or in model space.
 
 mod hlr;
 
-use cadcraft_doc::{Common, EntityKind, Handle, Layer, Part, Solid3d};
+use cadcraft_doc::{Common, EntityKind, Handle, Layer, Part, Solid3d, Space};
 use cadcraft_geom::{Bounds2, EPS, Mat4, PolyVertex, Vec2, Vec3, ViewDir};
 use cadcraft_kernel::Seg;
 use serde_json::{Value, json};
 
 use super::curves::KW;
 use super::machines::{SelOutcome, SelectPhase, number};
-use super::solids::{all_or_nothing, distance, kernel, locked_err, p3, profile, solid, solids};
+use super::solids::{all_or_nothing, distance, kernel, locked_err, normal_of, p3, profile, solid, solids};
 use super::*;
 use crate::{Accept, EngineError, Input, Interactive, Prompt, Result, Session, Step};
 
@@ -31,7 +33,8 @@ pub fn specs() -> Vec<CommandSpec> {
             .menu(&["Draw", "Modeling", "Panel"])
             .params(
                 "{handle (closed profile) | corner1: [x,y], corner2: [x,y], thickness? (default 18), orientation?: \"top\" | \"front\" | \"right\", \
-                 base?: [x,y] (profile point at the plane's origin; default its lower-left), at?: [x,y,z] (where that point goes), name?, material?}",
+                 base?: [x,y] (profile point at the plane's origin; default its lower-left), at?: [x,y,z] (where that point goes), name?, material?}: \
+                 a profile in a tilted or standing plane is used where it is, its thickness along the plane's normal (no orientation, base or at)",
             )
             .interactive(|_| Ok(Box::new(PanelM::default()))),
         CommandSpec::new("part", "Part", run_part)
@@ -49,9 +52,12 @@ pub fn specs() -> Vec<CommandSpec> {
             .menu(&["Draw", "Drawing Views", "Base View"])
             .alias(&["make2d"])
             .params(
-                "{handles? (default every 3D solid on a layer that is on and thawed), views?: [\"front\",\"top\",\"right\",\"iso\"] (default front, top, right), at?: [x,y] (front view's lower-left), \
-                 scale? (default 1), gap? (default a tenth of the model's size), hidden?: bool (default true; the iso view shows none), \
-                 dims?: bool (default true), projection?: \"third\" | \"first\" (default third)}",
+                "{handles? (default every 3D solid on a layer that is on and thawed), views?: [\"front\",\"top\",\"right\",\"iso\"] (default front, top, right), \
+                 layout?: name (default \"Drawing views\", made when missing; the views go on its sheet), space?: \"paper\" | \"model\" (default paper; model draws them in model space), \
+                 at?: [x,y] (front view's lower-left: on the sheet, default the views centred in its printable area; in model space default beside the model), \
+                 scale?: model units per paper unit or \"1:10\" (default on a sheet the largest drawing of 1, 2 or 5 times a power of ten that fits; in model space 1), \
+                 gap? (between views, drawn units; default a tenth of the drawn model's size, at least 15 mm on a sheet), hidden?: bool (default true; the iso view shows none), \
+                 dims?: bool (default true: overall sizes reading model units, 2.5 mm text on a sheet), projection?: \"third\" | \"first\" (default third)} → {views, capped, layout, scale}",
             )
             .interactive(|_| Ok(Box::new(PickThenPoint::new(PickFor::Views)))),
     ]
@@ -115,10 +121,21 @@ fn run_panel(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let (name, material) = part_params(CMD, p)?;
     // The profile: an object's, or a rectangle's; with its lower-left corner.
-    let (segs, lower_left) = match p.get("handle").filter(|v| !v.is_null()) {
+    let (segs, lower_left, standing) = match p.get("handle").filter(|v| !v.is_null()) {
         Some(_) => object_profile(s, targets(s, p)?.first().copied().ok_or_else(|| bad(CMD, "`handle` is required"))?)?,
-        None => rect_profile(point_req(CMD, p, "corner1")?, point_req(CMD, p, "corner2")?)?,
+        None => {
+            let (segs, lo) = rect_profile(point_req(CMD, p, "corner1")?, point_req(CMD, p, "corner2")?)?;
+            (segs, lo, None)
+        }
     };
+    // A profile standing in a plane of its own is the panel's face where it is.
+    if let Some(n) = standing {
+        if ["orientation", "base", "at"].iter().any(|k| p.get(*k).is_some_and(|v| !v.is_null())) {
+            return Err(bad(CMD, "the profile stands in a plane of its own and is used where it is: leave out orientation, base and at"));
+        }
+        let built = cadcraft_kernel::extrude(&segs, n * thickness).map_err(kernel)?;
+        return add_panel(s, built, name, material);
+    }
     let base = match p.get("base").filter(|v| !v.is_null()) {
         Some(_) => point_req(CMD, p, "base")?,
         None => lower_left,
@@ -151,6 +168,10 @@ fn run_panel(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(CMD, "the panel's corners are out of range"));
     }
     let built = cadcraft_kernel::extrude(&placed, plane.thickness_dir() * thickness).map_err(kernel)?;
+    add_panel(s, built, name, material)
+}
+
+fn add_panel(s: &mut Session, built: cadcraft_kernel::Built, name: Option<String>, material: Option<String>) -> Result<Value> {
     let mut k = solid(built);
     if let EntityKind::Solid3d(x) = &mut k {
         x.part = Part { name: name.unwrap_or_default(), material: material.unwrap_or_default() };
@@ -159,17 +180,34 @@ fn run_panel(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "handle": h.hex() }))
 }
 
-/// A closed profile object drawn in plan: its pieces and its lower-left corner.
-fn object_profile(s: &Session, h: Handle) -> Result<(Vec<Seg>, Vec2)> {
+/// A closed profile object: its pieces where they are, its lower-left corner in plan, and the
+/// normal of its plane when it stands in a plane of its own (tilted, standing or upside down, or a
+/// 3D polyline that isn't level): the panel's thickness then runs along that normal from where
+/// the profile is.
+fn object_profile(s: &Session, h: Handle) -> Result<(Vec<Seg>, Vec2, Option<Vec3>)> {
     const CMD: &str = "panel";
     let d = s.doc()?;
     let e = d.entity(h).ok_or_else(|| bad(CMD, format!("no object with handle {}", h.hex())))?;
-    let n = e.common.extrusion;
-    if n.x.abs() > 1e-9 || n.y.abs() > 1e-9 || n.z < 0.0 {
-        return Err(bad(CMD, "the profile must be drawn in plan (on the XY plane)"));
-    }
-    let segs = profile(&e.kind, true)?.ok_or_else(|| bad(CMD, "the profile must be a closed polyline, circle or single-loop region"))?;
-    Ok((segs, cadcraft_doc::entity_bounds(d, e, 0).min))
+    let segs = profile(e, true)?.ok_or_else(|| bad(CMD, "the profile must be a closed polyline, circle or single-loop region"))?;
+    let standing = match &e.kind {
+        EntityKind::Polyline3d(pl) if pl.points.iter().any(|q| pl.points.first().is_some_and(|f| (q.z - f.z).abs() > EPS)) => {
+            // Its winding's normal (Newell's method).
+            let n = segs
+                .iter()
+                .fold(Vec3::ZERO, |n, g| match *g {
+                    Seg::Line { a, b } | Seg::Arc { a, b, .. } => n + a.cross(b),
+                    Seg::Circle { normal, .. } => n + normal,
+                })
+                .normalized();
+            if n == Vec3::ZERO {
+                return Err(bad(CMD, "the profile encloses no area"));
+            }
+            Some(n)
+        }
+        _ if e.plan_xf().is_some() => Some(normal_of(e)),
+        _ => None,
+    };
+    Ok((segs, cadcraft_doc::entity_bounds(d, e, 0).min, standing))
 }
 
 /// The rectangle with corners `a` and `b`: its sides and its lower-left corner.
@@ -195,6 +233,14 @@ struct PanelM {
 impl PanelM {
     fn profile_given(&self) -> bool {
         self.vals.contains_key("handle") || self.vals.contains_key("corner2")
+    }
+    fn finish(&mut self, s: &mut Session) -> Result<Step> {
+        let r = run_panel(s, &Value::Object(self.vals.clone()));
+        if r.is_err() {
+            // Start again: any value given may be the one that failed, so none is kept.
+            *self = PanelM::default();
+        }
+        r.map(|_| Step::Done)
     }
 }
 
@@ -235,7 +281,12 @@ impl Interactive for PanelM {
             };
             match h {
                 Some(h) => {
-                    object_profile(s, h)?;
+                    if object_profile(s, h)?.2.is_some() {
+                        // Standing in its own plane: used where it is, so only the thickness is asked.
+                        for k in ["orientation", "base", "at"] {
+                            self.vals.insert(k.into(), Value::Null);
+                        }
+                    }
                     self.vals.insert("handle".into(), json!(h.hex()));
                     self.picking = false;
                 }
@@ -269,6 +320,9 @@ impl Interactive for PanelM {
                 return Err(EngineError::Other("The thickness must be positive.".into()));
             }
             self.vals.insert("thickness".into(), json!(t));
+            if self.vals.contains_key("at") {
+                return self.finish(s);
+            }
             return Ok(Step::Continue);
         }
         if !self.vals.contains_key("orientation") {
@@ -305,12 +359,7 @@ impl Interactive for PanelM {
             _ => return Ok(Step::Continue),
         };
         self.vals.insert("at".into(), at);
-        let r = run_panel(s, &Value::Object(self.vals.clone()));
-        if r.is_err() {
-            // Start again: any value given may be the one that failed, so none is kept.
-            *self = PanelM::default();
-        }
-        r.map(|_| Step::Done)
+        self.finish(s)
     }
     fn preview(&self, _s: &Session, cursor: Vec2) -> Vec<EntityKind> {
         match self.corner {
@@ -633,18 +682,122 @@ fn ensure_view_layers(s: &mut Session) -> Result<String> {
     Ok(if dashed && !by_layer { "HIDDEN".into() } else { Common::default().linetype })
 }
 
-fn dimension(s: &mut Session, a: Vec2, b: Vec2, at: Vec2, rotation: f64, scale: f64) -> Result<Handle> {
+/// Text height of the view dimensions on a sheet (millimetres).
+const PAPER_TEXT_MM: f64 = 2.5;
+/// The layout VIEWBASE draws on when none is named.
+const VIEWS_LAYOUT: &str = "Drawing views";
+
+/// A scale as model units per drawn unit: a positive number, or a ratio such as `"1:10"`
+/// (drawn : model).
+fn scale_value(v: &Value) -> Option<f64> {
+    let k = match v {
+        Value::Number(n) => n.as_f64()?,
+        Value::String(t) => match t.split_once(':') {
+            Some((a, b)) => number(b.trim())? / number(a.trim())?,
+            None => number(t.trim())?,
+        },
+        _ => return None,
+    };
+    (k.is_finite() && k > 0.0).then_some(k)
+}
+
+/// The scales tried when fitting views on a sheet, largest drawing first: 1, 2 and 5 times the
+/// powers of ten from 1000:1 to 1:50 000 000 (model units per paper unit).
+fn standard_scales() -> impl Iterator<Item = f64> {
+    (-3..=7).flat_map(|e| [1.0, 2.0, 5.0].map(move |m| m * 10f64.powi(e)))
+}
+
+/// Each view's rectangle at scale `k` (model units per drawn unit) with `gap` between views, the
+/// front view's lower-left corner at the origin; `ext` gives a view's extent in model units.
+fn arrange(names: &[&'static str], ext: &dyn Fn(&str) -> Bounds2, k: f64, gap: f64, first_angle: bool) -> Vec<(&'static str, Bounds2)> {
+    let size = |n: &str| {
+        let b = ext(n);
+        (b.max - b.min) * (1.0 / k)
+    };
+    let f = size("front");
+    names
+        .iter()
+        .map(|n| {
+            let s = size(n);
+            let at = match (*n, first_angle) {
+                ("top", false) => Vec2::new(0.0, f.y + gap),
+                ("top", true) => Vec2::new(0.0, -gap - s.y),
+                ("right", false) => Vec2::new(f.x + gap, 0.0),
+                ("right", true) => Vec2::new(-gap - s.x, 0.0),
+                ("iso", _) => Vec2::new(f.x + gap, f.y + gap),
+                _ => Vec2::ZERO,
+            };
+            (*n, Bounds2 { min: at, max: at + s })
+        })
+        .collect()
+}
+
+/// The views' rectangles with `margin` for the dimensions below and left of the orthographic ones.
+fn footprint(rects: &[(&str, Bounds2)], margin: f64) -> Bounds2 {
+    rects.iter().fold(Bounds2::EMPTY, |a, (n, r)| {
+        let m = if *n == "iso" { 0.0 } else { margin };
+        a.union(&Bounds2 { min: r.min - Vec2::new(m, m), max: r.max })
+    })
+}
+
+/// The layout `name` (made, with no viewport, when missing) and its sheet.
+fn sheet_of(s: &mut Session, name: &str) -> Result<(String, cadcraft_render::Sheet)> {
+    let name = match s.doc()?.layout(name) {
+        Some(l) => l.name.clone(),
+        None => {
+            let spec = find_command("layout.new").ok_or_else(|| EngineError::UnknownCommand("layout.new".into()))?;
+            let r = (spec.run)(s, &json!({ "name": name, "viewport": false }))?;
+            r.get("name").and_then(Value::as_str).unwrap_or(name).to_string()
+        }
+    };
+    let sheet = cadcraft_render::sheet(s.doc()?, &name).ok_or_else(|| bad("viewbase", format!("no layout `{name}`")))?;
+    Ok((name, sheet))
+}
+
+/// Runs `f` with `space` as the space objects are added to (the views' layout, or model space),
+/// then puts back the space being edited.
+fn in_space<T>(s: &mut Session, space: &Space, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
+    let st = s.state_mut()?;
+    let was = (std::mem::replace(&mut st.space, space.clone()), st.mspace.take());
+    let r = f(s);
+    if let Ok(st) = s.state_mut() {
+        (st.space, st.mspace) = was;
+    }
+    r
+}
+
+/// How the views are dimensioned: at all, the dimension lines' offset from a view, the model
+/// units per drawn unit (the dimensions read model sizes), and on a sheet the text height.
+struct Dims {
+    on: bool,
+    off: f64,
+    k: f64,
+    text: Option<f64>,
+}
+
+fn dimension(s: &mut Session, a: Vec2, b: Vec2, at: Vec2, rotation: f64, dims: &Dims) -> Result<Handle> {
     let spec = find_command("dimlinear").ok_or_else(|| EngineError::UnknownCommand("dimlinear".into()))?;
     let r = (spec.run)(s, &json!({ "p1": [a.x, a.y], "p2": [b.x, b.y], "at": [at.x, at.y], "rotation": rotation }))?;
     let h = r.get("handle").and_then(Value::as_str).and_then(Handle::parse_hex).ok_or_else(|| EngineError::Other("no dimension was made".into()))?;
-    // A scaled view measures true sizes.
-    if (scale - 1.0).abs() > 1e-12 {
-        s.doc_mut()?.modify_entity(h, |e| {
-            if let EntityKind::Dimension(d) = &mut e.kind {
-                d.overrides.insert("linearFactor".into(), json!(1.0 / scale));
+    // On a sheet the whole style is scaled (DIMSCALE) to the paper's text height.
+    let d = s.doc()?;
+    let style_text = match d.entity(h).map(|e| &e.kind) {
+        Some(EntityKind::Dimension(dm)) => d.dim_style(&dm.style).cloned().unwrap_or_default().with_overrides(&dm.overrides).text_height,
+        _ => 0.0,
+    };
+    let dimscale = dims.text.map(|t| t / style_text).filter(|v| v.is_finite() && *v > 0.0);
+    let k = dims.k;
+    s.doc_mut()?.modify_entity(h, |e| {
+        if let EntityKind::Dimension(d) = &mut e.kind {
+            // A scaled view measures true sizes (DIMLFAC).
+            if (k - 1.0).abs() > 1e-12 {
+                d.overrides.insert("linearFactor".into(), json!(k));
             }
-        })?;
-    }
+            if let Some(v) = dimscale {
+                d.overrides.insert("scale".into(), json!(v));
+            }
+        }
+    })?;
     Ok(h)
 }
 
@@ -673,7 +826,27 @@ fn run_viewbase(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Some(v) => return Err(bad(CMD, format!("`views` must be an array of view names, not {v}"))),
     };
-    let scale = size_param(CMD, p, "scale", false)?.unwrap_or(1.0);
+    let scale = match p.get("scale") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            scale_value(v)
+                .ok_or_else(|| bad(CMD, format!("`scale` is model units per paper unit (a positive number) or a ratio such as \"1:10\", not {v}")))?,
+        ),
+    };
+    let model = match p.get("space") {
+        None | Some(Value::Null) => false,
+        Some(v) => match v.as_str().map(str::to_ascii_lowercase).as_deref() {
+            Some("paper") => false,
+            Some("model") => true,
+            _ => return Err(bad(CMD, format!("`space` is \"paper\" or \"model\", not {v}"))),
+        },
+    };
+    let layout = match text_param(CMD, p, "layout")? {
+        _ if model => None,
+        Some(n) if n.eq_ignore_ascii_case("model") => None,
+        Some(n) if !n.is_empty() => Some(n),
+        _ => Some(VIEWS_LAYOUT.to_string()),
+    };
     let hidden = bool_or(p, "hidden", true);
     let dims = bool_or(p, "dims", true);
     let first_angle = match p.get("projection") {
@@ -684,39 +857,24 @@ fn run_viewbase(s: &mut Session, p: &Value) -> Result<Value> {
             _ => return Err(bad(CMD, format!("`projection` is \"third\" or \"first\", not {v}"))),
         },
     };
+    let gap = size_param(CMD, p, "gap", true)?;
+    let at = match p.get("at").filter(|v| !v.is_null()) {
+        Some(_) => Some(point_req(CMD, p, "at")?),
+        None => None,
+    };
     let refs: Vec<&Solid3d> = xs.iter().map(|(_, x)| x).collect();
-    let ext = |n: &str| hlr::extent(&refs, view_dir(n));
-    let (front, top, right) = (ext("front"), ext("top"), ext("right"));
+    // Each view's extent in model units, once.
+    let exts: Vec<(&str, Bounds2)> =
+        VIEWS.iter().filter(|(n, _)| *n != "iso" || names.contains(n)).map(|(n, _)| (*n, hlr::extent(&refs, view_dir(n)))).collect();
+    let ext = |n: &str| exts.iter().find(|(m, _)| *m == n).map_or(Bounds2::EMPTY, |(_, b)| *b);
+    let (front, top) = (ext("front"), ext("top"));
     // The model's size: its extent along X, Y and Z.
     let size = front.width().max(front.height()).max(top.height());
     if !size.is_finite() || size <= EPS {
         return Err(bad(CMD, "the solids have no size"));
     }
-    let gap = size_param(CMD, p, "gap", true)?.unwrap_or(size * scale / 10.0);
-    let at = match p.get("at").filter(|v| !v.is_null()) {
-        Some(_) => point_req(CMD, p, "at")?,
-        // Beside the model in plan.
-        None => Vec2::new(top.max.x + size, top.min.y),
-    };
-    let (fw, fh) = (front.width() * scale, front.height() * scale);
-    // Each view's lower-left corner.
-    let corner = |n: &str| -> Vec2 {
-        let (w, h) = match n {
-            "top" => (top.width() * scale, top.height() * scale),
-            "right" => (right.width() * scale, right.height() * scale),
-            _ => (fw, fh),
-        };
-        at + match (n, first_angle) {
-            ("top", false) => Vec2::new(0.0, fh + gap),
-            ("top", true) => Vec2::new(0.0, -gap - h),
-            ("right", false) => Vec2::new(fw + gap, 0.0),
-            ("right", true) => Vec2::new(-gap - w, 0.0),
-            ("iso", _) => Vec2::new(fw + gap, fh + gap),
-            _ => Vec2::ZERO,
-        }
-    };
-    // Every view's lines before the drawing changes.
-    let mut views = Vec::with_capacity(names.len());
+    // Every view's lines (in model units) before the drawing changes.
+    let mut lines = Vec::with_capacity(names.len());
     let mut capped: Vec<String> = Vec::new();
     for n in &names {
         let l = hlr::lines(&refs, view_dir(n));
@@ -724,27 +882,76 @@ fn run_viewbase(s: &mut Session, p: &Value) -> Result<Value> {
             log::warn!("VIEWBASE {n} view: {c}");
             capped.push(format!("{n}: {c}"));
         }
-        let b = ext(n);
-        let origin = corner(n) - b.min * scale;
-        let place = |pts: &Vec<Vec2>| pts.iter().map(|q| *q * scale + origin).collect::<Vec<Vec2>>();
-        let vis: Vec<Vec<Vec2>> = l.visible.iter().map(place).collect();
         // ponytail: the iso view shows visible lines only, as pictorial views do; a per-view
         // choice when someone wants dashes there.
-        let hid: Vec<Vec<Vec2>> = if hidden && *n != "iso" { l.hidden.iter().map(place).collect() } else { Vec::new() };
-        let placed = Bounds2 { min: corner(n), max: corner(n) + (b.max - b.min) * scale };
-        views.push((*n, vis, hid, placed));
+        let hid = if hidden && *n != "iso" { l.hidden } else { Vec::new() };
+        lines.push((*n, l.visible, hid));
     }
-    if views.iter().all(|(_, v, h, _)| v.is_empty() && h.is_empty()) {
+    if lines.iter().all(|(_, v, h)| v.is_empty() && h.is_empty()) {
         return Err(bad(CMD, "the solids have no edges to draw"));
     }
-    all_or_nothing(s, |s| draw_views(s, views, gap, dims, scale)).map(|report| json!({ "views": report, "capped": capped }))
+    all_or_nothing(s, |s| {
+        // On a sheet (its layout made when missing), or in model space.
+        let sheet = match &layout {
+            Some(n) => Some(sheet_of(s, n)?),
+            None => None,
+        };
+        let text = sheet.as_ref().map(|(_, sh)| PAPER_TEXT_MM / sh.unit_mm);
+        let gap_at = |k: f64| {
+            gap.unwrap_or_else(|| {
+                let g = size / k / 10.0;
+                text.map_or(g, |t| g.max(6.0 * t))
+            })
+        };
+        let off = |gap: f64| text.map_or(gap * 0.4, |t| 3.0 * t);
+        let plan = |k: f64| {
+            let gap = gap_at(k);
+            let rects = arrange(&names, &ext, k, gap, first_angle);
+            let fp = footprint(&rects, if dims { off(gap) + 2.0 * text.unwrap_or(0.0) } else { 0.0 });
+            (gap, rects, fp)
+        };
+        let k = match (scale, &sheet) {
+            (Some(k), _) => k,
+            (None, Some((_, sh))) => {
+                let room = sh.printable;
+                let fits = |k: f64| {
+                    let fp = plan(k).2;
+                    fp.width() <= room.width() && fp.height() <= room.height()
+                };
+                standard_scales().find(|k| fits(*k)).unwrap_or(5e7)
+            }
+            (None, None) => 1.0,
+        };
+        let (gap, rects, fp) = plan(k);
+        let at = match (at, &sheet) {
+            (Some(a), _) => a,
+            (None, Some((_, sh))) => sh.printable.center() - fp.center(),
+            // Beside the model in plan.
+            (None, None) => Vec2::new(top.max.x + size, top.min.y),
+        };
+        if !(at + fp.min).is_finite() || !(at + fp.max).is_finite() {
+            return Err(bad(CMD, "the views are out of range at that scale and place"));
+        }
+        let views: Vec<View> = lines
+            .into_iter()
+            .zip(&rects)
+            .map(|((n, vis, hid), (_, r))| {
+                let origin = at + r.min - ext(n).min * (1.0 / k);
+                let place = |pts: Vec<Vec2>| pts.into_iter().map(|q| q * (1.0 / k) + origin).collect::<Vec<Vec2>>();
+                (n, vis.into_iter().map(place).collect(), hid.into_iter().map(place).collect(), Bounds2 { min: at + r.min, max: at + r.max })
+            })
+            .collect();
+        let space = sheet.as_ref().map_or(Space::Model, |(n, _)| Space::Paper(n.clone()));
+        let report = in_space(s, &space, |s| draw_views(s, views, &Dims { on: dims, off: off(gap), k, text }))?;
+        Ok(json!({ "views": report, "capped": capped, "layout": sheet.map(|(n, _)| n), "scale": k }))
+    })
 }
 
 type View = (&'static str, Vec<Vec<Vec2>>, Vec<Vec<Vec2>>, Bounds2);
 
-/// VIEWBASE's drawing: each view's lines, dimensions and group (a failure part way leaves
-/// partial views, so the caller puts the drawing back).
-fn draw_views(s: &mut Session, views: Vec<View>, gap: f64, dims: bool, scale: f64) -> Result<Vec<Value>> {
+/// VIEWBASE's drawing, in the space being edited: each view's lines, dimensions and group (a
+/// failure part way leaves partial views, so the caller puts the drawing back).
+fn draw_views(s: &mut Session, views: Vec<View>, dims: &Dims) -> Result<Vec<Value>> {
     let dashes = ensure_view_layers(s)?;
     let space = s.space();
     let mut report = Vec::new();
@@ -760,12 +967,12 @@ fn draw_views(s: &mut Session, views: Vec<View>, gap: f64, dims: bool, scale: f6
         }
         // ponytail: overall width and height below and left of each orthographic view; hole
         // positions and part sizes (DIMBASELINE chains) by hand until shop drawings need them.
-        let off = gap * 0.4;
-        if dims && n != "iso" && b.width() > EPS {
-            hs.push(dimension(s, b.min, Vec2::new(b.max.x, b.min.y), Vec2::new((b.min.x + b.max.x) / 2.0, b.min.y - off), 0.0, scale)?);
+        let off = dims.off;
+        if dims.on && n != "iso" && b.width() > EPS {
+            hs.push(dimension(s, b.min, Vec2::new(b.max.x, b.min.y), Vec2::new((b.min.x + b.max.x) / 2.0, b.min.y - off), 0.0, dims)?);
         }
-        if dims && n != "iso" && b.height() > EPS {
-            hs.push(dimension(s, b.min, Vec2::new(b.min.x, b.max.y), Vec2::new(b.min.x - off, (b.min.y + b.max.y) / 2.0), 90.0, scale)?);
+        if dims.on && n != "iso" && b.height() > EPS {
+            hs.push(dimension(s, b.min, Vec2::new(b.min.x, b.max.y), Vec2::new(b.min.x - off, (b.min.y + b.max.y) / 2.0), 90.0, dims)?);
         }
         let group = free_group_name(s, &format!("VIEW {n}"));
         if !hs.is_empty() {
@@ -787,19 +994,23 @@ enum PickFor {
 }
 
 /// CUTLIST and VIEWBASE: the solids (Enter: the entire model), then where the table or the front
-/// view goes (VIEWBASE also takes a Scale). A selection with no solids is asked for again; a
-/// failure at the end starts again from the selection.
+/// view goes. VIEWBASE started outside a layout first asks for the layout (made when missing and
+/// made current, as AutoCAD does; Model keeps the views in model space), and takes a Scale. A
+/// selection with no solids is asked for again; a failure at the end starts again from the
+/// selection.
 struct PickThenPoint {
     what: PickFor,
     sel: SelectPhase,
     hs: Option<Vec<Handle>>,
+    /// VIEWBASE's layout: not asked yet, model space (`Some(None)`), or a layout's name.
+    layout: Option<Option<String>>,
     scale: Option<f64>,
     asking_scale: bool,
 }
 
 impl PickThenPoint {
     fn new(what: PickFor) -> Self {
-        PickThenPoint { what, sel: SelectPhase::default(), hs: None, scale: None, asking_scale: false }
+        PickThenPoint { what, sel: SelectPhase::default(), hs: None, layout: None, scale: None, asking_scale: false }
     }
     fn id(&self) -> &'static str {
         match self.what {
@@ -812,13 +1023,55 @@ impl PickThenPoint {
         if hs.is_empty() { json!({}) } else { json!({ "handles": hs.iter().map(|h| h.hex()).collect::<Vec<_>>() }) }
     }
     /// The objects picked, when there are solids among them (or in the model); else select again.
+    /// In a layout's paper space VIEWBASE's views go on that layout.
     fn take(&mut self, s: &mut Session, hs: Vec<Handle>) -> Result<Step> {
         if let Err(e) = chosen(s, &Self::params(&hs), self.id(), self.what == PickFor::Views) {
             self.sel = SelectPhase::default();
             return Err(e);
         }
+        if self.what == PickFor::Views
+            && let Space::Paper(n) = s.space()
+        {
+            self.layout = Some(Some(n));
+        }
         self.hs = Some(hs);
         Ok(Step::Continue)
+    }
+    /// The layout named at the prompt, made when missing and made current; `model` keeps the
+    /// views in model space.
+    fn choose_layout(&mut self, s: &mut Session, name: &str) -> Result<Step> {
+        let name = if name.is_empty() { VIEWS_LAYOUT } else { name };
+        if name.eq_ignore_ascii_case("model") {
+            self.layout = Some(None);
+            return Ok(Step::Continue);
+        }
+        let (name, _) = sheet_of(s, name)?;
+        let set = find_command("layout.set").ok_or_else(|| EngineError::UnknownCommand("layout.set".into()))?;
+        (set.run)(s, &json!({ "name": name }))?;
+        self.layout = Some(Some(name));
+        Ok(Step::Continue)
+    }
+    fn run(&mut self, s: &mut Session, at: Option<Vec2>) -> Result<Step> {
+        let mut p = Self::params(self.hs.as_deref().unwrap_or_default());
+        if let Some(at) = at {
+            p["at"] = json!([at.x, at.y]);
+        }
+        if let Some(k) = self.scale {
+            p["scale"] = json!(k);
+        }
+        match &self.layout {
+            Some(Some(n)) => p["layout"] = json!(n),
+            Some(None) => p["space"] = json!("model"),
+            None => {}
+        }
+        let spec = find_command(self.id()).ok_or_else(|| EngineError::UnknownCommand(self.id().into()))?;
+        if let Err(e) = (spec.run)(s, &p) {
+            // Start again from the selection: the objects may be what failed.
+            *self = PickThenPoint::new(self.what);
+            return Err(e);
+        }
+        s.set_selection(Vec::new());
+        Ok(Step::Done)
     }
 }
 
@@ -841,9 +1094,15 @@ impl Interactive for PickThenPoint {
         match (&self.hs, self.what) {
             (None, _) if self.sel.removing => self.sel.prompt(),
             (None, _) => Prompt::new("Select solids", Accept::SELECT).kw(&["Entire model"]).default("Entire model"),
-            (Some(_), _) if self.asking_scale => Prompt::new("Enter scale", Accept::NUMBER).default(format!("{}", self.scale.unwrap_or(1.0))),
+            (Some(_), PickFor::Views) if self.layout.is_none() => {
+                Prompt::new("Enter new or existing layout name to make current", Accept::TEXT).kw(&["Model"]).default(VIEWS_LAYOUT)
+            }
+            (Some(_), _) if self.asking_scale => {
+                let fit = if matches!(self.layout, Some(Some(_))) { "Fit".to_string() } else { "1".to_string() };
+                Prompt::new("Enter scale", Accept::NUMBER).default(self.scale.map_or(fit, |k| format!("{k}")))
+            }
             (Some(_), PickFor::CutList) => Prompt::new("Specify insertion point for the table", Accept::POINT),
-            (Some(_), PickFor::Views) => Prompt::new("Specify location of base view", Accept::POINT).kw(&["Scale"]),
+            (Some(_), PickFor::Views) => Prompt::new("Specify location of base view", Accept::POINT).kw(&["Scale"]).default("Auto"),
         }
     }
     fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
@@ -862,39 +1121,34 @@ impl Interactive for PickThenPoint {
                 SelOutcome::Done(hs) => self.take(s, hs),
             };
         }
+        if self.what == PickFor::Views && self.layout.is_none() {
+            return match i {
+                Input::Enter => self.choose_layout(s, ""),
+                Input::Keyword(t) | Input::Text(t) => self.choose_layout(s, t.trim()),
+                _ => Ok(Step::Continue),
+            };
+        }
         if self.asking_scale {
             match i {
                 Input::Enter => {}
-                Input::Text(t) | Input::Keyword(t) => match number(&t).filter(|v| v.is_finite() && *v > 0.0) {
+                Input::Text(t) | Input::Keyword(t) => match scale_value(&json!(t.trim())) {
                     Some(v) => self.scale = Some(v),
-                    None => return Err(EngineError::Other("The scale must be a positive number.".into())),
+                    None => return Err(EngineError::Other("The scale must be a positive number or a ratio such as 1:10.".into())),
                 },
                 _ => return Ok(Step::Continue),
             }
             self.asking_scale = false;
             return Ok(Step::Continue);
         }
-        let at = match i {
-            Input::Point(p) => p,
+        match i {
+            Input::Point(p) => self.run(s, Some(p)),
+            Input::Enter if self.what == PickFor::Views => self.run(s, None),
             Input::Keyword(t) | Input::Text(t) if self.what == PickFor::Views && t.trim().to_ascii_lowercase().starts_with('s') => {
                 self.asking_scale = true;
-                return Ok(Step::Continue);
+                Ok(Step::Continue)
             }
-            _ => return Ok(Step::Continue),
-        };
-        let mut p = Self::params(self.hs.as_deref().unwrap_or_default());
-        p["at"] = json!([at.x, at.y]);
-        if let Some(k) = self.scale {
-            p["scale"] = json!(k);
+            _ => Ok(Step::Continue),
         }
-        let spec = find_command(self.id()).ok_or_else(|| EngineError::UnknownCommand(self.id().into()))?;
-        if let Err(e) = (spec.run)(s, &p) {
-            // Start again from the selection: the objects may be what failed.
-            *self = PickThenPoint::new(self.what);
-            return Err(e);
-        }
-        s.set_selection(Vec::new());
-        Ok(Step::Done)
     }
 }
 
@@ -1041,10 +1295,18 @@ mod tests {
             json!({ "gap": -1 }),
             json!({ "projection": "second" }),
             json!({ "at": [1] }),
+            json!({ "scale": "1:0" }),
+            json!({ "scale": "a:b" }),
+            json!({ "scale": [1, 2] }),
+            json!({ "space": "sheet" }),
+            json!({ "layout": 5 }),
+            json!({ "layout": "a/b" }),
+            json!({ "at": [1e308, 0], "scale": 1e-300 }),
         ] {
             assert!(s.execute("viewbase", &p).is_err(), "{p}");
         }
         assert_eq!(s.doc().unwrap().model.iter().count(), 1);
+        assert!(s.doc().unwrap().layouts.iter().all(|l| l.name != VIEWS_LAYOUT), "no layout is left behind");
     }
 
     #[test]
@@ -1109,8 +1371,11 @@ mod tests {
         s.start("viewbase").unwrap();
         assert!(msg(&s).contains("[Entire model]"), "{}", msg(&s));
         s.input(Input::Enter).unwrap();
+        assert!(msg(&s).contains("layout name"), "{}", msg(&s));
+        s.input(Input::Enter).unwrap();
         assert!(msg(&s).contains("location of base view or [Scale]"), "{}", msg(&s));
         s.cancel();
+        s.execute("layout.set", &json!({ "name": "Model" })).unwrap();
         s.start("cutlist").unwrap();
         s.input(Input::Keyword("Entire model".into())).unwrap();
         s.input(Input::Point(Vec2::new(5000.0, 0.0))).unwrap();
@@ -1152,7 +1417,7 @@ mod tests {
         // A new HIDDEN layer takes the dashed linetype; the lines go ByLayer.
         let mut s = Session::new();
         boxes(&mut s);
-        s.execute("viewbase", &json!({ "views": ["front"], "dims": false })).unwrap();
+        s.execute("viewbase", &json!({ "views": ["front"], "dims": false, "space": "model" })).unwrap();
         let lts = hidden_linetypes(&s);
         assert!(!lts.is_empty() && lts.iter().all(|l| l.eq_ignore_ascii_case("ByLayer")), "{lts:?}");
         assert_eq!(s.doc().unwrap().layer("HIDDEN").unwrap().linetype, "HIDDEN");
@@ -1160,18 +1425,20 @@ mod tests {
         let mut s = Session::new();
         boxes(&mut s);
         s.doc_mut().unwrap().layers.push(Layer::new("HIDDEN"));
-        s.execute("viewbase", &json!({ "views": ["front"], "dims": false })).unwrap();
+        s.execute("viewbase", &json!({ "views": ["front"], "dims": false, "space": "model" })).unwrap();
         let lts = hidden_linetypes(&s);
         assert!(!lts.is_empty() && lts.iter().all(|l| l == "HIDDEN"), "{lts:?}");
         assert!(s.doc().unwrap().linetype("HIDDEN").is_some_and(|l| !l.pattern.is_empty()));
     }
 
-    /// A view drawn at half size measures the model's true size (DIMLFAC 2).
+    /// A view drawn at half size (two model units per drawn unit) measures the model's true size
+    /// (DIMLFAC 2).
     #[test]
     fn scaled_views_dimension_true_sizes() {
         let mut s = Session::new();
         boxes(&mut s);
-        let r = s.execute("viewbase", &json!({ "views": ["front"], "scale": 0.5, "at": [0, 0] })).unwrap();
+        let r = s.execute("viewbase", &json!({ "views": ["front"], "scale": "1:2", "at": [0, 0], "space": "model" })).unwrap();
+        assert_eq!(r["scale"], 2.0);
         assert_eq!(r["views"][0]["max"], json!([50.0, 10.0]), "{r}");
         let d = s.doc().unwrap();
         let read: Vec<(f64, f64)> = d
@@ -1195,26 +1462,173 @@ mod tests {
         s.current_prompt().map(|p| p.display()).unwrap_or_default()
     }
 
-    /// VIEWBASE at the prompts: the Scale option (a bad one asked again), then the location.
+    /// The bounds of a view group's visible lines.
+    fn view_box(s: &Session, group: &str) -> Bounds2 {
+        let d = s.doc().unwrap();
+        let g = d.groups.iter().find(|g| g.name == group).unwrap();
+        Bounds2::from_points(g.members.iter().filter_map(|h| d.entity(*h)).filter(|e| e.common.layer == "VISIBLE").flat_map(|e| e.grips()))
+    }
+
+    /// The objects in a layout's paper space.
+    fn on_sheet(s: &Session, layout: &str) -> Vec<EntityKind> {
+        s.doc().unwrap().space(&Space::Paper(layout.into())).map(|st| st.iter().map(|e| e.kind.clone()).collect()).unwrap_or_default()
+    }
+
+    /// VIEWBASE at the prompts from the Model tab: the layout (made and made current), the Scale
+    /// option (a bad one asked again; a ratio taken), then the location on the sheet.
     #[test]
     fn viewbase_takes_a_scale_at_the_prompt() {
         let mut s = Session::new();
         boxes(&mut s);
         s.start("viewbase").unwrap();
         s.input(Input::Enter).unwrap();
+        assert!(msg(&s).contains("layout name to make current or [Model] <Drawing views>"), "{}", msg(&s));
+        s.cmdline("a/b").unwrap();
+        assert!(msg(&s).contains("layout name"), "a bad name is asked again: {}", msg(&s));
+        s.input(Input::Enter).unwrap();
+        assert_eq!(s.layout_space(), Space::Paper(VIEWS_LAYOUT.into()), "the layout is made current");
         s.cmdline("s").unwrap();
-        assert!(msg(&s).contains("Enter scale <1>"), "{}", msg(&s));
+        assert!(msg(&s).contains("Enter scale <Fit>"), "{}", msg(&s));
         s.cmdline("-2").unwrap();
         assert!(msg(&s).contains("Enter scale"), "a bad scale is asked again: {}", msg(&s));
-        s.cmdline("0.5").unwrap();
-        assert!(msg(&s).contains("location of base view"), "{}", msg(&s));
-        s.input(Input::Point(Vec2::new(500.0, 0.0))).unwrap();
+        s.cmdline("1:2").unwrap();
+        assert!(msg(&s).contains("location of base view or [Scale] <Auto>"), "{}", msg(&s));
+        s.input(Input::Point(Vec2::new(50.0, 40.0))).unwrap();
         assert!(s.current_prompt().is_none());
-        let d = s.doc().unwrap();
-        let g = d.groups.iter().find(|g| g.name == "VIEW front").unwrap();
-        let b =
-            Bounds2::from_points(g.members.iter().filter_map(|h| d.entity(*h)).filter(|e| e.common.layer == "VISIBLE").flat_map(|e| e.kind.grips()));
-        assert!(b.min.near(Vec2::new(500.0, 0.0), 1e-6) && b.max.near(Vec2::new(550.0, 10.0), 1e-6), "half size: {b:?}");
+        let b = view_box(&s, "VIEW front");
+        assert!(b.min.near(Vec2::new(50.0, 40.0), 1e-6) && b.max.near(Vec2::new(100.0, 50.0), 1e-6), "half size: {b:?}");
+        assert!(on_sheet(&s, VIEWS_LAYOUT).iter().any(|k| matches!(k, EntityKind::Dimension(_))));
+        assert_eq!(s.doc().unwrap().model.iter().count(), 2, "model space has the solids only");
+        // Started in the layout, the views go on it; Model at the layout prompt keeps them in
+        // model space, placed beside the model with Enter.
+        s.start("viewbase").unwrap();
+        s.input(Input::Enter).unwrap();
+        assert!(msg(&s).contains("location of base view"), "{}", msg(&s));
+        s.cancel();
+        s.execute("layout.set", &json!({ "name": "Model" })).unwrap();
+        s.start("viewbase").unwrap();
+        s.input(Input::Enter).unwrap();
+        s.cmdline("m").unwrap();
+        assert!(msg(&s).contains("location of base view"), "{}", msg(&s));
+        s.input(Input::Enter).unwrap();
+        assert!(s.current_prompt().is_none());
+        let b = view_box(&s, "VIEW front 2");
+        assert!(b.min.near(Vec2::new(200.0, 0.0), 1e-6) && b.max.near(Vec2::new(300.0, 20.0), 1e-6), "beside the model, full size: {b:?}");
+        assert!(s.doc().unwrap().model.iter().count() > 2);
+    }
+
+    /// A wardrobe on a new A4 layout: 1:20 is the largest standard scale that fits, the views
+    /// are centred on the sheet, and the dimensions read model sizes with 2.5 mm text. The
+    /// command stays in the Model tab, and one undo takes it all back, the layout too.
+    #[test]
+    fn views_go_on_a_sheet_sized_for_the_paper() {
+        for metric in [true, false] {
+            let mut s = Session::new();
+            s.new_drawing(metric);
+            s.add_entity(EntityKind::Solid3d(hlr::tests::cube(Vec3::ZERO, Vec3::new(2000.0, 600.0, 1800.0)))).unwrap();
+            let before = s.doc().unwrap().clone();
+            let r = s.execute("viewbase", &json!({})).unwrap();
+            assert_eq!(r["layout"], VIEWS_LAYOUT, "{r}");
+            assert_eq!(s.layout_space(), Space::Model, "the JSON form switches no tab");
+            let d = s.doc().unwrap();
+            let sheet = cadcraft_render::sheet(d, VIEWS_LAYOUT).unwrap();
+            let k = r["scale"].as_f64().unwrap();
+            if metric {
+                assert_eq!(k, 20.0, "{r}");
+            }
+            assert!(standard_scales().any(|x| x == k), "{k}");
+            // Everything on the sheet, within its printable area.
+            let objs = on_sheet(&s, VIEWS_LAYOUT);
+            assert_eq!(d.model.iter().count(), 1);
+            let all = Bounds2::from_points(objs.iter().flat_map(|k| match k {
+                EntityKind::Dimension(dm) => vec![dm.defpt.xy(), dm.p13.xy(), dm.p14.xy()],
+                k => k.grips(),
+            }));
+            let room = sheet.printable;
+            assert!(all.min.x >= room.min.x && all.min.y >= room.min.y && all.max.x <= room.max.x && all.max.y <= room.max.y, "{all:?} in {room:?}");
+            let front = view_box(&s, "VIEW front");
+            assert!(((front.max.x - front.min.x) * k - 2000.0).abs() < 1e-6, "{front:?}");
+            // Dimensions: model sizes, 2.5 mm text on the paper.
+            let mut read = Vec::new();
+            for k in &objs {
+                let EntityKind::Dimension(dm) = k else { continue };
+                let st = d.dim_style(&dm.style).cloned().unwrap_or_default().with_overrides(&dm.overrides);
+                assert!((st.text_height * st.scale - 2.5 / sheet.unit_mm).abs() < 1e-9, "{} {}", st.text_height, st.scale);
+                read.push(((dm.p14 - dm.p13).len() * st.linear_factor).round());
+            }
+            for want in [2000.0, 1800.0, 600.0] {
+                assert!(read.contains(&want), "{want}: {read:?}");
+            }
+            s.undo().unwrap();
+            assert_eq!(*s.doc().unwrap(), before);
+        }
+    }
+
+    /// Restarts after a failure at the end: PART (the layer locked meanwhile), CUTLIST (only
+    /// surfaces to list) and VIEWBASE (solids with no size) go back to the selection; VIEWBASE
+    /// asks again for a selection with no solid shown.
+    #[test]
+    fn failures_at_the_end_start_again_from_the_selection() {
+        let mut s = Session::new();
+        let a = block(&mut s, [1.0, 1.0, 1.0], "", "");
+        s.set_selection(Vec::new());
+        s.start("part").unwrap();
+        s.input(Input::Pick(vec![a])).unwrap();
+        s.input(Input::Enter).unwrap();
+        s.cmdline("Side").unwrap();
+        s.doc_mut().unwrap().layer_mut("0").unwrap().locked = true;
+        let _ = s.cmdline("Oak");
+        assert!(msg(&s).contains("Select objects"), "{}", msg(&s));
+        s.cancel();
+        s.doc_mut().unwrap().layer_mut("0").unwrap().locked = false;
+        // An open mesh: a surface, not a part.
+        s.doc_mut()
+            .unwrap()
+            .modify_entity(a, |e| {
+                if let EntityKind::Solid3d(x) = &mut e.kind {
+                    let mut m = (*x.mesh).clone();
+                    m.open = true;
+                    x.mesh = Arc::new(m);
+                }
+            })
+            .unwrap();
+        s.start("cutlist").unwrap();
+        s.input(Input::Enter).unwrap();
+        let _ = s.input(Input::Point(Vec2::ZERO));
+        assert!(msg(&s).contains("Select solids"), "{}", msg(&s));
+        s.cancel();
+        // A solid of one point: no size to draw.
+        let dot = Solid3d { mesh: Arc::new(Mesh3 { verts: vec![Vec3::new(5.0, 5.0, 5.0)], ..Default::default() }), ..Default::default() };
+        let p = s.add_entity(EntityKind::Solid3d(dot)).unwrap();
+        s.start("viewbase").unwrap();
+        s.input(Input::Pick(vec![p])).unwrap();
+        s.input(Input::Enter).unwrap();
+        s.cmdline("m").unwrap();
+        let _ = s.input(Input::Enter);
+        assert!(msg(&s).contains("Select solids"), "{}", msg(&s));
+        s.cancel();
+        // Every solid hidden: the entire model has none to draw.
+        s.doc_mut().unwrap().layer_mut("0").unwrap().on = false;
+        s.start("viewbase").unwrap();
+        let _ = s.input(Input::Enter);
+        assert!(msg(&s).contains("Select solids"), "{}", msg(&s));
+        s.cancel();
+        assert_eq!(s.doc().unwrap().model.iter().count(), 2);
+    }
+
+    /// Views that fail part way through drawing leave the drawing as it was.
+    #[test]
+    fn a_view_failing_part_way_puts_the_drawing_back() {
+        let mut s = Session::new();
+        let before = s.doc().unwrap().clone();
+        let line = vec![vec![Vec2::ZERO, Vec2::new(10.0, 0.0)]];
+        let good = Bounds2 { min: Vec2::ZERO, max: Vec2::new(10.0, 5.0) };
+        // The second view's size can't be dimensioned.
+        let bad = Bounds2 { min: Vec2::ZERO, max: Vec2::new(f64::INFINITY, 5.0) };
+        let views: Vec<View> = vec![("front", line.clone(), Vec::new(), good), ("top", line, Vec::new(), bad)];
+        let dims = Dims { on: true, off: 1.0, k: 1.0, text: None };
+        assert!(all_or_nothing(&mut s, |s| draw_views(s, views, &dims)).is_err());
+        assert_eq!(*s.doc().unwrap(), before);
     }
 
     /// Bad input is asked for again where it was given; nothing loops on a stale value.

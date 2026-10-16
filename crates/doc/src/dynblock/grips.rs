@@ -87,9 +87,16 @@ fn point<S: serde::Serializer>(p: &Vec2, s: S) -> Result<S::Ok, S::Error> {
 pub fn grips(d: &Drawing, insert: Handle) -> Vec<DynGrip> {
     let Some(r) = reference(d, insert) else { return Vec::new() };
     let Some(m) = dynamic_block(d, &r.definition) else { return Vec::new() };
-    let Some(EntityKind::Insert(ins)) = d.entity(insert).map(|e| &e.kind) else { return Vec::new() };
+    let Some(e) = d.entity(insert) else { return Vec::new() };
+    let EntityKind::Insert(ins) = &e.kind else { return Vec::new() };
     let base = d.block(&r.definition).map(|b| b.base.xy()).unwrap_or_default();
-    let xf = ins.transform(base);
+    // Where plan view shows them: a tilted reference's plane seen from above.
+    // ponytail: a parameter's block z is ignored (grips sit at the reference's own plane);
+    // upgrade: place them through `Insert::transform3` and the reference's plane.
+    let xf = match e.plan_xf() {
+        Some(a) => a.then_before(ins.transform(base)),
+        None => ins.transform(base),
+    };
     let world = |p: Vec3| xf.apply(p.xy());
     let toward = |p: Vec3, u: Vec3| {
         let v = xf.apply(p.xy() + u.xy()) - xf.apply(p.xy());

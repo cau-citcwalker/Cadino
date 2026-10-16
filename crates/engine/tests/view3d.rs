@@ -151,3 +151,29 @@ fn closing_the_block_editor_restores_the_view_direction() {
     s.execute("bclose", &json!({})).unwrap();
     assert!(dir(&s).is_plan());
 }
+
+/// A point typed as `x,y,z` keeps its height for the commands that build in 3D (`point_z`);
+/// `@dx,dy,dz` adds to the last point's, also across command lines and in scripts; `x,y` is on
+/// the XY plane.
+#[test]
+fn typed_points_keep_their_height() {
+    let mut s = session();
+    s.cmdline("line").unwrap();
+    s.cmdline("1,2,5").unwrap();
+    assert_eq!((s.last_point, s.point_z), (Vec2::new(1.0, 2.0), Some(5.0)));
+    s.cmdline("@10,0,-2").unwrap();
+    assert_eq!((s.last_point, s.point_z), (Vec2::new(11.0, 2.0), Some(3.0)));
+    s.cmdline("@0,1").unwrap();
+    assert_eq!(s.point_z, Some(3.0), "a relative 2D point keeps the last height");
+    s.cmdline("4,4").unwrap();
+    assert_eq!(s.point_z, None);
+    s.cancel();
+    s.script("LINE 0,0,7 @1,1,1\n").unwrap();
+    assert_eq!((s.last_point, s.point_z), (Vec2::new(1.0, 1.0), Some(8.0)));
+    // A hostile height is not a point.
+    s.cancel();
+    s.cmdline("line").unwrap();
+    s.cmdline("5,5").unwrap();
+    let _ = s.cmdline("1,1,1e999");
+    assert_eq!((s.last_point, s.point_z), (Vec2::new(5.0, 5.0), None), "unchanged");
+}

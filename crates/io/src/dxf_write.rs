@@ -1542,6 +1542,7 @@ fn vport_table(w: &mut W, d: &Drawing, ext: Bounds2) {
         center: if ext.is_empty() { Vec2::new(6.0, 4.5) } else { ext.center() },
         height: if ext.is_empty() { 9.0 } else { (ext.height() * 1.1).max(1e-6) },
         aspect: 1.6,
+        ..VportTile::default()
     };
     let tiled = d.vports.iter().find(|c| c.is_active() && c.tiles.len() > 1);
     let mut records: Vec<(&str, &VportTile)> = match tiled {
@@ -1562,12 +1563,23 @@ fn vport_table(w: &mut W, d: &Drawing, ext: Bounds2) {
         w.p2(13, d.header.point("SNAPBASE").map(|p| p.xy()).filter(|p| p.is_finite()).unwrap_or(Vec2::ZERO));
         w.p2(14, d.header.snap_unit());
         w.p2(15, d.header.grid_unit());
-        w.p(16, Vec3::Z);
+        let [x, y, z] = t.view_dir;
+        let dir = Vec3::new(x, y, z);
+        w.p(16, if dir.is_finite() && dir != Vec3::ZERO { dir } else { Vec3::Z });
         w.p(17, Vec3::ZERO);
         w.f(40, if t.height.is_finite() && t.height > 0.0 { t.height } else { 1.0 });
         w.f(41, if t.aspect.is_finite() && t.aspect > 0.0 { t.aspect } else { 1.0 });
         w.f(42, 50.0);
         w.f(50, d.header.f64("SNAPANG", 0.0));
+        // Render mode: 0 2D optimised, 4 Gouraud shaded, 6 Gouraud shaded with wireframe.
+        w.i(
+            281,
+            match (t.shaded, t.edges) {
+                (false, _) => 0,
+                (true, false) => 4,
+                (true, true) => 6,
+            },
+        );
     }
     w.s(0, "ENDTAB");
 }

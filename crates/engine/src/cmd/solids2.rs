@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use cadcraft_doc::{EntityKind, Handle};
+use cadcraft_doc::{Entity, EntityKind, Handle};
 use cadcraft_geom::{EPS, Mat4, Vec2, Vec3};
 use cadcraft_kernel::{Built, Curve, MAX_PYRAMID_SIDES, Primitive, Seg};
 use serde_json::{Value, json};
@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 use super::curves::{KW, handle_param, is_locked, pick_at};
 use super::machines::{SelOutcome, SelectPhase};
 use super::solids::{
-    Ask, BOX, ProfileM, ProfileOp, Q, add, all_or_nothing, box_corners, circle_path, curve_of, kernel, locked_err, or_skip, p3, p3_req, p3_value,
-    per_solid, placed, reshape, solid, solids,
+    Ask, BOX, ProfileM, ProfileOp, Q, add, all_or_nothing, box_corners, circle_path, curve_of, in_plane, kernel, locked_err, or_skip, p3, p3_req,
+    p3_value, per_solid, placed, reshape, solid, solids,
 };
 use super::*;
 use crate::{Accept, EngineError, Input, Interactive, Prompt, Result, Session, Step};
@@ -136,8 +136,8 @@ fn run_loft(s: &mut Session, p: &Value) -> Result<Value> {
     let ruled = bool_or(p, "ruled", false);
     let (mut sections, mut used) = (Vec::new(), Vec::new());
     for h in hs {
-        let Some(kind) = s.doc()?.entity(h).map(|e| e.kind.clone()) else { continue };
-        let Some(c) = curve_of(&kind)? else {
+        let Some(e) = s.doc()?.entity(h) else { continue };
+        let Some(c) = curve_of(e)? else {
             return Err(bad(
                 "loft",
                 format!("a {} can't be a cross section: use lines, arcs, circles, polylines, splines or helices", type_name(s, h)),
@@ -163,11 +163,12 @@ fn run_loft(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "handle": h.hex(), "surface": surface, "sections": used.len(), "locked": locked.len() }))
 }
 
-/// A curve object as a sweep path: a circle runs from its rightmost point.
-fn path_of(kind: &EntityKind) -> Result<Option<Curve>> {
-    match kind {
-        EntityKind::Circle(c) => Ok(Some(circle_path(c.center, c.radius))),
-        k => curve_of(k),
+/// A curve object as a sweep path, where it is: a circle runs from its rightmost point (in its
+/// own plane).
+fn path_of(e: &Entity) -> Result<Option<Curve>> {
+    match &e.kind {
+        EntityKind::Circle(c) => Ok(Some(in_plane(e, circle_path(c.center, c.radius)))),
+        _ => curve_of(e),
     }
 }
 
@@ -176,19 +177,19 @@ fn path_of(kind: &EntityKind) -> Result<Option<Curve>> {
 fn run_sweep(s: &mut Session, p: &Value) -> Result<Value> {
     let ph =
         handle_param(p, "path").ok_or_else(|| bad("sweep", "`path` (the handle of a line, arc, circle, polyline, spline or helix) is required"))?;
-    let path_kind = s.doc()?.entity(ph).map(|e| e.kind.clone()).ok_or_else(|| bad("sweep", "the path object does not exist"))?;
-    let path = path_of(&path_kind)?
+    let path_e = s.doc()?.entity(ph).ok_or_else(|| bad("sweep", "the path object does not exist"))?;
+    let path = path_of(path_e)?
         .ok_or_else(|| bad("sweep", format!("a {} can't be a path: use a line, arc, circle, polyline, spline or helix", type_name(s, ph))))?;
     let hs: Vec<Handle> = once(targets(s, p)?).into_iter().filter(|h| *h != ph).collect();
     // A degenerate or unsuitable profile is skipped; with nothing made, its reason is the error.
     let (mut built, mut skipped, mut locked, mut why) = (Vec::new(), 0usize, 0usize, None);
     for h in hs {
-        let Some(kind) = s.doc()?.entity(h).map(|e| e.kind.clone()) else { continue };
+        let Some(e) = s.doc()?.entity(h) else { continue };
         if is_locked(s, h) {
             locked += 1;
             continue;
         }
-        let shape = match curve_of(&kind) {
+        let shape = match curve_of(e) {
             Ok(Some(c)) => or_skip(cadcraft_kernel::sweep(&c, &path), &mut why)?,
             Ok(None) => None,
             Err(e) => {
@@ -252,12 +253,12 @@ fn run_planesurf(s: &mut Session, p: &Value) -> Result<Value> {
     let hs = once(targets(s, p)?);
     let (mut built, mut skipped, mut locked, mut why) = (Vec::new(), 0usize, 0usize, None);
     for h in hs {
-        let Some(kind) = s.doc()?.entity(h).map(|e| e.kind.clone()) else { continue };
+        let Some(e) = s.doc()?.entity(h) else { continue };
         if is_locked(s, h) {
             locked += 1;
             continue;
         }
-        let shape = match curve_of(&kind) {
+        let shape = match curve_of(e) {
             Ok(Some(c)) if c.is_closed() => match c {
                 Curve::Segs(segs) => or_skip(cadcraft_kernel::plane_surface(&segs), &mut why)?,
                 Curve::Spline { .. } => None,
@@ -1168,6 +1169,51 @@ mod tests {
 
     fn circle_at(s: &mut Session, x: f64, z: f64, r: f64) -> Handle {
         s.add_entity(EntityKind::Circle(cadcraft_doc::Circle { center: Vec3::new(x, 0.0, z), radius: r })).unwrap()
+    }
+
+    fn box3(x: &Solid3d) -> (Vec3, Vec3) {
+        x.mesh
+            .verts
+            .iter()
+            .map(|p| x.world(*p))
+            .fold((Vec3::new(f64::MAX, f64::MAX, f64::MAX), Vec3::new(f64::MIN, f64::MIN, f64::MIN)), |(lo, hi), p| {
+                (Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z)), Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z)))
+            })
+    }
+
+    fn near3(a: Vec3, b: [f64; 3], tol: f64) -> bool {
+        (a.x - b[0]).abs() < tol && (a.y - b[1]).abs() < tol && (a.z - b[2]).abs() < tol
+    }
+
+    /// LOFT, PLANESURF and SWEEP take curves standing in their own planes where they are: circles
+    /// facing +X (extrusion +X) at elevations 0, 10 and 20, and a sweep path standing in the XZ
+    /// plane.
+    #[test]
+    fn standing_curves_loft_surface_and_sweep_where_they_are() {
+        let mut s = Session::new();
+        let facing = |s: &mut Session, z: f64, r: f64, n: Vec3| {
+            let h = s.add_entity(EntityKind::Circle(cadcraft_doc::Circle { center: Vec3::new(0.0, 0.0, z), radius: r })).unwrap();
+            s.doc_mut().unwrap().modify_entity(h, |e| e.common.extrusion = n).unwrap();
+            h
+        };
+        let x = Vec3::new(1.0, 0.0, 0.0);
+        let (a, b) = (facing(&mut s, 0.0, 2.0, x), facing(&mut s, 10.0, 1.0, x));
+        let r = s.execute("loft", &json!({ "handles": [a.hex(), b.hex()] })).unwrap();
+        let (lo, hi) = box3(&shapes(&s)[0]);
+        assert!(near3(lo, [0.0, -2.0, -2.0], 0.1) && near3(hi, [10.0, 2.0, 2.0], 0.1), "{r} {lo:?} {hi:?}");
+        s.undo().unwrap();
+        let c = facing(&mut s, 20.0, 1.0, x);
+        let r = s.execute("planesurf", &json!({ "handles": [c.hex()] })).unwrap();
+        let surf = shapes(&s).into_iter().next().unwrap();
+        assert!(surf.mesh.verts.iter().all(|p| (surf.world(*p).x - 20.0).abs() < 1e-6), "{r}: in the plane x = 20");
+        s.undo().unwrap();
+        // A path circle of radius 10 standing in the XZ plane, a small profile anywhere: a ring
+        // in that plane.
+        let path = facing(&mut s, 0.0, 10.0, Vec3::new(0.0, -1.0, 0.0));
+        let prof = s.add_entity(EntityKind::Circle(cadcraft_doc::Circle { center: Vec3::new(50.0, 50.0, 0.0), radius: 1.0 })).unwrap();
+        s.execute("sweep", &json!({ "handles": [prof.hex()], "path": path.hex() })).unwrap();
+        let (lo, hi) = box3(&shapes(&s)[0]);
+        assert!(near3(lo, [-11.0, -1.0, -11.0], 0.1) && near3(hi, [11.0, 1.0, 11.0], 0.1), "{lo:?} {hi:?}");
     }
 
     /// The volume a closed mesh encloses.

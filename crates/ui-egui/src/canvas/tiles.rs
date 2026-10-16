@@ -104,6 +104,9 @@ pub(super) fn click(app: &mut CadApp, ui: &egui::Ui, canvas: &egui::Response, ti
     }
     trade(app);
     // It picks only where the canvas has a list for the tile's direction.
+    // ponytail: right after an edit, before the tile's background rebuild lands, the click only
+    // makes the tile current (the next click picks); build the list on the UI thread here, or
+    // pick plan tiles without one, if that is missed.
     Some(app.session.state().is_ok_and(|st| app.canvas.list.is_some() && app.canvas.list_dir == st.view_dir))
 }
 

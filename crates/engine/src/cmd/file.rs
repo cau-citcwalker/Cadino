@@ -136,7 +136,13 @@ fn write_bytes(s: &Session, cmd: &str, path: &str, opts: &SaveAs) -> Result<Vec<
         return Err(bad(cmd, "binary applies to DXF files only"));
     }
     // A drawing file is the drawing outside the Block Editor; an image is what is shown.
-    let d: &cadcraft_doc::Drawing = if is_drawing_file(path) { s.state()?.drawing() } else { s.doc()? };
+    // Tiled model views are saved as they are on show (directions, styles, the current tile).
+    let live = if is_drawing_file(path) { super::view::vports::with_live_tiles(s) } else { None };
+    let d: &cadcraft_doc::Drawing = match &live {
+        Some(d) => d,
+        None if is_drawing_file(path) => s.state()?.drawing(),
+        None => s.doc()?,
+    };
     let r = if *opts == SaveAs::default() {
         (hooks.write)(d, path)
     } else {

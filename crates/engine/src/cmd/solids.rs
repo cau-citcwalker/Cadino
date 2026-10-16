@@ -249,9 +249,31 @@ fn poly_segs(vs: &[PolyVertex], z: f64, closed: bool) -> Result<Vec<Seg>> {
         .collect())
 }
 
-/// A curve object as a kernel curve: lines, arcs, circles, 2D and 3D polylines, single-loop
-/// regions, splines and helices; `None` for other objects.
-pub(super) fn curve_of(k: &EntityKind) -> Result<Option<Curve>> {
+/// A curve object as a kernel curve where it is in the world: lines, arcs, circles, 2D and 3D
+/// polylines, single-loop regions, splines and helices; `None` for other objects. A planar object
+/// (arc, circle, polyline, spline) is built in its own plane ([`Entity::plane`]: its extrusion
+/// direction and elevation), so tilted, standing, upside-down and raised ones stay where they are.
+pub(super) fn curve_of(e: &Entity) -> Result<Option<Curve>> {
+    Ok(flat_curve(&e.kind)?.map(|c| in_plane(e, c)))
+}
+
+/// A planar object's curve, made in its 2D coordinates, put in its plane (others as they are).
+pub(super) fn in_plane(e: &Entity, c: Curve) -> Curve {
+    let planar = matches!(e.kind, EntityKind::Arc(_) | EntityKind::Circle(_) | EntityKind::LwPolyline(_) | EntityKind::Spline(_));
+    match e.plane().filter(|_| planar) {
+        Some(pl) => c.map(&|p: Vec3| pl.apply(Vec3::new(p.x, p.y, 0.0)), &|v: Vec3| pl.apply_vec(v)),
+        None => c,
+    }
+}
+
+/// The direction a profile's height runs: the normal of its plane (its extrusion direction), +Z
+/// for objects with world points.
+pub(super) fn normal_of(e: &Entity) -> Vec3 {
+    e.plane().map_or(Vec3::Z, |p| p.col(2))
+}
+
+/// [`curve_of`] in the object's 2D coordinates (planar objects at their elevation, a spline at 0).
+fn flat_curve(k: &EntityKind) -> Result<Option<Curve>> {
     Ok(Some(match k {
         EntityKind::Line(l) => Curve::Segs(vec![Seg::Line { a: l.a, b: l.b }]),
         EntityKind::Arc(a) => {
@@ -353,10 +375,11 @@ fn helix_curve(h: &Helix) -> Curve {
     Curve::Spline { points, tangents: Some((tangent(0.0), tangent(1.0))) }
 }
 
-/// A curve object as a kernel profile of lines and arcs (closed or, unless `closed_only`, open);
-/// `None` for other objects (splines and helices too: a profile is lines and arcs).
-pub(super) fn profile(k: &EntityKind, closed_only: bool) -> Result<Option<Vec<Seg>>> {
-    let open = match k {
+/// A curve object as a kernel profile of lines and arcs where it is (closed or, unless
+/// `closed_only`, open); `None` for other objects (splines and helices too: a profile is lines
+/// and arcs).
+pub(super) fn profile(e: &Entity, closed_only: bool) -> Result<Option<Vec<Seg>>> {
+    let open = match &e.kind {
         EntityKind::Line(_) | EntityKind::Arc(_) => true,
         EntityKind::LwPolyline(p) => !p.closed,
         EntityKind::Polyline3d(p) => !p.closed,
@@ -366,7 +389,7 @@ pub(super) fn profile(k: &EntityKind, closed_only: bool) -> Result<Option<Vec<Se
     if closed_only && open {
         return Ok(None);
     }
-    Ok(match curve_of(k)? {
+    Ok(match curve_of(e)? {
         Some(Curve::Segs(s)) => Some(s),
         _ => None,
     })
@@ -401,7 +424,7 @@ fn from_profiles(
     cmd: &str,
     hs: &[Handle],
     closed_only: bool,
-    make: impl Fn(&[Seg]) -> cadcraft_kernel::Result<Built>,
+    make: impl Fn(&Entity, &[Seg]) -> cadcraft_kernel::Result<Built>,
 ) -> Result<Value> {
     let mut built = Vec::new();
     let (mut skipped, mut locked, mut why) = (0usize, 0usize, None);
@@ -417,8 +440,8 @@ fn from_profiles(
             locked += 1;
             continue;
         }
-        let shape = match profile(&e.kind, closed_only) {
-            Ok(Some(prof)) => or_skip(make(&prof), &mut why)?,
+        let shape = match profile(e, closed_only) {
+            Ok(Some(prof)) => or_skip(make(e, &prof), &mut why)?,
             Ok(None) => None,
             Err(err) => {
                 why.get_or_insert(err);
@@ -450,18 +473,27 @@ fn from_profiles(
     Ok(json!({ "handles": made, "skipped": skipped, "locked": locked }))
 }
 
+/// Each profile goes along its own plane's normal (its extrusion direction, as AutoCAD's EXTRUDE:
+/// a positive height runs along it, a negative one against it).
 fn run_extrude(s: &mut Session, p: &Value) -> Result<Value> {
     let hs = targets(s, p)?;
     let h = f64_req("extrude", p, "height")?;
-    from_profiles(s, "extrude", &hs, false, |prof| cadcraft_kernel::extrude(prof, Vec3::new(0.0, 0.0, h)))
+    from_profiles(s, "extrude", &hs, false, |e, prof| cadcraft_kernel::extrude(prof, normal_of(e) * h))
 }
 
+/// The axis is in each profile's plane: its points are 2D coordinates there (world XY for a
+/// profile in plan, raised to its elevation).
+/// ponytail: no 3D axis; picks in a 3D view are taken as the profile's plane coordinates. World
+/// axis points (`[x,y,z]`) when revolving standing profiles at the prompts needs them.
 fn run_revolve(s: &mut Session, p: &Value) -> Result<Value> {
     let hs = targets(s, p)?;
     let axis = points_param(p, "axis").filter(|a| a.len() == 2).ok_or_else(|| bad("revolve", "`axis` ([[x,y],[x,y]]) is required"))?;
     let (Some(a), Some(b)) = (axis.first().copied(), axis.get(1).copied()) else { return Err(bad("revolve", "`axis` needs two points")) };
     let angle = f64_or(p, "angle", 360.0).to_radians();
-    from_profiles(s, "revolve", &hs, true, |prof| cadcraft_kernel::revolve(prof, a.to3(0.0), (b - a).to3(0.0), angle))
+    from_profiles(s, "revolve", &hs, true, |e, prof| {
+        let pl = e.plane().unwrap_or(Mat4::IDENTITY);
+        cadcraft_kernel::revolve(prof, pl.apply(a.to3(0.0)), pl.apply_vec((b - a).to3(0.0)), angle)
+    })
 }
 
 /// The 3D solids (and surfaces) among `hs`, in order, each once.
@@ -850,6 +882,48 @@ mod tests {
         assert_eq!(s.doc().unwrap().model.iter().count(), 1, "the circle is gone");
     }
 
+    fn box3(x: &Solid3d) -> (Vec3, Vec3) {
+        x.mesh
+            .verts
+            .iter()
+            .map(|p| x.world(*p))
+            .fold((Vec3::new(f64::MAX, f64::MAX, f64::MAX), Vec3::new(f64::MIN, f64::MIN, f64::MIN)), |(lo, hi), p| {
+                (Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z)), Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z)))
+            })
+    }
+
+    fn near3(a: Vec3, b: [f64; 3], tol: f64) -> bool {
+        (a.x - b[0]).abs() < tol && (a.y - b[1]).abs() < tol && (a.z - b[2]).abs() < tol
+    }
+
+    /// EXTRUDE runs along the profile's extrusion direction, as AutoCAD's (a negative height the
+    /// other way), and REVOLVE's axis is in the profile's plane: profiles standing in the XZ
+    /// plane (extrusion -Y) make solids where they stand.
+    #[test]
+    fn standing_profiles_extrude_and_revolve_where_they_are() {
+        let mut s = Session::new();
+        let standing = |s: &mut Session, k: EntityKind| {
+            let h = s.add_entity(k).unwrap();
+            s.doc_mut().unwrap().modify_entity(h, |e| e.common.extrusion = Vec3::new(0.0, -1.0, 0.0)).unwrap();
+            h
+        };
+        // A circle at elevation 5 (the plane y = -5), centre (2, 3) in its plane: x 2, z 3.
+        let c = standing(&mut s, EntityKind::Circle(cadcraft_doc::Circle { center: Vec3::new(2.0, 3.0, 5.0), radius: 1.0 }));
+        for (h, lo_y, hi_y) in [(10.0, -15.0, -5.0), (-10.0, -5.0, 5.0)] {
+            s.execute("extrude", &json!({ "handles": [c.hex()], "height": h })).unwrap();
+            let (lo, hi) = box3(&solids_in(&s)[0]);
+            assert!((lo.y - lo_y).abs() < 1e-6 && (hi.y - hi_y).abs() < 1e-6, "{h}: {lo:?} {hi:?}");
+            assert!(near3(lo, [1.0, lo_y, 2.0], 0.05) && near3(hi, [3.0, hi_y, 4.0], 0.05), "{h}: {lo:?} {hi:?}");
+            s.undo().unwrap();
+        }
+        // A rectangle 2 to 4 out and 3 high, revolved about its plane's y axis (world Z): a ring.
+        let pv = |x: f64, y: f64| PolyVertex::new(Vec2::new(x, y));
+        let r = standing(&mut s, super::super::helpers::lwpoly(vec![pv(2.0, 0.0), pv(4.0, 0.0), pv(4.0, 3.0), pv(2.0, 3.0)], true));
+        s.execute("revolve", &json!({ "handles": [r.hex()], "axis": [[0, 0], [0, 1]] })).unwrap();
+        let (lo, hi) = box3(&solids_in(&s)[0]);
+        assert!(near3(lo, [-4.0, -4.0, 0.0], 0.1) && near3(hi, [4.0, 4.0, 3.0], 0.1), "{lo:?} {hi:?}");
+    }
+
     #[test]
     fn iso_view_zooms_to_projected_extents() {
         let mut s = Session::new();
@@ -952,7 +1026,7 @@ mod plain_tests {
         let (a, b) = (circle(&mut s, 0.0), circle(&mut s, 10.0));
         let before = s.doc().unwrap().clone();
         let calls = Cell::new(0);
-        let r = from_profiles(&mut s, "extrude", &[a, b], false, |_| {
+        let r = from_profiles(&mut s, "extrude", &[a, b], false, |_, _| {
             calls.set(calls.get() + 1);
             if calls.get() == 2 { Err(cadcraft_kernel::KernelError::Failed("no".into())) } else { Ok(Built::default()) }
         });
@@ -961,7 +1035,7 @@ mod plain_tests {
         // A profile with no area alone: its reason is the error, and nothing changes.
         let flat = s.add_entity(super::super::helpers::lwpoly(vec![pv(0.0, 0.0, 0.0), pv(5.0, 0.0, 0.0)], true)).unwrap();
         let before = s.doc().unwrap().clone();
-        let r = from_profiles(&mut s, "extrude", &[flat], false, |_| Ok(Built::default()));
+        let r = from_profiles(&mut s, "extrude", &[flat], false, |_, _| Ok(Built::default()));
         assert!(r.err().is_some_and(|e| e.to_string().contains("no area")));
         assert_eq!(*s.doc().unwrap(), before);
     }
@@ -980,7 +1054,7 @@ mod plain_tests {
             .unwrap();
         let spline = s.add_entity(EntityKind::Spline(Spline::default())).unwrap();
         // The kernel refuses the zero-length line and the bent 3D polyline before modelling.
-        let make = |prof: &[Seg]| match prof {
+        let make = |_: &Entity, prof: &[Seg]| match prof {
             [Seg::Circle { .. }] => Ok(Built::default()),
             _ => Err(cadcraft_kernel::KernelError::Invalid("not flat".into())),
         };
@@ -991,22 +1065,68 @@ mod plain_tests {
         // A kernel failure (not a refusal) still fails the whole command.
         let c = circle(&mut s, 9.0);
         let before = s.doc().unwrap().clone();
-        assert!(from_profiles(&mut s, "extrude", &[c], false, |_| Err(cadcraft_kernel::KernelError::Failed("x".into()))).is_err());
+        assert!(from_profiles(&mut s, "extrude", &[c], false, |_, _| Err(cadcraft_kernel::KernelError::Failed("x".into()))).is_err());
         assert_eq!(*s.doc().unwrap(), before);
+    }
+
+    fn entity(kind: EntityKind, extrusion: Vec3) -> Entity {
+        Entity { handle: Handle(1), common: cadcraft_doc::Common { extrusion, ..Default::default() }, kind }
+    }
+
+    /// Profiles are built where they are: a circle standing in the XZ plane (extrusion -Y) at
+    /// elevation 5, a raised polyline in plan and standing; lines keep their world points.
+    #[test]
+    fn profiles_are_built_in_their_plane() {
+        let c = entity(EntityKind::Circle(cadcraft_doc::Circle { center: Vec3::new(2.0, 3.0, 5.0), radius: 1.0 }), Vec3::new(0.0, -1.0, 0.0));
+        assert_eq!(normal_of(&c), Vec3::new(0.0, -1.0, 0.0));
+        let Some(Curve::Segs(g)) = curve_of(&c).unwrap() else { panic!("not segments") };
+        let [Seg::Circle { center, normal, radius }] = g.as_slice() else { panic!("{g:?}") };
+        assert!((*center - Vec3::new(2.0, -5.0, 3.0)).len() < 1e-12 && *normal == Vec3::new(0.0, -1.0, 0.0) && *radius == 1.0, "{g:?}");
+        // In plan, raised: at its elevation, as before.
+        let mut pl = super::super::helpers::lwpoly(vec![pv(0.0, 0.0, 0.0), pv(4.0, 0.0, 0.0), pv(4.0, 3.0, 0.5)], true);
+        pl.set_elevation(7.0);
+        let flat = entity(pl.clone(), Vec3::Z);
+        assert_eq!(normal_of(&flat), Vec3::Z);
+        let segs = profile(&flat, true).unwrap().unwrap();
+        assert!(segs.iter().all(|g| ends(g).0.z == 7.0 && ends(g).1.z == 7.0), "{segs:?}");
+        // Standing, the same polyline is in the plane y = -7, its arc too.
+        let up = profile(&entity(pl, Vec3::new(0.0, -1.0, 0.0)), true).unwrap().unwrap();
+        assert!(up.iter().all(|g| (ends(g).0.y + 7.0).abs() < 1e-12 && (ends(g).1.y + 7.0).abs() < 1e-12), "{up:?}");
+        assert!(up.iter().any(|g| matches!(g, Seg::Arc { mid, .. } if (mid.y + 7.0).abs() < 1e-12)), "{up:?}");
+        // A line keeps its world points whatever its extrusion.
+        let (a, b) = (Vec3::new(0.0, 0.0, 1.0), Vec3::new(1.0, 2.0, 3.0));
+        let l = entity(EntityKind::Line(cadcraft_doc::Line { a, b }), Vec3::new(1.0, 0.0, 0.0));
+        assert_eq!(normal_of(&l), Vec3::Z);
+        assert!(matches!(curve_of(&l).unwrap(), Some(Curve::Segs(g)) if g == vec![Seg::Line { a, b }]));
+    }
+
+    /// The drawing is put back when the work fails part way (IGESIN, VIEWBASE and 3D copies use it).
+    #[test]
+    fn all_or_nothing_puts_the_drawing_back() {
+        let mut s = Session::new();
+        let before = s.doc().unwrap().clone();
+        let r: Result<()> = all_or_nothing(&mut s, |s| {
+            circle(s, 0.0);
+            Err(EngineError::Other("no".into()))
+        });
+        assert!(r.is_err());
+        assert_eq!(*s.doc().unwrap(), before);
+        all_or_nothing(&mut s, |s| Ok(circle(s, 0.0))).unwrap();
+        assert_ne!(*s.doc().unwrap(), before);
     }
 
     #[test]
     fn arcs_past_a_turn_are_normalised() {
         // 0 to 450 degrees is the quarter from 0 to 90, not the three quarters the other way.
         let a = cadcraft_doc::Arc { center: Vec3::new(1.0, 1.0, 2.0), radius: 2.0, start: 0.0, end: 2.5 * PI };
-        let Some(Curve::Segs(segs)) = curve_of(&EntityKind::Arc(a)).unwrap() else { panic!("not segments") };
+        let Some(Curve::Segs(segs)) = curve_of(&entity(EntityKind::Arc(a), Vec3::Z)).unwrap() else { panic!("not segments") };
         let [Seg::Arc { a, mid, b }] = segs.as_slice() else { panic!("{segs:?}") };
         let h = 2.0 * std::f64::consts::FRAC_1_SQRT_2;
         assert!((*a - Vec3::new(3.0, 1.0, 2.0)).len() < 1e-9 && (*b - Vec3::new(1.0, 3.0, 2.0)).len() < 1e-9, "{segs:?}");
         assert!((*mid - Vec3::new(1.0 + h, 1.0 + h, 2.0)).len() < 1e-9, "{segs:?}");
         // Negative angles too: -90 to 0 is the quarter below the centre.
         let a = cadcraft_doc::Arc { center: Vec3::ZERO, radius: 1.0, start: -0.5 * PI, end: 0.0 };
-        let Some(Curve::Segs(segs)) = curve_of(&EntityKind::Arc(a)).unwrap() else { panic!("not segments") };
+        let Some(Curve::Segs(segs)) = curve_of(&entity(EntityKind::Arc(a), Vec3::Z)).unwrap() else { panic!("not segments") };
         assert!(matches!(segs.as_slice(), [Seg::Arc { mid, .. }] if mid.y < -0.5 && mid.x > 0.5), "{segs:?}");
     }
 
@@ -1031,7 +1151,7 @@ mod plain_tests {
         let locked = circle(&mut s, 10.0);
         s.doc_mut().unwrap().modify_entity(locked, |e| e.common.layer = "Defpoints".into()).unwrap();
         s.doc_mut().unwrap().layer_mut("Defpoints").unwrap().locked = true;
-        let r = from_profiles(&mut s, "extrude", &[free, locked, paper], false, |_| Ok(Built::default())).unwrap();
+        let r = from_profiles(&mut s, "extrude", &[free, locked, paper], false, |_, _| Ok(Built::default())).unwrap();
         assert_eq!(r["locked"], 1, "{r}");
         let d = s.doc().unwrap();
         assert!(d.entity(locked).is_some(), "the locked circle stays");

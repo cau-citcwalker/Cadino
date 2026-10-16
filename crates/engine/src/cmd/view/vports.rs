@@ -10,7 +10,9 @@
 //!
 //! Each tile also has its own view direction and visual style ([`TileLook`]), as Rhino's
 //! viewports do: the current tile's are the model view's ([`DocState::view_dir`]), so making
-//! another tile current trades them too and every view command acts on the current tile.
+//! another tile current trades them too and every view command acts on the current tile. The
+//! drawing stores each tile's look with its view; undo and redo bring the tiles back as they
+//! were on show ([`crate::ModelTiles::left`]).
 //! VIEWPORTS.RHINO lays out Rhino's four views; VIEWPORTS.SINGLE and VIEWPORTS.MAXIMIZE show
 //! the current tile alone and bring the others back.
 
@@ -91,7 +93,7 @@ fn with_option(p: &Value, option: &str) -> Value {
 pub(in crate::cmd) fn config_tiles(s: &Session, name: &str) -> Option<Vec<VportTile>> {
     let name = name.trim();
     if name.eq_ignore_ascii_case(VportConfig::ACTIVE) {
-        return Some(live(s.state().ok()?, s.viewport_px).0.into_iter().map(|t| t.0).collect());
+        return Some(live(s.state().ok()?, s.viewport_px).0.into_iter().map(|(t, l)| with_look(t, l)).collect());
     }
     s.doc().ok()?.vports.iter().find(|c| !c.is_active() && c.name.eq_ignore_ascii_case(name)).map(|c| c.tiles.clone())
 }
@@ -120,18 +122,32 @@ fn active_config(d: &Drawing) -> Option<&VportConfig> {
     d.vports.iter().find(|c| c.is_active() && c.tiles.len() > 1)
 }
 
-/// The look this session last gave tile `t` (plan when it never showed it).
-fn seen_look(tiles: &ModelTiles, t: &VportTile) -> TileLook {
-    tiles.seen.iter().rev().find(|(k, _)| k == t).map(|(_, l)| *l).unwrap_or_default()
+/// The drawing's `*Active` tiles (empty: one view).
+fn active_tiles(d: &Drawing) -> Vec<VportTile> {
+    active_config(d).map(|c| c.tiles.clone()).unwrap_or_default()
 }
 
-/// Remember the looks of `tiles` (see [`ModelTiles::seen`]).
-fn remember(st: &mut DocState, tiles: &[Tile]) {
-    let seen = &mut st.tiles.seen;
-    seen.retain(|(k, _)| !tiles.iter().any(|t| t.0 == *k));
-    seen.extend(tiles.iter().copied());
-    let over = seen.len().saturating_sub(ModelTiles::SEEN);
-    seen.drain(..over);
+/// The look the drawing stores with tile `t` (plan, wireframe when it stores none).
+fn look_of(t: &VportTile) -> TileLook {
+    let [x, y, z] = t.view_dir;
+    let v = Vec3::new(x, y, z);
+    // A unit direction as stored, so a round trip keeps it bit for bit; anything else normalised.
+    let dir = if v.is_finite() && (v.len() - 1.0).abs() < 1e-12 { ViewDir { dir: v } } else { ViewDir::new(v) };
+    TileLook { dir, shaded: t.shaded, edges: t.edges }
+}
+
+/// Tile `t` with look `l` stored in it.
+fn with_look(t: VportTile, l: TileLook) -> VportTile {
+    let d = l.dir.dir;
+    VportTile { view_dir: [d.x, d.y, d.z], shaded: l.shaded, edges: l.edges, ..t }
+}
+
+/// The model view shows view `v` along look `l` (in the Model tab).
+fn show(st: &mut DocState, v: View, l: TileLook) {
+    if st.space == Space::Model && st.mspace.is_none() {
+        st.set_view_quiet(v);
+        st.set_look(l);
+    }
 }
 
 /// The tiles on show with their views and looks as they are now (the current one's are the
@@ -140,13 +156,11 @@ fn live(st: &DocState, px: (f64, f64)) -> (Vec<Tile>, usize) {
     let now = st.views.iter().find(|(sp, _)| *sp == Space::Model).map(|(_, v)| *v).unwrap_or_default();
     let Some(cfg) = active_config(&st.doc) else {
         let aspect = px.0 / px.1.max(1.0);
-        return (vec![(VportTile { min: Vec2::ZERO, max: Vec2::new(1.0, 1.0), center: now.center, height: now.height, aspect }, st.look())], 0);
+        let one = VportTile { min: Vec2::ZERO, max: Vec2::new(1.0, 1.0), center: now.center, height: now.height, aspect, ..Default::default() };
+        return (vec![(one, st.look())], 0);
     };
     let n = cfg.tiles.len();
-    let synced = st.tiles.rects.len() == n
-        && st.tiles.views.len() == n
-        && st.tiles.looks.len() == n
-        && st.tiles.rects.iter().zip(&cfg.tiles).all(|(r, t)| *r == rect(t));
+    let synced = st.tiles.config == cfg.tiles && st.tiles.views.len() == n && st.tiles.looks.len() == n;
     let mut tiles: Vec<Tile> = if synced {
         cfg.tiles
             .iter()
@@ -155,11 +169,11 @@ fn live(st: &DocState, px: (f64, f64)) -> (Vec<Tile>, usize) {
             .map(|((t, v), l)| (VportTile { center: v.center, height: v.height, ..*t }, *l))
             .collect()
     } else {
-        cfg.tiles.iter().map(|t| (*t, seen_look(&st.tiles, t))).collect()
+        cfg.tiles.iter().map(|t| (*t, look_of(t))).collect()
     };
-    // Tiles put back by an undo or redo: the current one is the first that looked the way the
-    // model view does (tile 0 when none did), so no tile takes over another's look.
-    let active = if synced { st.tiles.active.min(n - 1) } else { tiles.iter().position(|t| t.1 == st.look()).unwrap_or(0) };
+    // Tiles the session hasn't shown yet (a drawing just opened): the first is current, as the
+    // drawing stores them.
+    let active = if synced { st.tiles.active.min(n - 1) } else { 0 };
     if let Some((t, l)) = tiles.get_mut(active) {
         (t.center, t.height) = (now.center, now.height);
         *l = st.look();
@@ -175,35 +189,103 @@ fn live(st: &DocState, px: (f64, f64)) -> (Vec<Tile>, usize) {
     (tiles, active)
 }
 
-/// Show `tiles` with tile `current` current: the drawing's `*Active` configuration (one undo
-/// step with the command) and the session's views and looks.
+/// The drawing as a file should keep it: its `*Active` tiles with the views, directions and
+/// visual styles on show (making a tile current, orbiting and VSCURRENT change only the
+/// session), the current tile first. `None` when there is nothing to bring up to date.
+pub(crate) fn with_live_tiles(s: &Session) -> Option<Drawing> {
+    let st = s.state().ok()?;
+    if st.block_edit.is_some() {
+        return None;
+    }
+    active_config(&st.doc)?;
+    let (mut tiles, active) = live(st, s.viewport_px);
+    if active < tiles.len() {
+        let cur = tiles.remove(active);
+        tiles.insert(0, cur);
+    }
+    let mut d = (*st.doc).clone();
+    let c = d.vports.iter_mut().find(|c| c.is_active())?;
+    c.tiles = tiles.iter().map(|(t, l)| with_look(*t, *l)).collect();
+    Some(d)
+}
+
+impl DocState {
+    /// Remember the tiles as they are on show, before the drawing's tiles change (VPORTS, undo,
+    /// redo): coming back to these tiles brings them back exactly ([`ModelTiles::left`]).
+    pub(crate) fn leave_tiles(&mut self, px: (f64, f64)) {
+        let key = active_tiles(&self.doc);
+        let (tiles, active) = live(self, px);
+        let left = &mut self.tiles.left;
+        left.retain(|(k, ..)| *k != key);
+        left.push((key, tiles.into_iter().map(|(t, l)| with_look(t, l)).collect(), active));
+        let over = left.len().saturating_sub(ModelTiles::LEFT);
+        left.drain(..over);
+    }
+
+    /// After undo or redo put back a drawing whose tiles are not the ones on show: show them as
+    /// the session left them, the current one current again with its view and look, or (never
+    /// left in this session) as the drawing stores them, the first one current.
+    pub(crate) fn tiles_back(&mut self) {
+        let cfg = active_tiles(&self.doc);
+        if self.tiles.config == cfg {
+            return;
+        }
+        let n = cfg.len().max(1);
+        let left = self.tiles.left.iter().rev().find(|(k, t, a)| *k == cfg && t.len() == n && *a < n).map(|(_, t, a)| (t.clone(), *a));
+        let (tiles, active) = left.unwrap_or_else(|| (cfg.clone(), 0));
+        let old = std::mem::take(&mut self.tiles);
+        self.tiles = ModelTiles { left: old.left, maximized: old.maximized, ..Default::default() };
+        if cfg.len() > 1 {
+            self.tiles.views = tiles.iter().map(view_of).collect();
+            self.tiles.looks = tiles.iter().map(look_of).collect();
+            self.tiles.config = cfg;
+            self.tiles.active = active;
+        }
+        // One view never left in this session: nothing is known about it, the view stays.
+        if let Some(t) = tiles.get(active) {
+            show(self, view_of(t), look_of(t));
+        }
+    }
+
+    /// A drawing just opened shows its current tile's direction and style as the file stores
+    /// them (a plan wireframe tile keeps the view the drawing opens on).
+    pub(crate) fn tiles_opened(&mut self) {
+        if let Some(t) = active_config(&self.doc).and_then(|c| c.tiles.first()).copied()
+            && look_of(&t) != TileLook::default()
+        {
+            show(self, view_of(&t), look_of(&t));
+        }
+    }
+}
+
+/// Show `tiles` with tile `current` current: the drawing's `*Active` configuration with each
+/// tile's view and look (one undo step with the command) and the session's views and looks.
 fn apply(s: &mut Session, mut tiles: Vec<Tile>, current: usize) -> Result<()> {
     if tiles.is_empty() {
         return Err(EngineError::Other("A viewport configuration needs a viewport.".into()));
     }
+    let px = s.viewport_px;
     let cur = tiles.remove(current.min(tiles.len() - 1));
     tiles.insert(0, cur);
     let st = s.state_mut()?;
+    st.leave_tiles(px);
+    let left = std::mem::take(&mut st.tiles.left);
     let d = Arc::make_mut(&mut st.doc);
     d.vports.retain(|c| !c.is_active());
-    let seen = std::mem::take(&mut st.tiles.seen);
     if tiles.len() > 1 {
-        d.vports.insert(0, VportConfig { name: VportConfig::ACTIVE.into(), tiles: tiles.iter().map(|t| t.0).collect() });
+        let config: Vec<VportTile> = tiles.iter().map(|(t, l)| with_look(*t, *l)).collect();
+        d.vports.insert(0, VportConfig { name: VportConfig::ACTIVE.into(), tiles: config.clone() });
         st.tiles = ModelTiles {
-            rects: tiles.iter().map(|t| rect(&t.0)).collect(),
+            config,
             views: tiles.iter().map(|t| view_of(&t.0)).collect(),
             looks: tiles.iter().map(|t| t.1).collect(),
-            seen,
+            left,
             ..Default::default()
         };
-        remember(st, &tiles);
     } else {
-        st.tiles = ModelTiles { seen, ..Default::default() };
+        st.tiles = ModelTiles { left, ..Default::default() };
     }
-    if st.space == Space::Model && st.mspace.is_none() {
-        st.set_view_quiet(view_of(&cur.0));
-        st.set_look(cur.1);
-    }
+    show(st, view_of(&cur.0), cur.1);
     s.touch();
     Ok(())
 }
@@ -382,11 +464,9 @@ fn run_vports(s: &mut Session, p: &Value) -> Result<Value> {
             let mut saved = tiles.clone();
             let cur = saved.remove(current);
             saved.insert(0, cur);
-            let st = s.state_mut()?;
-            remember(st, &saved);
-            let d = Arc::make_mut(&mut st.doc);
+            let d = s.doc_mut()?;
             d.vports.retain(|c| !c.name.eq_ignore_ascii_case(&name));
-            d.vports.push(VportConfig { name: name.clone(), tiles: saved.into_iter().map(|t| t.0).collect() });
+            d.vports.push(VportConfig { name: name.clone(), tiles: saved.into_iter().map(|(t, l)| with_look(t, l)).collect() });
             return Ok(json!({ "name": name, "message": format!("Viewport configuration \"{name}\" saved.") }));
         }
         "restore" | "r" => {
@@ -399,9 +479,7 @@ fn run_vports(s: &mut Session, p: &Value) -> Result<Value> {
                 .find(|c| !c.is_active() && c.name.eq_ignore_ascii_case(name))
                 .cloned()
                 .ok_or_else(|| EngineError::Other(format!("Could not find viewport configuration \"{name}\".")))?;
-            let st = s.state()?;
-            let tiles = cfg.tiles.iter().map(|t| (*t, seen_look(&st.tiles, t))).collect();
-            apply(s, tiles, 0)?;
+            apply(s, cfg.tiles.iter().map(|t| (*t, look_of(t))).collect(), 0)?;
         }
         "delete" | "d" => {
             let pats = names(p);
@@ -466,7 +544,7 @@ fn run_rhino(s: &mut Session, _p: &Value) -> Result<Value> {
         let dir = ViewDir::new(Vec3::new(x, y, z));
         let aspect = ((max.x - min.x) * w / ((max.y - min.y) * h).max(EPS)).max(EPS);
         let v = s.extents_frame_along(dir, aspect)?;
-        out.push((VportTile { min, max, center: v.center, height: v.height, aspect }, TileLook { dir, ..look }));
+        out.push((VportTile { min, max, center: v.center, height: v.height, aspect, ..Default::default() }, TileLook { dir, ..look }));
     }
     apply(s, out, 0)?;
     summary(s)
@@ -535,11 +613,11 @@ impl Session {
         }
         let st = self.state_mut()?;
         st.tiles = ModelTiles {
-            rects: tiles.iter().map(|t| rect(&t.0)).collect(),
+            config: active_tiles(&st.doc),
             views: tiles.iter().map(|t| view_of(&t.0)).collect(),
             looks: tiles.iter().map(|t| t.1).collect(),
             active: index,
-            seen: std::mem::take(&mut st.tiles.seen),
+            left: std::mem::take(&mut st.tiles.left),
             maximized: st.tiles.maximized.take(),
         };
         if let Some((t, l)) = tiles.get(index) {

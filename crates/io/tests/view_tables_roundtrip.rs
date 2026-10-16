@@ -75,7 +75,101 @@ fn foreign_paper_view_and_hostile_twist() {
 }
 
 fn tile(min: (f64, f64), max: (f64, f64), center: (f64, f64), height: f64) -> VportTile {
-    VportTile { min: Vec2::new(min.0, min.1), max: Vec2::new(max.0, max.1), center: Vec2::new(center.0, center.1), height, aspect: 0.75 }
+    VportTile {
+        min: Vec2::new(min.0, min.1),
+        max: Vec2::new(max.0, max.1),
+        center: Vec2::new(center.0, center.1),
+        height,
+        aspect: 0.75,
+        ..VportTile::default()
+    }
+}
+
+/// Each tile's view direction (DXF 16/26/36) and visual style (281 render mode) survive a save
+/// and open bit for bit; a file without them, or with unusable ones, reads as plan wireframe.
+#[test]
+fn tile_view_directions_and_visual_styles_round_trip() {
+    let third = 1.0 / 3f64.sqrt();
+    let look = |t: VportTile, view_dir: [f64; 3], shaded: bool, edges: bool| VportTile { view_dir, shaded, edges, ..t };
+    let mut d = Drawing::new_imperial();
+    d.vports = vec![
+        VportConfig {
+            name: VportConfig::ACTIVE.into(),
+            tiles: vec![
+                look(tile((0.0, 0.5), (0.5, 1.0), (1.0, 1.0), 1.0), [0.0, 0.0, 1.0], false, false),
+                look(tile((0.5, 0.5), (1.0, 1.0), (2.0, 2.0), 2.0), [-third, -third, third], true, false),
+                look(tile((0.0, 0.0), (0.5, 0.5), (3.0, 3.0), 3.0), [0.0, -1.0, 0.0], true, true),
+                look(tile((0.5, 0.0), (1.0, 0.5), (4.0, 4.0), 4.0), [1.0, 0.0, 0.0], false, false),
+            ],
+        },
+        VportConfig { name: "Saved".into(), tiles: vec![look(tile((0.0, 0.0), (1.0, 1.0), (0.0, 0.0), 1.0), [0.3, -0.4, 1e-3], true, true)] },
+    ];
+    let r = round_trip(&d);
+    assert_eq!(r.vports, d.vports);
+
+    let rec = |extra: &[(i32, &str)]| -> String {
+        let mut tags: Vec<(i32, &str)> =
+            vec![(0, "VPORT"), (2, "*ACTIVE"), (10, "0"), (20, "0"), (11, "0.5"), (21, "1"), (12, "1"), (22, "1"), (40, "4"), (41, "1")];
+        tags.extend_from_slice(extra);
+        tags.iter()
+            .map(|(c, v)| {
+                format!(
+                    "{c}
+{v}
+"
+                )
+            })
+            .collect()
+    };
+    let other = "0
+VPORT
+2
+*ACTIVE
+10
+0.5
+20
+0
+11
+1
+21
+1
+12
+1
+22
+1
+40
+4
+41
+1
+";
+    for (extra, want) in [
+        (vec![], ([0.0, 0.0, 1.0], false, false)),
+        (vec![(16, "nan"), (26, "nan"), (36, "inf"), (281, "6")], ([0.0, 0.0, 1.0], true, true)),
+        (vec![(16, "0"), (26, "0"), (36, "0"), (281, "3")], ([0.0, 0.0, 1.0], true, false)),
+        (vec![(16, "1"), (26, "-2"), (36, "0.5"), (281, "99")], ([1.0, -2.0, 0.5], false, false)),
+    ] {
+        let dxf = format!(
+            "0
+SECTION
+2
+TABLES
+0
+TABLE
+2
+VPORT
+{}{other}0
+ENDTAB
+0
+ENDSEC
+0
+EOF
+",
+            rec(&extra)
+        );
+        let d = read_dxf(dxf.as_bytes()).expect("read");
+        let t = d.vports.first().and_then(|c| c.tiles.first()).copied().expect("tile");
+        assert_eq!((t.view_dir, t.shaded, t.edges), want, "{extra:?}");
+    }
 }
 
 #[test]

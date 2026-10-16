@@ -1,9 +1,9 @@
-//! Furniture design with the kernel: PANEL in each orientation, parts kept through modelling,
-//! cut lists of real boards, VIEWBASE drawings of a board with a hole, and 3DROTATE before a
-//! boolean.
+//! Furniture design with the kernel: PANEL in each orientation and from standing profiles, parts
+//! kept through modelling, cut lists of real boards, VIEWBASE drawings of a board with a hole (in
+//! model space and on a layout), and 3DROTATE before a boolean.
 #![cfg(feature = "occt")]
 
-use cadcraft_engine::doc::{EntityKind, Handle, Part, Solid3d};
+use cadcraft_engine::doc::{EntityKind, Handle, Part, Polyline3d, Solid3d, Space};
 use cadcraft_engine::geom::{Bounds2, Vec2, Vec3};
 use cadcraft_engine::{Input, Session};
 use serde_json::{Value, json};
@@ -102,6 +102,47 @@ fn panel_at_the_prompts() {
     assert!(near3(a, [1000.0, 0.0, 100.0]) && near3(b, [1600.0, 400.0, 118.0]), "{a:?} {b:?}");
 }
 
+/// A profile standing in a plane of its own is the panel's face where it is (its thickness along
+/// the plane's normal): a polyline in the XZ plane and a 3D polyline in the YZ plane. Orientation,
+/// base or insertion point with one are refused; at the prompts only the thickness is asked.
+#[test]
+fn standing_profiles_make_panels_where_they_are() {
+    let mut s = session();
+    let pl = s.execute("pline", &json!({ "points": [[0, 0], [600, 0], [600, 400], [0, 400]], "closed": true })).unwrap();
+    let ph = handle(&pl["handle"]);
+    s.doc_mut().unwrap().modify_entity(ph, |e| e.common.extrusion = Vec3::new(0.0, -1.0, 0.0)).unwrap();
+    let before = s.doc().unwrap().clone();
+    for extra in [json!({ "orientation": "front" }), json!({ "base": [0, 0] }), json!({ "at": [0, 0, 0] })] {
+        let mut p = json!({ "handle": ph.hex() });
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        assert!(s.execute("panel", &p).is_err(), "{p}");
+        assert_eq!(*s.doc().unwrap(), before);
+    }
+    let r = s.execute("panel", &json!({ "handle": ph.hex() })).unwrap();
+    let (a, b) = box3(&solid(&s, handle(&r["handle"])));
+    assert!(near3(a, [0.0, -18.0, 0.0]) && near3(b, [600.0, 0.0, 400.0]), "{a:?} {b:?}");
+    // Wound counterclockwise seen from +X: the thickness runs along +X.
+    let v = Vec3::new;
+    let p3 = s
+        .add_entity(EntityKind::Polyline3d(Polyline3d {
+            points: vec![v(50.0, 0.0, 0.0), v(50.0, 300.0, 0.0), v(50.0, 300.0, 200.0), v(50.0, 0.0, 200.0)],
+            closed: true,
+        }))
+        .unwrap();
+    let r = s.execute("panel", &json!({ "handle": p3.hex(), "thickness": 12 })).unwrap();
+    let (a, b) = box3(&solid(&s, handle(&r["handle"])));
+    assert!(near3(a, [50.0, 0.0, 0.0]) && near3(b, [62.0, 300.0, 200.0]), "{a:?} {b:?}");
+    // At the prompts: the profile, the thickness, done.
+    let n = s.doc().unwrap().model.iter().count();
+    s.start("panel").unwrap();
+    s.input(Input::Enter).unwrap();
+    s.input(Input::Pick(vec![ph])).unwrap();
+    assert!(s.prompt_text().contains("thickness"), "{}", s.prompt_text());
+    s.input(Input::Text("15".into())).unwrap();
+    assert!(s.current_prompt().is_none(), "{}", s.prompt_text());
+    assert_eq!(s.doc().unwrap().model.iter().count(), n + 1);
+}
+
 #[test]
 fn parts_survive_chamfers_and_shells() {
     let mut s = session();
@@ -194,7 +235,7 @@ fn viewbase_draws_a_board_with_a_hole() {
     let c = handle(&s.execute("cylinder", &json!({ "center": [50, 30, -1], "radius": 10, "height": 22 })).unwrap()["handle"]);
     s.execute("subtract", &json!({ "from": [b.hex()], "remove": [c.hex()] })).unwrap();
     let before = s.doc().unwrap().model.iter().count();
-    let r = s.execute("viewbase", &json!({ "at": [200, 0], "gap": 30 })).unwrap();
+    let r = s.execute("viewbase", &json!({ "at": [200, 0], "gap": 30, "space": "model" })).unwrap();
     assert_eq!(r["views"].as_array().map(Vec::len), Some(3), "{r}");
     assert_eq!(r["capped"].as_array().map(Vec::len), Some(0), "{r}");
 
@@ -251,7 +292,7 @@ fn viewbase_draws_a_board_with_a_hole() {
 fn round_parts_show_silhouettes_and_no_seams() {
     let mut s = session();
     s.execute("cylinder", &json!({ "center": [0, 0, 0], "radius": 10, "height": 30 })).unwrap();
-    s.execute("viewbase", &json!({ "at": [100, 0], "gap": 10, "views": ["front", "right"], "dims": false })).unwrap();
+    s.execute("viewbase", &json!({ "at": [100, 0], "gap": 10, "views": ["front", "right"], "dims": false, "space": "model" })).unwrap();
     for (view, left) in [("VIEW front", 100.0), ("VIEW right", 130.0)] {
         let vis = group_lines(&s, view, "VISIBLE");
         let b = bounds(&vis);
@@ -269,7 +310,10 @@ fn viewbase_first_angle_iso_and_scale() {
     let mut s = session();
     s.execute("box", &json!({ "corner1": [0, 0, 0], "corner2": [100, 60], "height": 20 })).unwrap();
     let r = s
-        .execute("viewbase", &json!({ "at": [0, -500], "views": ["front", "top", "right", "iso"], "projection": "first", "scale": 0.5, "gap": 10, "hidden": false, "dims": false }))
+        .execute(
+            "viewbase",
+            &json!({ "at": [0, -500], "views": ["front", "top", "right", "iso"], "projection": "first", "scale": 2, "gap": 10, "hidden": false, "dims": false, "space": "model" }),
+        )
         .unwrap();
     assert_eq!(r["views"].as_array().map(Vec::len), Some(4));
     // First angle: the top view below the front, the right view to its left; half size.
@@ -280,9 +324,46 @@ fn viewbase_first_angle_iso_and_scale() {
     assert!(top.max.y < front.min.y && (top.max.y - (front.min.y - 10.0)).abs() < 1e-6, "{top:?}");
     assert!(right.max.x < front.min.x && (right.width() - 30.0).abs() < 1e-6, "{right:?}");
     assert!(!group_lines(&s, "VIEW iso", "VISIBLE").is_empty());
-    // A second run makes new groups.
-    s.execute("viewbase", &json!({ "views": ["front"], "dims": false })).unwrap();
+    // A second run makes new groups, on the default layout.
+    let r = s.execute("viewbase", &json!({ "views": ["front"], "dims": false })).unwrap();
     assert!(s.doc().unwrap().groups.iter().any(|g| g.name == "VIEW front 2"));
+    assert_eq!(r["layout"], "Drawing views");
+    let sheet = s.doc().unwrap().space(&Space::Paper("Drawing views".into())).map(|st| st.iter().count()).unwrap_or(0);
+    assert!(sheet > 0, "{r}");
+}
+
+/// A board with a hole drawn on a layout: the views and their dimensions are in its paper space,
+/// sized for the sheet, and read the board's true sizes.
+#[test]
+fn viewbase_draws_on_a_layout() {
+    let mut s = session();
+    let b = handle(&s.execute("box", &json!({ "corner1": [0, 0, 0], "corner2": [1200, 600], "height": 18 })).unwrap()["handle"]);
+    let c = handle(&s.execute("cylinder", &json!({ "center": [600, 300, -1], "radius": 35, "height": 20 })).unwrap()["handle"]);
+    s.execute("subtract", &json!({ "from": [b.hex()], "remove": [c.hex()] })).unwrap();
+    let r = s.execute("viewbase", &json!({ "layout": "Shop drawing" })).unwrap();
+    assert_eq!(r["layout"], "Shop drawing");
+    let k = r["scale"].as_f64().unwrap();
+    assert!(k > 1.0, "a 1200 board on an A4 sheet is drawn smaller: {r}");
+    let d = s.doc().unwrap();
+    assert!(d.layout("Shop drawing").is_some());
+    let paper: Vec<EntityKind> = d.space(&Space::Paper("Shop drawing".into())).unwrap().iter().map(|e| e.kind.clone()).collect();
+    let dims: Vec<f64> = paper
+        .iter()
+        .filter_map(|k| match k {
+            EntityKind::Dimension(dm) => {
+                let st = d.dim_style(&dm.style).cloned().unwrap_or_default().with_overrides(&dm.overrides);
+                Some(((dm.p14 - dm.p13).len() * st.linear_factor * 1000.0).round() / 1000.0)
+            }
+            _ => None,
+        })
+        .collect();
+    for want in [1200.0, 600.0, 18.0] {
+        assert!(dims.contains(&want), "{want}: {dims:?}");
+    }
+    let front = bounds(&group_lines(&s, "VIEW front", "VISIBLE"));
+    assert!((front.width() * k - 1200.0).abs() < 1e-6 && (front.height() * k - 18.0).abs() < 1e-6, "{front:?}");
+    assert!(!group_lines(&s, "VIEW front", "HIDDEN").is_empty(), "the hole, hidden");
+    assert_eq!(d.model.iter().count(), 1, "model space keeps the board only");
 }
 
 #[test]

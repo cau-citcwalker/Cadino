@@ -89,9 +89,9 @@ fn usable_view(v: &View) -> bool {
 /// Tiled model viewports (VPORTS): the session side of the drawing's `*Active` configuration.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ModelTiles {
-    /// The tile corners these views belong to (when the drawing's tiles change, by VPORTS or
-    /// undo, its views take over).
-    pub rects: Vec<(Vec2, Vec2)>,
+    /// The drawing's `*Active` tiles these views belong to (when the drawing's tiles change, by
+    /// VPORTS, undo or redo, they take over).
+    pub config: Vec<cadcraft_doc::VportTile>,
     /// Each tile's view; the current tile shows the model space view itself.
     pub views: Vec<View>,
     /// Each tile's direction and visual style; the current tile's are [`DocState::view_dir`],
@@ -99,19 +99,19 @@ pub struct ModelTiles {
     pub looks: Vec<TileLook>,
     /// The current tile.
     pub active: usize,
-    /// The look of every tile this session put in a configuration, by tile: the drawing keeps no
-    /// view directions, so undo and Restore find them here (the last [`Self::SEEN`]).
-    /// ponytail: session memory only; a reopened file's tiles look in plan until the VPORT table
-    /// keeps VIEWDIR and the visual style.
-    pub seen: Vec<(cadcraft_doc::VportTile, TileLook)>,
+    /// How the session left the tiles it showed (by VPORTS, undo or redo): the drawing's
+    /// `*Active` tiles then (empty: one view), the tiles as they were on show (views and looks
+    /// stored in them) and the current one. Undo and redo bring them back exactly; tiles never
+    /// left in this session show as the drawing stores them (the last [`Self::LEFT`]).
+    pub left: Vec<(Vec<cadcraft_doc::VportTile>, Vec<cadcraft_doc::VportTile>, usize)>,
     /// The tiles `viewports.single` replaced, with their looks and the current one, for
     /// `viewports.maximize` to bring back.
     pub maximized: Option<(Vec<cadcraft_doc::VportTile>, Vec<TileLook>, usize)>,
 }
 
 impl ModelTiles {
-    /// How many tile looks [`Self::seen`] remembers.
-    pub const SEEN: usize = 256;
+    /// How many configurations [`Self::left`] remembers.
+    pub const LEFT: usize = 32;
 }
 
 /// How a model tile shows the model: its view direction and visual style (VSCURRENT).
@@ -738,10 +738,13 @@ pub struct Session {
     lisp_last: Option<std::result::Result<lisp::value::Value, String>>,
     /// What the last HATCHPICK kept (the Hatch and Gradient dialog's picks).
     pub hatch_picks: Option<cmd::hatch::HatchPicks>,
-    /// The height of the point the UI last gave on a 3D object (a 3D object snap in a 3D view):
-    /// commands that build in 3D (BOX, CYLINDER …) start there; `None` = on the XY plane. The UI
-    /// sets it with each point it sends.
+    /// The height of the point being given: one the UI gave on a 3D object (a 3D object snap in a
+    /// 3D view) or one typed as `x,y,z` / `@dx,dy,dz`. Commands that build in 3D (BOX, CYLINDER …)
+    /// start there; `None` = on the XY plane. The UI sets it with each point it sends.
     pub point_z: Option<f64>,
+    /// The height of the last point given ([`Self::point_z`] when it was given): what typed
+    /// relative points (`@dx,dy,dz`) are measured from.
+    pub last_point_z: Option<f64>,
 }
 
 impl Default for Session {
@@ -791,6 +794,7 @@ impl Session {
             lisp_last: None,
             hatch_picks: None,
             point_z: None,
+            last_point_z: None,
         }
     }
     pub fn new_drawing(&mut self, metric: bool) -> usize {
@@ -812,6 +816,7 @@ impl Session {
                 height: (ext.height().max(ext.width() * self.viewport_px.1 / self.viewport_px.0.max(1.0)) * 1.1).max(1e-6),
             });
         }
+        st.tiles_opened();
         self.end_running();
         self.docs.push(st);
         self.active = self.docs.len() - 1;
@@ -1265,6 +1270,7 @@ impl Session {
             Some(i) => {
                 if let Input::Point(p) = &i {
                     self.last_point = *p;
+                    self.last_point_z = self.point_z.filter(|z| z.is_finite());
                     if let Some(b) = base.filter(|b| b.is_finite() && p.is_finite() && b.dist(*p) > 1e-12) {
                         self.last_segment = Some((b, *p));
                     }
@@ -1493,7 +1499,8 @@ impl Session {
     /// script line (see [`Session::script`]), so `MOVE L  0,0 5,5` ends the selection with the
     /// second space and `ERASE L ` with the trailing one. Input after the command ends is ignored.
     pub fn cmdline(&mut self, text: &str) -> Result<()> {
-        // Typed points are on the XY plane: a 3D snap's height went with the click that made it.
+        // A 3D snap's height went with the click that made it: typed points carry their own
+        // (`x,y,z`), others are on the XY plane.
         self.point_z = None;
         let t = text.trim_end_matches(['\r', '\n']);
         // The command line types spaces literally at free-text prompts: the line is one input.
@@ -1611,8 +1618,10 @@ impl Session {
             return self.input(Input::Keyword(k));
         }
         if prompt.accept.point {
-            if let Some(p) = prompt::parse_point_with(tt, self.last_point, &self.angle_settings()) {
+            if let Some((p, z)) = prompt::parse_point_z(tt, self.last_point, self.last_point_z, &self.angle_settings()) {
                 self.last_polar = prompt::parse_polar_text(tt, &self.angle_settings());
+                // `x,y,z` keeps its height for the commands that build in 3D; `x,y` is on the XY plane.
+                self.point_z = z;
                 return self.input(Input::Point(p));
             }
             // Direct distance entry along the tracking path the cursor is on, from the point it
@@ -1670,22 +1679,28 @@ impl Session {
     // ---------------- undo ----------------
 
     pub fn undo(&mut self) -> Result<Option<String>> {
+        let px = self.viewport_px;
         let st = self.state_mut()?;
         let Some(snap) = st.undo.pop() else { return Ok(None) };
         let cur = Snapshot { label: snap.label.clone(), doc: st.doc.clone(), selection: st.selection.clone() };
+        st.leave_tiles(px);
         st.doc = snap.doc;
         st.follow_layout(&cur.doc);
+        st.tiles_back();
         st.selection = Vec::new();
         st.redo.push(cur);
         st.revision += 1;
         Ok(Some(snap.label))
     }
     pub fn redo(&mut self) -> Result<Option<String>> {
+        let px = self.viewport_px;
         let st = self.state_mut()?;
         let Some(snap) = st.redo.pop() else { return Ok(None) };
         let cur = Snapshot { label: snap.label.clone(), doc: st.doc.clone(), selection: st.selection.clone() };
+        st.leave_tiles(px);
         st.doc = snap.doc;
         st.follow_layout(&cur.doc);
+        st.tiles_back();
         st.selection = Vec::new();
         st.undo.push(cur);
         st.revision += 1;

@@ -15,7 +15,7 @@ use super::gripcmds::stretch_grips;
 use super::helpers::line;
 use super::machines::number;
 use super::modify::transform_entities;
-use crate::grips::{GripAction, GripMode, grip_action, grip_actions, mode_matrix};
+use crate::grips::{GripAction, GripMode, grip_action_plan, grip_actions, mode_matrix};
 use crate::{Accept, EngineError, Input, Interactive, Prompt, Result, Running, Session, Step};
 
 /// At most this many grips are hot at once (input-derived: a cap on the work per edit).
@@ -170,11 +170,12 @@ impl GripEdit {
         }
     }
 
-    /// The object after the multifunctional `action` with the point `to` or value `value`.
+    /// The object after the multifunctional `action` with the plan point `to` (taken into the
+    /// object's plane) or value `value`.
     fn acted(&self, s: &Session, action: GripAction, to: Option<Vec2>, value: Option<f64>) -> Option<(Handle, EntityKind)> {
         let &(h, i) = self.hot.first()?;
         let e = s.doc().ok()?.entity(h)?;
-        grip_action(&e.kind, i, action, to, value).map(|k| (h, k))
+        grip_action_plan(e, i, action, to, value).map(|k| (h, k))
     }
 
     /// Apply a multifunctional option; the grip edit ends.
@@ -435,7 +436,11 @@ impl Interactive for GripEdit {
         }
         let base = match self.ask {
             Ask::Action(a) => {
-                let mut out: Vec<EntityKind> = self.acted(s, a, Some(c), None).map(|(_, k)| k).into_iter().collect();
+                // The result in its object's plane, as plan view shows it.
+                let mut out: Vec<EntityKind> = self
+                    .acted(s, a, Some(c), None)
+                    .and_then(|(h, kind)| Some(super::helpers::plan_kinds(&cadcraft_doc::Entity { kind, ..(**s.doc().ok()?.entity(h)?).clone() })))
+                    .unwrap_or_default();
                 out.push(line(self.base, c));
                 return out;
             }

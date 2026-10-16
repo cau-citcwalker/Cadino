@@ -310,21 +310,28 @@ const MAX_CURVE_POINTS: usize = 1_000_000;
 
 /// The faces in lumps, and the free edges chained into polylines. A lump is one object as
 /// OpenCASCADE read it (a solid, a shell, or a group of faces: IGES writers group each solid's
-/// trimmed surfaces), so objects that touch along a whole face stay apart and whole ([`objects`]).
+/// trimmed surfaces) when its faces make one piece ([`objects`], [`shells`]), so objects that
+/// touch along a whole face stay apart and whole.
 /// ponytail: opencascade 0.3 has no sewing and no sub-shape iterator, so the grouping is read
 /// from the shape's own B-rep text, and a lump is a compound of faces (booleans on it may fail).
-/// Faces a file leaves ungrouped are joined along edges whose ends match that exactly two of them
-/// share, so ungrouped objects that touch along a face come in split. Free edges that meet end
-/// to end are joined into one polyline, even when the file kept them as separate curves. Upgrade
-/// path: TopoDS_Iterator and BRepBuilderAPI_Sewing in the bindings.
+/// Faces a file leaves ungrouped (or in groups of one face, or of pieces apart) are joined along
+/// edges whose ends match that exactly two of them share, so such objects that touch along a face
+/// come in split. Free edges that meet end to end are joined into one polyline, even when the
+/// file kept them as separate curves. Upgrade path: TopoDS_Iterator and BRepBuilderAPI_Sewing in
+/// the bindings.
 pub fn import_iges(path: &Path) -> Result<Imported> {
     let shape = {
         let _one = exchanging();
         Shape::read_iges(path).map_err(failed("IGES import"))?
     };
+    imported(&shape)
+}
+
+/// [`import_iges`] of the shape read.
+fn imported(shape: &Shape) -> Result<Imported> {
     // Points this close are one (a hundred-thousandth of the model's size): faces written as
     // trimmed surfaces each have their own copy of a shared edge.
-    let q = deflection(&shape) * 0.02;
+    let q = deflection(shape) * 0.02;
     let key = |p: Vec3| ((p.x / q).round() as i64, (p.y / q).round() as i64, (p.z / q).round() as i64);
     let ends = |e: &Edge| {
         let (a, b) = (key(v3(e.start_point())), key(v3(e.end_point())));
@@ -338,8 +345,11 @@ pub fn import_iges(path: &Path) -> Result<Imported> {
             bounding.entry(ends(&e)).or_default().push((i, e));
         }
     }
-    // The objects the file grouped are one lump each (their first face is the lump's root).
-    let owner = write_brep(&shape).ok().and_then(|t| objects(&t, faces.len())).unwrap_or_else(|| vec![None; faces.len()]);
+    // The objects the file grouped are one lump each (their first face is the lump's root), when
+    // their faces make one piece.
+    let (owner, solids) = write_brep(shape).ok().and_then(|t| objects(&t, faces.len())).unwrap_or_else(|| (vec![None; faces.len()], HashSet::new()));
+    let on_edges: Vec<Vec<usize>> = bounding.values().map(|v| v.iter().map(|(f, _)| *f).collect()).collect();
+    let owner = shells(owner, &on_edges, &solids);
     let mut lump: Vec<usize> = (0..faces.len()).collect();
     let mut first: HashMap<usize, usize> = HashMap::new();
     for (i, o) in owner.iter().enumerate() {
@@ -413,7 +423,7 @@ pub fn import_iges(path: &Path) -> Result<Imported> {
             _ => None,
         }));
     }
-    let mut curves = chain(&segs, key, &HashSet::new());
+    let mut curves = chain(&segs, key, &std::collections::HashSet::new());
     // A closed one ends exactly where it starts.
     for c in &mut curves {
         let long = c.len() > 2;
@@ -428,6 +438,45 @@ pub fn import_iges(path: &Path) -> Result<Imported> {
         return Err(KernelError::Invalid("the file has no surfaces or curves".into()));
     }
     Ok(Imported { shapes, curves })
+}
+
+/// `owner` (see [`objects`]) keeping only the groups of two or more faces that join along shared
+/// edges (`on_edges`: the faces on each edge) into one piece, a shell: a group of one face, or of
+/// pieces apart (a writer that groups each trimmed surface on its own, or unrelated surfaces
+/// together), gives its faces up to be joined along edges as ungrouped faces are.
+/// ponytail: a polysurface written as one group per surface comes back whole only where its
+/// surfaces share exact edges with no third face on them (ungrouped-face joining); sewing in the
+/// bindings (BRepBuilderAPI_Sewing) when such files touch other objects along a face.
+fn shells(mut owner: Vec<Option<usize>>, on_edges: &[Vec<usize>], solids: &HashSet<usize>) -> Vec<Option<usize>> {
+    let mut piece: Vec<usize> = (0..owner.len()).collect();
+    for on in on_edges {
+        // Each face of a group on this edge joins the group's first face on it.
+        let mut first: HashMap<usize, usize> = HashMap::new();
+        for f in on {
+            let Some(Some(o)) = owner.get(*f) else { continue };
+            let g = *first.entry(*o).or_insert(*f);
+            let (ra, rb) = (root(&mut piece, g), root(&mut piece, *f));
+            if let Some(r) = piece.get_mut(ra) {
+                *r = rb;
+            }
+        }
+    }
+    // Each group's face count, and whether its faces are one piece.
+    let mut groups: HashMap<usize, (usize, usize, bool)> = HashMap::new();
+    for f in 0..owner.len() {
+        let Some(Some(o)) = owner.get(f).copied() else { continue };
+        let r = root(&mut piece, f);
+        let g = groups.entry(o).or_insert((0, r, true));
+        g.0 += 1;
+        g.2 &= g.1 == r;
+    }
+    for o in &mut owner {
+        // A solid stays one object whatever its shells (a hollow one has two that don't touch).
+        if o.is_some_and(|g| !solids.contains(&g) && !groups.get(&g).is_some_and(|(n, _, one)| *n >= 2 && *one)) {
+            *o = None;
+        }
+    }
+    owner
 }
 
 /// The lump `i` is in (see [`import_iges`]), halving the path there as it goes.
@@ -452,7 +501,7 @@ fn root(lump: &mut [usize], mut i: usize) -> usize {
 /// face explorer walks them): `Some(n)` for the n-th solid, shell or compound of faces under the
 /// top of the shape (single-child compounds round it unwrapped), `None` for a face on its own.
 /// `None` when the text doesn't read that way or doesn't account for exactly `faces` faces.
-fn objects(text: &str, faces: usize) -> Option<Vec<Option<usize>>> {
+fn objects(text: &str, faces: usize) -> Option<(Vec<Option<usize>>, HashSet<usize>)> {
     const KINDS: [&str; 8] = ["Ve", "Ed", "Wi", "Fa", "Sh", "So", "CS", "Co"];
     let mut lines = text.lines().map(str::trim);
     let n: usize = lines.find_map(|l| l.strip_prefix("TShapes"))?.trim().parse().ok()?;
@@ -503,18 +552,23 @@ fn objects(text: &str, faces: usize) -> Option<Vec<Option<usize>>> {
         return None;
     }
     let mut out = Vec::with_capacity(faces);
+    // Objects that are solids: one object even when their shells don't touch (a hollow solid).
+    let mut solids = HashSet::new();
     let mut object = 0;
     for p in parts {
         match (recs.get(p)?.0, count.get(p).copied().unwrap_or(0)) {
             (_, 0) => {}
             ("Fa", _) => out.push(None),
-            (_, c) => {
+            (kind, c) => {
+                if kind == "So" {
+                    solids.insert(object);
+                }
                 out.extend(std::iter::repeat_n(Some(object), c));
                 object += 1;
             }
         }
     }
-    Some(out)
+    Some((out, solids))
 }
 
 /// B-rep text first (written before meshing, so it carries no triangles), then the mesh.
@@ -806,9 +860,9 @@ mod tests {
         let key = |p: Vec3| ((p.x * 1e6).round() as i64, (p.y * 1e6).round() as i64, (p.z * 1e6).round() as i64);
         let v = |x: f64, y: f64| Vec3::new(x, y, 0.0);
         let t = [(v(0.0, 0.0), v(1.0, 0.0)), (v(1.0, 0.0), v(2.0, 0.0)), (v(1.0, 1.0), v(1.0, 0.0))];
-        assert_eq!(chain(&t, key, &HashSet::new()).len(), 3);
+        assert_eq!(chain(&t, key, &std::collections::HashSet::new()).len(), 3);
         let bend = [(v(0.0, 0.0), v(1.0, 0.0)), (v(1.0, 0.0), v(1.0, 1.0)), (v(1.0, 1.0), v(2.0, 1.0))];
-        assert_eq!(chain(&bend, key, &HashSet::new()), vec![vec![v(0.0, 0.0), v(1.0, 0.0), v(1.0, 1.0), v(2.0, 1.0)]]);
+        assert_eq!(chain(&bend, key, &std::collections::HashSet::new()), vec![vec![v(0.0, 0.0), v(1.0, 0.0), v(1.0, 1.0), v(2.0, 1.0)]]);
         assert_eq!(chain(&bend, key, &HashSet::from([key(v(1.0, 0.0))])).len(), 2);
     }
 
@@ -1235,18 +1289,65 @@ mod exchange_tests {
     fn objects_are_read_from_the_shape_table() {
         let b = cube();
         let text = super::write_brep(&super::read_brep(&b.brep).unwrap()).unwrap();
-        assert_eq!(super::objects(&text, 6), Some(vec![Some(0); 6]));
-        assert_eq!(super::objects(&text, 7), None);
+        assert_eq!(super::objects(&text, 6).map(|(o, _)| o), Some(vec![Some(0); 6]));
+        assert_eq!(super::objects(&text, 7).map(|(o, _)| o), None);
         let cut = &text[..text.len() / 2];
         for bad in ["", "TShapes 3\nZz\n", "TShapes 99999999999\nCo\n\n1\n*\n", "TShapes 1\nCo\n\n1100000\n+5 0 *\n\n+1 0\n", cut] {
-            assert_eq!(super::objects(bad, 6), None, "{bad:?}");
+            assert_eq!(super::objects(bad, 6).map(|(o, _)| o), None, "{bad:?}");
         }
         // A loose face, a group of one face and another loose face under a compound, itself the
         // only child of the top compound.
         let fa = |i: usize| format!("Fa\n0 1e-07 {i} 0\n\n0111000\n*\n");
         let t =
             format!("TShapes 6\n{}{}{}Co\n\n0100000\n+4 0 *\nCo\n\n0100000\n+6 0 +3 0 +5 0 *\nCo\n\n1100000\n+2 0 *\n\n+1 0\n", fa(1), fa(2), fa(3));
-        assert_eq!(super::objects(&t, 3), Some(vec![None, Some(0), None]));
+        assert_eq!(super::objects(&t, 3).map(|(o, _)| o), Some(vec![None, Some(0), None]));
+    }
+
+    /// Groups are objects only when their faces make one piece: a group of one face, or of faces
+    /// apart, gives them up to the edge joining of ungrouped faces.
+    #[test]
+    fn only_groups_in_one_piece_are_objects() {
+        // Faces 0-2 one group joined by edges; face 3 a group alone; faces 4 and 5 a group whose
+        // only link is through face 2 of another group; face 6 ungrouped.
+        let owner = vec![Some(0), Some(0), Some(0), Some(1), Some(2), Some(2), None];
+        let on_edges = vec![vec![0, 1], vec![1, 2], vec![3, 6], vec![2, 4], vec![2, 5], vec![4], vec![99, 0]];
+        assert_eq!(
+            super::shells(owner.clone(), &on_edges, &std::collections::HashSet::new()),
+            vec![Some(0), Some(0), Some(0), None, None, None, None]
+        );
+        // Two pieces of a group linked only through a face between them on one edge (a, x, b).
+        assert_eq!(super::shells(vec![Some(0), Some(1), Some(0)], &[vec![0, 1, 2]], &std::collections::HashSet::new()), vec![Some(0), None, Some(0)]);
+        assert!(super::shells(Vec::new(), &[vec![0, 1]], &std::collections::HashSet::new()).is_empty());
+        // A solid stays whole even in pieces (a hollow one: outer and inner shells apart).
+        let mut solid = std::collections::HashSet::new();
+        solid.insert(0);
+        assert_eq!(super::shells(vec![Some(0), Some(0), Some(0), Some(0)], &[vec![0, 1], vec![2, 3]], &solid), vec![Some(0); 4]);
+    }
+
+    /// A box read with each trimmed surface in a group of its own (as some writers group them)
+    /// still comes back as one closed box, not six surfaces; written to a file the same way,
+    /// OpenCASCADE drops the groups of one and it comes back whole too.
+    #[test]
+    fn iges_one_group_per_surface_comes_back_whole() {
+        use opencascade::primitives::{Compound, Shape};
+        let b = cube();
+        let shape = super::read_brep(&b.brep).unwrap();
+        let wrapped: Vec<Shape> = shape.faces().map(|f| Compound::from_shapes(&[Shape::from(&f)]).into()).collect();
+        let all: Shape = Compound::from_shapes(&wrapped).into();
+        let text = super::write_brep(&all).unwrap();
+        assert_eq!(super::objects(&text, 6).map(|(o, _)| o), Some((0..6).map(Some).collect()), "six groups of one face");
+        let path = temp("per-surface.igs");
+        {
+            let _one = super::exchanging();
+            all.write_iges(&path).unwrap();
+        }
+        let read = crate::import_iges(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        for got in [super::imported(&all).unwrap(), read] {
+            assert_eq!(got.shapes.len(), 1, "{} shapes", got.shapes.len());
+            assert_eq!(got.shapes[0].mesh.tris.len(), 12);
+            assert!(!got.shapes[0].mesh.open);
+        }
     }
 
     #[test]

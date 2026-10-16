@@ -315,14 +315,20 @@ pub fn drag_grip(d: &mut Drawing, insert: Handle, node: i32, part: super::GripPa
     }
     let r = reference(d, insert).ok_or("Not a dynamic block reference.")?;
     let m = dynamic_block(d, &r.definition).ok_or("Not a dynamic block reference.")?;
-    let EntityKind::Insert(ins) = &d.entity(insert).ok_or("No such object.")?.kind else { return Err("Not a block reference.".into()) };
+    let ent = d.entity(insert).ok_or("No such object.")?;
+    let EntityKind::Insert(ins) = &ent.kind else { return Err("Not a block reference.".into()) };
     let base = d.block(&r.definition).map(|b| b.base.xy()).unwrap_or_default();
-    let q = ins.transform(base).inverse().ok_or("The reference has a zero scale.")?.apply(to);
+    let xf = ins.transform(base);
+    let inv = xf.inverse().ok_or("The reference has a zero scale.")?;
+    // `to` in block coordinates: through a tilted reference's plane from the grip at block point
+    // `g` (seen edge-on, the smallest move that lands under `to`).
+    let block_point = |g: Vec3| inv.apply(ent.plan_to_local(to, xf.apply(g.xy())));
     let p = m.parameters.iter().find(|p| p.node == node).ok_or("The reference has no such parameter.")?;
     let mut plan = Plan::default();
     match (&p.kind, part) {
         (ParameterKind::Linear { values, from_midpoint, label, .. }, GripPart::Base | GripPart::End) => {
             let Some(Val::Points(b, e)) = current(&m, &r.values, node) else { return Err(format!("{label} has no points.")) };
+            let q = block_point(if part == GripPart::Base { b } else { e });
             let len = (e - b).len();
             if len < 1e-12 {
                 return Err(format!("{label} has no direction."));
@@ -350,6 +356,7 @@ pub fn drag_grip(d: &mut Drawing, insert: Handle, node: i32, part: super::GripPa
         }
         (ParameterKind::Point { label, .. }, GripPart::At) => {
             let Some(Val::Point(at)) = current(&m, &r.values, node) else { return Err(format!("{label} has no position.")) };
+            let q = block_point(at);
             plan.set.insert(node, Val::Point(Vec3::new(q.x, q.y, at.z)));
         }
         _ => return Err("That grip can't be dragged.".into()),

@@ -24,6 +24,9 @@ const MAX_TRIS: usize = 1_000_000;
 /// Most triangles of one solid whose edges are matched up for silhouettes and smooth edges (the
 /// map takes about 200 bytes a triangle); a bigger solid shows its B-rep edges only.
 const MAX_SOLID_TRIS: usize = 250_000;
+/// Most triangles one view matches up across all its solids; past it the rest of the solids
+/// show their B-rep edges only.
+const MAX_MATCHED_TRIS: usize = 1_000_000;
 /// Most point-in-triangle tests one view makes (samples times the triangles in their grid cells,
 /// bisection included); past it the rest of the lines are drawn visible.
 const MAX_TESTS: usize = 100_000_000;
@@ -73,26 +76,30 @@ pub(crate) fn extent(solids: &[&Solid3d], view: ViewDir) -> Bounds2 {
     Bounds2::from_points(solids.iter().flat_map(|x| x.mesh.points().map(|p| view.project(x.world(p)))).filter(|p| p.is_finite()))
 }
 
+/// A solid's mesh points (vertices and edge points) in the world.
+fn world_pts(x: &Solid3d) -> impl Iterator<Item = Vec3> + '_ {
+    x.mesh.verts.iter().chain(x.mesh.edges.iter().flatten()).map(move |p| x.world(*p))
+}
+
 /// The visible and hidden lines of `solids` seen along `view`.
 pub(crate) fn lines(solids: &[&Solid3d], view: ViewDir) -> Lines {
     let mut out = Lines::default();
     let (_, _, toward) = view.axes();
-    // World points of each solid; one with a non-finite point is left out.
-    let mut worlds: Vec<(&Solid3d, Vec<Vec3>, Vec<Vec<Vec3>>)> = Vec::with_capacity(solids.len());
-    for x in solids {
-        let verts: Vec<Vec3> = x.mesh.verts.iter().map(|p| x.world(*p)).collect();
-        let edges: Vec<Vec<Vec3>> = x.mesh.edges.iter().map(|e| e.iter().map(|p| x.world(*p)).collect()).collect();
-        if verts.iter().chain(edges.iter().flatten()).all(|p| p.is_finite()) {
-            worlds.push((x, verts, edges));
-        } else {
-            out.capped.push("a solid with non-finite points was left out".into());
-        }
-    }
+    // World points are made as they are needed (no copies of the meshes); a solid with a
+    // non-finite point is left out.
     let (mut lo, mut hi, mut reach) = (Vec3::new(f64::MAX, f64::MAX, f64::MAX), Vec3::new(f64::MIN, f64::MIN, f64::MIN), 0.0_f64);
-    for p in worlds.iter().flat_map(|(_, v, e)| v.iter().chain(e.iter().flatten())) {
-        lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
-        hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
-        reach = reach.max(p.x.abs()).max(p.y.abs()).max(p.z.abs());
+    let mut kept: Vec<&Solid3d> = Vec::with_capacity(solids.len());
+    for x in solids {
+        if !world_pts(x).all(|p| p.is_finite()) {
+            out.capped.push("a solid with non-finite points was left out".into());
+            continue;
+        }
+        kept.push(x);
+        for p in world_pts(x) {
+            lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+            hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+            reach = reach.max(p.x.abs()).max(p.y.abs()).max(p.z.abs());
+        }
     }
     let size = (hi - lo).len();
     if !size.is_finite() || size <= 0.0 {
@@ -104,17 +111,24 @@ pub(crate) fn lines(solids: &[&Solid3d], view: ViewDir) -> Lines {
     let front = |n: Vec3| n.dot(toward) > 1e-9 * n.len();
 
     let mut segs: Vec<(Vec3, Vec3)> = Vec::new();
+    let mut dropped = 0usize;
     let mut tris: Vec<Tri> = Vec::new();
-    for (x, verts, edges) in &worlds {
+    let mut budget = MAX_MATCHED_TRIS;
+    for x in kept {
+        let corner = |i: u32| x.mesh.verts.get(i as usize).map(|p| x.world(*p));
         // Facet normals, and the facets on each edge (by position: faces don't share vertices).
-        let matched = x.mesh.tris.len() <= MAX_SOLID_TRIS;
-        if !matched {
-            out.capped.push(format!("a solid of {} triangles (past {MAX_SOLID_TRIS}) shows its edges only, no silhouettes", x.mesh.tris.len()));
+        let n = x.mesh.tris.len();
+        let matched = n <= MAX_SOLID_TRIS && n <= budget;
+        if matched {
+            budget -= n;
+        } else if n > MAX_SOLID_TRIS {
+            out.capped.push(format!("a solid of {n} triangles (past {MAX_SOLID_TRIS}) shows its edges only, no silhouettes"));
+        } else {
+            out.capped.push(format!("past {MAX_MATCHED_TRIS} triangles matched in this view, a solid of {n} shows its edges only, no silhouettes"));
         }
         let mut normals: Vec<Vec3> = Vec::with_capacity(if matched { x.mesh.tris.len() } else { 0 });
         let mut on_edge: HashMap<(Key, Key), (Vec3, Vec3, Vec<usize>)> = HashMap::new();
         for t in &x.mesh.tris {
-            let corner = |i: u32| verts.get(i as usize).copied();
             let (Some(a), Some(b), Some(c)) = (corner(t[0]), corner(t[1]), corner(t[2])) else { continue };
             if matched {
                 let i = normals.len();
@@ -150,13 +164,20 @@ pub(crate) fn lines(solids: &[&Solid3d], view: ViewDir) -> Lines {
             _ => false,
         };
         let mut brep: HashSet<(Key, Key)> = HashSet::new();
-        for e in edges {
+        let mut keep = |a: Vec3, b: Vec3| {
+            if segs.len() < MAX_SEGS {
+                segs.push((a, b));
+            } else {
+                dropped += 1;
+            }
+        };
+        for e in &x.mesh.edges {
             for w in e.windows(2) {
-                let (Some(a), Some(b)) = (w.first().copied(), w.get(1).copied()) else { continue };
+                let (Some(a), Some(b)) = (w.first().map(|p| x.world(*p)), w.get(1).map(|p| x.world(*p))) else { continue };
                 let k = key(a).zip(key(b)).map(|(ka, kb)| if ka < kb { (ka, kb) } else { (kb, ka) });
                 let faces = k.and_then(|k| on_edge.get(&k)).map(|f| f.2.as_slice()).unwrap_or(&[]);
                 if !smooth(faces) || silhouette(faces) {
-                    segs.push((a, b));
+                    keep(a, b);
                 }
                 brep.extend(k);
             }
@@ -165,11 +186,10 @@ pub(crate) fn lines(solids: &[&Solid3d], view: ViewDir) -> Lines {
             on_edge.iter().filter(|(k, f)| !brep.contains(k) && silhouette(&f.2)).map(|(k, f)| (k, f.0, f.1)).collect();
         // In a fixed order, so the same model always draws the same.
         sil.sort_unstable_by_key(|x| x.0);
-        segs.extend(sil.into_iter().map(|(_, a, b)| (a, b)));
+        sil.into_iter().for_each(|(_, a, b)| keep(a, b));
     }
-    if segs.len() > MAX_SEGS {
-        out.capped.push(format!("{} line pieces past {MAX_SEGS} were left out", segs.len() - MAX_SEGS));
-        segs.truncate(MAX_SEGS);
+    if dropped > 0 {
+        out.capped.push(format!("{dropped} line pieces past {MAX_SEGS} were left out"));
     }
 
     let ext = extent(solids, view);
@@ -457,6 +477,29 @@ pub(super) mod tests {
         let l = lines(&[&big], ViewDir::PLAN);
         assert!(l.capped.iter().any(|c| c.contains("edges only")), "{:?}", l.capped);
         assert!((total(&l.visible) - 40.0).abs() < 1e-6, "the top square: {}", total(&l.visible));
+    }
+
+    /// The triangles matched up for silhouettes are capped per view, across solids: past the
+    /// budget a solid shows its B-rep edges only.
+    #[test]
+    fn matching_is_capped_per_view() {
+        // Solids at the per-solid cap, of zero-area triangles (cheap to match, hide nothing).
+        let flat = |x: f64| {
+            let mut b = cube(Vec3::new(x, 0.0, 0.0), Vec3::new(x + 1.0, 1.0, 1.0));
+            let mut m = (*b.mesh).clone();
+            m.tris = vec![[0, 0, 0]; MAX_SOLID_TRIS];
+            b.mesh = Arc::new(m);
+            b
+        };
+        let full: Vec<Solid3d> = (0..MAX_MATCHED_TRIS / MAX_SOLID_TRIS).map(|i| flat(2.0 * i as f64)).collect();
+        let last = cube(Vec3::new(100.0, 0.0, 0.0), Vec3::new(101.0, 1.0, 1.0));
+        let mut all: Vec<&Solid3d> = full.iter().collect();
+        assert!(lines(&all, ViewDir::PLAN).capped.is_empty(), "within the budget");
+        all.push(&last);
+        let l = lines(&all, ViewDir::PLAN);
+        assert!(l.capped.iter().any(|c| c.contains("matched in this view")), "{:?}", l.capped);
+        // Its edges are still drawn.
+        assert!(l.visible.iter().flatten().any(|p| p.x > 99.0), "{:?}", l.visible.len());
     }
 
     /// Once the test budget is spent nothing hides anything (and nothing more is tested).

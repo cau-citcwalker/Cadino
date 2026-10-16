@@ -246,6 +246,10 @@ impl Entity {
     pub fn transform(&mut self, m: &Mat3) -> bool {
         if self.plan_xf().is_none() {
             self.kind.transform(m);
+            // A line's or point's thickness direction turns with it (the default one stays).
+            if matches!(self.kind, EntityKind::Line(_) | EntityKind::Point(_)) && self.common.extrusion != Vec3::Z {
+                thicken(&mut self.common, &Mat4::from_mat3(m));
+            }
             return true;
         }
         let mut t = Mat4::from_mat3(m);

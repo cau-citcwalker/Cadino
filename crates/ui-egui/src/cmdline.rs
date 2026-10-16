@@ -366,7 +366,9 @@ pub fn submit(app: &mut CadApp) {
     if let Some(f) = dyn_frame(app) {
         let cursor = app.canvas.cursor.unwrap_or(app.session.cursor);
         let last = app.session.last_point;
-        let done = crate::dyninput::parse(&app.cmd.buffer, &f).and_then(|e| crate::dyninput::complete(&e, &f, cursor, last));
+        let done = crate::dyninput::parse(&app.cmd.buffer, &f)
+            .and_then(|e| crate::dyninput::complete(&e, &f, cursor, last))
+            .or_else(|| crate::dyninput::complete_3d(&app.cmd.buffer, &f, last));
         if let Some(text) = done {
             app.cmd.buffer = text;
         }
@@ -387,7 +389,8 @@ pub fn submit(app: &mut CadApp) {
         }
         return;
     }
-    // Typed points (and Dynamic Input's) are on the XY plane: no height left from a 3D snap.
+    // No height left from a 3D snap: typed points (and Dynamic Input's) carry their own
+    // (`x,y,z`), others are on the XY plane.
     app.session.point_z = None;
     app.cmdline(&text);
 }
@@ -692,6 +695,31 @@ mod tests {
         app.cmd.buffer = "3,4".into();
         submit(&mut app);
         assert_eq!((app.session.last_point, app.session.point_z), (cadcraft_geom::Vec2::new(3.0, 4.0), None));
+    }
+
+    /// A point typed as `x,y,z` keeps its height for the commands that build in 3D; `@dx,dy,dz`
+    /// adds to the last point's, also through Dynamic Input, where `x,y,z` is relative like `x,y`.
+    #[test]
+    fn typed_3d_point_keeps_its_height() {
+        let mut app = CadApp::new(Session::new(), crate::Services::default());
+        app.session.settings.dynmode = true;
+        app.session.cmdline("line").unwrap();
+        app.session.point_z = Some(20.0);
+        app.cmd.buffer = "3,4,5".into();
+        submit(&mut app);
+        assert_eq!((app.session.last_point, app.session.point_z), (cadcraft_geom::Vec2::new(3.0, 4.0), Some(5.0)));
+        app.cmd.buffer = "@1,0,2".into();
+        submit(&mut app);
+        assert_eq!((app.session.last_point, app.session.point_z), (cadcraft_geom::Vec2::new(4.0, 4.0), Some(7.0)));
+        // Dynamic Input: measured from the last point, height included.
+        app.cmd.buffer = "1,1,1".into();
+        submit(&mut app);
+        assert_eq!((app.session.last_point, app.session.point_z), (cadcraft_geom::Vec2::new(5.0, 5.0), Some(8.0)));
+        // Plain `x,y` is on the XY plane (with Dynamic Input on it would be relative, `@x,y`).
+        app.session.settings.dynmode = false;
+        app.cmd.buffer = "9,9".into();
+        submit(&mut app);
+        assert_eq!((app.session.last_point, app.session.point_z), (cadcraft_geom::Vec2::new(9.0, 9.0), None));
     }
 
     #[test]

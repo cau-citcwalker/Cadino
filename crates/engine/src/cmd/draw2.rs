@@ -704,12 +704,28 @@ fn chain_of(s: &Session, h: Handle) -> Result<Chain> {
     Chain::of(&e.kind).ok_or_else(|| other("Cannot divide/measure that object."))
 }
 
-fn place_markers(s: &mut Session, at: &[(Vec2, Vec2)], block: Option<&str>, align: bool) -> Result<Vec<String>> {
+/// Points or block references at `at` (points and tangents in `src`'s own coordinates), placed in
+/// `src`'s plane: points at its world points, references in its plane at its elevation.
+fn place_markers(s: &mut Session, src: &cadcraft_doc::Entity, at: &[(Vec2, Vec2)], block: Option<&str>, align: bool) -> Result<Vec<String>> {
+    let plane = src.plane();
+    let tilted = src.plan_xf().is_some();
+    let z = src.kind.elevation();
     let mut out = Vec::new();
     for (p, t) in at {
         let h = match block {
-            Some(b) => super::blocks::insert(s, b, *p, 1.0, if align { t.angle() } else { 0.0 }, &serde_json::Map::new())?,
-            None => s.add_entity(EntityKind::Point(Point { p: v3(*p), angle: 0.0 }))?,
+            Some(b) => {
+                let h = super::blocks::insert(s, b, *p, 1.0, if align { t.angle() } else { 0.0 }, &serde_json::Map::new())?;
+                if plane.is_some() && (tilted || z != 0.0) {
+                    s.doc_mut()?.modify_entity(h, |e| {
+                        if tilted {
+                            e.common.extrusion = src.common.extrusion;
+                        }
+                        e.kind.set_elevation(z);
+                    })?;
+                }
+                h
+            }
+            None => s.add_entity(EntityKind::Point(Point { p: plane.map_or(v3(*p), |m| m.apply(v3(*p))), angle: 0.0 }))?,
         };
         out.push(h.hex());
     }
@@ -753,7 +769,8 @@ fn run_divide(s: &mut Session, p: &Value) -> Result<Value> {
     check_block(s, block.as_deref())?;
     let c = chain_of(s, h)?;
     let pts = divide_points(&c, n as usize);
-    let hs = place_markers(s, &pts, block.as_deref(), bool_or(p, "align", true))?;
+    let src = curves::entity(s, h)?;
+    let hs = place_markers(s, &src, &pts, block.as_deref(), bool_or(p, "align", true))?;
     Ok(json!({ "handles": hs }))
 }
 
@@ -766,7 +783,8 @@ fn run_measure(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let block = str_param(p, "block").map(str::to_string);
     check_block(s, block.as_deref())?;
-    if let Some(from) = point_param(p, "from")
+    let src = curves::entity(s, h)?;
+    if let Some(from) = point_param(p, "from").map(|f| to_local(&src, f))
         && !c.closed
         && let (Some(a), Some(b)) = (c.start(), c.end())
         && from.dist(b) < from.dist(a)
@@ -774,7 +792,7 @@ fn run_measure(s: &mut Session, p: &Value) -> Result<Value> {
         c = c.reversed();
     }
     let pts = measure_points(&c, step);
-    let hs = place_markers(s, &pts, block.as_deref(), bool_or(p, "align", true))?;
+    let hs = place_markers(s, &src, &pts, block.as_deref(), bool_or(p, "align", true))?;
     Ok(json!({ "handles": hs }))
 }
 

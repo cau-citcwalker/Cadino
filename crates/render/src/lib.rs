@@ -1652,7 +1652,9 @@ fn sub_ctx<'a>(ctx: &Ctx<'a>, e: &Entity, m: Mat3, m3: Mat4) -> Ctx<'a> {
     let xf3 = ctx.xf3.mul(&m3);
     Ctx {
         d: ctx.d,
-        xf: ctx.xf.then_before(m),
+        // The block's XY plane is where `m3` puts it: raised or lowered by the base point's height
+        // and z scale where heights show; otherwise exactly the 2D transform.
+        xf: if ctx.flat() || m3.m[2][3] == 0.0 { ctx.xf.then_before(m) } else { xf3.plane_xy() },
         xf3,
         grad: plane::depth_gradient(&xf3),
         plan: ctx.plan.then_before(m),

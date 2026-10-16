@@ -3,8 +3,8 @@
 //! typed distance. The drawing is the synthetic DOOR block of the io tests, with grips added.
 
 use cadcraft_engine::doc::dynblock::GripPart;
-use cadcraft_engine::doc::{Handle, Space};
-use cadcraft_engine::geom::Vec2;
+use cadcraft_engine::doc::{EntityKind, Handle, Space};
+use cadcraft_engine::geom::{Vec2, Vec3};
 use cadcraft_engine::{Input, Session};
 use serde_json::{Value, json};
 
@@ -87,4 +87,35 @@ fn a_grip_drag_previews_the_reference_and_takes_a_point_or_a_distance() {
     // A list grip offers its choices instead; a grip that isn't there is refused.
     assert!(s.start_dyn_grip(h, 1, GripPart::At).is_err());
     assert!(s.start_dyn_grip(h, 2, GripPart::Base).is_err());
+}
+
+#[test]
+fn a_tilted_references_grips_show_preview_and_drag_where_plan_view_shows_it() {
+    // Tilted back (extrusion (0,-0.6,0.8)): its own (x, y) shows in plan at (x, 0.8 y).
+    let (mut flat, fh) = session();
+    let (mut s, h) = session();
+    s.doc_mut().unwrap().modify_entity(h, |e| e.common.extrusion = Vec3::new(0.0, -0.6, 0.8)).unwrap();
+    let g = s.execute("blocks.reference.grips", &json!({ "handle": h.hex() })).unwrap();
+    let at = Vec2::new(g[1]["at"][0].as_f64().unwrap(), g[1]["at"][1].as_f64().unwrap());
+    assert!(at.near(Vec2::new(136.0, -3.2), 1e-9), "{at:?}");
+    // The drag previews the reference through its plane: the flat one's preview, y × 0.8.
+    flat.start_dyn_grip(fh, 2, GripPart::End).unwrap();
+    s.start_dyn_grip(h, 2, GripPart::End).unwrap();
+    let ends = |s: &Session, c: Vec2| -> Vec<Vec2> {
+        s.preview(c)
+            .iter()
+            .flat_map(|e| match &e.kind {
+                EntityKind::Line(l) => vec![l.a.xy(), l.b.xy()],
+                _ => Vec::new(),
+            })
+            .collect()
+    };
+    let (a, b) = (ends(&flat, Vec2::new(130.4, 7.0)), ends(&s, Vec2::new(130.4, 5.6)));
+    assert!(a.len() > 2 && a.len() == b.len(), "{a:?} {b:?}");
+    for (p, q) in a.iter().zip(&b) {
+        assert!(q.near(Vec2::new(p.x, 0.8 * p.y), 1e-9), "{p:?} {q:?}");
+    }
+    // Dropped at the plan point over (130.4, 7) of its plane: Width 30, as the flat one there.
+    s.input(Input::Point(Vec2::new(130.4, 5.6))).unwrap();
+    assert_eq!(width(&mut s, h), "30.0000");
 }

@@ -17,6 +17,10 @@ use crate::{Accept, EngineError, Input, Interactive, Prompt, Result, Session, St
 
 /// Most names one Delete or list takes.
 const MAX_NAMES: usize = 1000;
+/// -VIEW Orthographic.
+/// ponytail: points to the preset views instead of taking a face; route it to `view.<face>` with a
+/// face prompt if people type it.
+const ORTHO_LATER: &str = "-VIEW Orthographic is not available yet: use the preset views (View > 3D Views, VIEW.TOP, VIEW.FRONT ...).";
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -93,7 +97,7 @@ fn run_view(s: &mut Session, p: &Value) -> Result<Value> {
             }
             Ok(json!({ "layerSnapshot": s.settings.view_layer_snapshot }))
         }
-        "orthographic" | "o" => Err(EngineError::Other("Orthographic views are not available yet: CADCraft views are 2D.".into())),
+        "orthographic" | "o" => Err(EngineError::Other(ORTHO_LATER.into())),
         _ => Err(bad("view", "option must be save, window, restore, delete, list or settings")),
     }
 }
@@ -313,7 +317,7 @@ impl Interactive for ViewM {
                     "window" | "w" => Stage::WindowName,
                     "settings" | "e" => Stage::Settings,
                     "orthographic" | "o" => {
-                        s.echo("Orthographic views are not available yet: CADCraft views are 2D.");
+                        s.echo(ORTHO_LATER);
                         return Ok(Step::Done);
                     }
                     _ => return Err(EngineError::Other("Invalid option keyword.".into())),

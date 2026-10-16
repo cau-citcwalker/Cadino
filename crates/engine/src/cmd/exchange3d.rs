@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use cadcraft_doc::{Entity, EntityKind, Polyline3d, Solid3d};
+use cadcraft_doc::{EntityKind, Polyline3d, Solid3d};
 use cadcraft_geom::Vec3;
 use cadcraft_kernel::Curve;
 use serde_json::{Value, json};
@@ -56,8 +56,8 @@ fn export_set(s: &Session, p: &Value) -> Result<(Vec<Solid3d>, Vec<Curve>, usize
         for e in hs.iter().filter(|h| seen.insert(**h)).filter_map(|h| d.entity(*h)) {
             match &e.kind {
                 EntityKind::Solid3d(x) => xs.push(x.clone()),
-                k => match curve_of(k) {
-                    Ok(Some(c)) => cs.push(in_plane(e, c)),
+                _ => match curve_of(e) {
+                    Ok(Some(c)) => cs.push(c),
                     Ok(None) => {}
                     Err(_) => bad += 1,
                 },
@@ -73,16 +73,6 @@ fn export_set(s: &Session, p: &Value) -> Result<(Vec<Solid3d>, Vec<Curve>, usize
         return Err(EngineError::Other("There are no 3D solids or curves to export.".into()));
     }
     Ok(got)
-}
-
-/// A planar object's curve in the world: `curve_of` gives its 2D coordinates (at its elevation,
-/// or 0 for a spline), and the object's plane puts them where they are (tilted, standing, raised).
-fn in_plane(e: &Entity, c: Curve) -> Curve {
-    let planar = matches!(e.kind, EntityKind::Arc(_) | EntityKind::Circle(_) | EntityKind::LwPolyline(_) | EntityKind::Spline(_));
-    match e.plane().filter(|_| planar) {
-        Some(pl) => c.map(&|p: Vec3| pl.apply(Vec3::new(p.x, p.y, 0.0)), &|v: Vec3| pl.apply_vec(v)),
-        None => c,
-    }
 }
 
 fn plural(n: usize, one: &str) -> String {

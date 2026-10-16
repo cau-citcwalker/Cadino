@@ -418,6 +418,23 @@ fn a_line_or_point_turns_its_thickness_with_it() {
 }
 
 #[test]
+fn a_plan_transform_turns_a_line_or_points_thickness_too() {
+    // ROTATE 90° in plan: thickness along +X turns to +Y; the default direction stays.
+    let rot = Mat3::rotate(std::f64::consts::FRAC_PI_2);
+    for kind in [EntityKind::Line(Line { a: Vec3::ZERO, b: Vec3::X }), EntityKind::Point(Point { p: Vec3::ZERO, angle: 0.0 })] {
+        let mut e = ent(kind.clone());
+        e.common.extrusion = Vec3::X;
+        e.common.thickness = 2.0;
+        assert!(e.transform(&rot));
+        assert!(near(e.common.extrusion, Vec3::Y) && e.common.thickness == 2.0, "{:?}", e.common);
+        let mut z = ent(kind);
+        z.common.thickness = 2.0;
+        assert!(z.transform(&rot));
+        assert_eq!((z.common.extrusion, z.common.thickness), (Vec3::Z, 2.0));
+    }
+}
+
+#[test]
 fn plan_points_go_back_into_the_plane() {
     // Tilted 45° about X: the plan view is invertible, so the point lands exactly under `to`.
     let mut c = circle(Vec3::new(1.0, 2.0, 0.5), 1.0);

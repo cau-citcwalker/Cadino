@@ -372,6 +372,39 @@ fn block_contents_take_the_z_scale_about_the_base_point() {
 }
 
 #[test]
+fn flat_block_contents_draw_at_the_lifted_height() {
+    // A circle at block z 0 in a block based at z 1, referenced at height 4 with z scale `sz`:
+    // it lies at 4 + sz (0 - 1), where a top-level circle there draws, in 3D views.
+    let drawn = |sz: f64, view: ViewDir| {
+        let mut d = Drawing::new_imperial();
+        let mut b = Block::new("B");
+        b.base = Vec3::new(0.0, 0.0, 1.0);
+        b.entities.push(Entity::new(Handle(0x50), circle(Vec3::ZERO)));
+        d.blocks.insert("B".into(), std::sync::Arc::new(b));
+        let ins = Insert {
+            block: "B".into(),
+            insert: Vec3::new(3.0, 0.0, 4.0),
+            scale: Vec3::new(1.0, 1.0, sz),
+            rotation: 0.0,
+            attribs: vec![],
+            cols: 1,
+            rows: 1,
+            col_spacing: 0.0,
+            row_spacing: 0.0,
+        };
+        d.add(&Space::Model, Common::default(), EntityKind::Insert(ins)).unwrap();
+        build(&d, &Space::Model, &opts(view)).verts
+    };
+    let at = |z: f64, view: ViewDir| build(&one(circle(Vec3::new(3.0, 0.0, z)), Common::default()), &Space::Model, &opts(view)).verts;
+    for view in [iso(), front()] {
+        assert_same(&drawn(3.0, view), &at(1.0, view), "z scale 3");
+        assert_same(&drawn(1.0, view), &at(3.0, view), "raised");
+    }
+    // In plan it is where it always was.
+    assert_same(&drawn(3.0, ViewDir::PLAN), &at(0.0, ViewDir::PLAN), "plan");
+}
+
+#[test]
 fn true_3d_objects_project_their_points() {
     let line = EntityKind::Line(Line { a: Vec3::new(0.0, 0.0, 1.0), b: Vec3::new(4.0, 3.0, 5.0) });
     let f = build(&one(line.clone(), Common::default()), &Space::Model, &opts(front()));

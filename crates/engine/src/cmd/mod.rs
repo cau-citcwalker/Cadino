@@ -259,6 +259,7 @@ const RHINO_NAMES: &[(&str, &str)] = &[
     ("filletedges", "filletedge"),
     ("chamferedges", "chamferedge"),
     ("4view", "viewports.rhino"),
+    ("maxviewport", "viewports.maximize"),
 ];
 
 // ---------- param helpers ----------
@@ -353,6 +354,8 @@ mod rhino_name_tests {
         assert_eq!(resolve_alias("BooleanDifference"), "subtract");
         assert_eq!(resolve_alias("ExtrudeCrv"), "extrude");
         assert_eq!(resolve_alias("PlanarSrf"), "planesurf");
+        assert_eq!(resolve_alias("MaxViewport"), "viewports.maximize");
+        assert_eq!(resolve_alias("4View"), "viewports.rhino");
         // Ours and AutoCAD's names come first.
         assert_eq!(resolve_alias("box"), "box");
         // A Rhino name whose command doesn't exist yet stays as typed.

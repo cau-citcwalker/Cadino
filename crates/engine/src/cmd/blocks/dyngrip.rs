@@ -4,7 +4,7 @@
 //! at a distance's grip sets the distance.
 
 use cadcraft_doc::dynblock::{self, GripPart, GripShape};
-use cadcraft_doc::{Drawing, EntityKind, Handle};
+use cadcraft_doc::{Drawing, Entity, EntityKind, Handle};
 use cadcraft_geom::Vec2;
 use serde_json::{Value, json};
 
@@ -54,18 +54,28 @@ fn drag(s: &mut Session, h: Handle, node: i32, part: GripPart, to: Vec2) -> std:
 /// attributes (what a preview draws, in the preview colour: solid fills are left out so they
 /// don't cover the outline and text).
 fn drawn(d: &Drawing, h: Handle) -> Vec<EntityKind> {
-    let Some(EntityKind::Insert(ins)) = d.entity(h).map(|e| &e.kind) else { return Vec::new() };
+    use super::super::helpers::{placed_in, plan_kinds, plan_preview};
+    let Some(r) = d.entity(h) else { return Vec::new() };
+    let EntityKind::Insert(ins) = &r.kind else { return Vec::new() };
     let Some(b) = d.block(&ins.block) else { return Vec::new() };
     let m = ins.transform(b.base.xy());
-    let mut out: Vec<EntityKind> = b
+    // A tilted reference shows its contents through its plane, as plan view sees them.
+    let tilted = r.plan_xf().is_some();
+    let shown = b
         .entities
         .iter()
         .filter(|e| e.common.visible && !matches!(&e.kind, EntityKind::AttDef(_) | EntityKind::Wipeout(_)))
         .filter(|e| !matches!(&e.kind, EntityKind::Hatch(h) if h.solid))
-        .take(MAX_PREVIEW)
-        .flat_map(|e| super::super::helpers::plan_preview(e, &m))
-        .collect();
-    out.extend(ins.attribs.iter().filter(|a| !a.invisible).map(|a| EntityKind::Text(a.text.clone())));
+        .take(MAX_PREVIEW);
+    let mut out: Vec<EntityKind> = if tilted {
+        shown.filter_map(|e| placed_in(r, ins, b.base, e)).flat_map(|e| plan_kinds(&e)).collect()
+    } else {
+        shown.flat_map(|e| plan_preview(e, &m)).collect()
+    };
+    for a in ins.attribs.iter().filter(|a| !a.invisible) {
+        let text = Entity { handle: r.handle, common: r.common.clone(), kind: EntityKind::Text(a.text.clone()) };
+        out.extend(plan_kinds(&text));
+    }
     out
 }
 

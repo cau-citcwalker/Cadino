@@ -813,8 +813,8 @@ pub struct NamedView {
 }
 
 /// One tiled model space viewport of a [`VportConfig`] (a VPORT table record): its corners as
-/// fractions of the drawing area (0,0 lower left to 1,1 upper right) and its view.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// fractions of the drawing area (0,0 lower left to 1,1 upper right), its view and its look.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VportTile {
     pub min: Vec2,
@@ -824,6 +824,35 @@ pub struct VportTile {
     /// Width / height of the tile on screen when it was saved (0: unknown).
     #[serde(default)]
     pub aspect: f64,
+    /// The view direction, from the target toward the viewer (DXF 16/26/36), as stored (not
+    /// necessarily unit length); plan `[0, 0, 1]` by default.
+    #[serde(default = "plan_dir")]
+    pub view_dir: [f64; 3],
+    /// Visual style (DXF 281 render mode): solids shaded (VSCURRENT Shaded)...
+    #[serde(default)]
+    pub shaded: bool,
+    /// ...and shaded with their edges (Shaded with Edges).
+    #[serde(default)]
+    pub edges: bool,
+}
+
+fn plan_dir() -> [f64; 3] {
+    [0.0, 0.0, 1.0]
+}
+
+impl Default for VportTile {
+    fn default() -> Self {
+        VportTile {
+            min: Vec2::ZERO,
+            max: Vec2::ZERO,
+            center: Vec2::ZERO,
+            height: 0.0,
+            aspect: 0.0,
+            view_dir: plan_dir(),
+            shaded: false,
+            edges: false,
+        }
+    }
 }
 
 /// A model space viewport configuration (VPORTS): `*Active` is the one shown, other names are
