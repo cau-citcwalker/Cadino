@@ -352,3 +352,93 @@ fn saving_writes_the_tiles_as_shown() {
     assert_eq!(saved[0], ([d.x, d.y, d.z], true), "the current Perspective tile, shaded, first");
     assert!(saved[1..].iter().all(|(_, shaded)| !shaded));
 }
+
+/// Undo and redo bring back the tiles of the very drawing they restore: two single views
+/// (the one before the tiles, the one after) are told apart.
+#[test]
+fn undo_through_two_single_views_brings_back_the_first() {
+    let mut s = session();
+    let first = s.state().unwrap().view();
+    s.execute("viewports.rhino", &json!({})).unwrap();
+    let (pi, _) = at(&s, 0.5, 0.5);
+    s.activate_tile(pi).unwrap();
+    s.execute("viewports.single", &json!({})).unwrap();
+    assert!(tiles(&s).is_empty() && !view_dir(&s).is_plan());
+    s.undo().unwrap();
+    assert_eq!(tiles(&s).len(), 4);
+    s.undo().unwrap();
+    assert!(tiles(&s).is_empty());
+    assert!(view_dir(&s).is_plan(), "{:?}", view_dir(&s));
+    assert_eq!(s.state().unwrap().view(), first);
+    // Redo goes forward through the same views.
+    s.redo().unwrap();
+    assert_eq!(tiles(&s).len(), 4);
+    assert!(tiles(&s).iter().find(|t| t.active).is_some_and(|t| t.min == Vec2::new(0.5, 0.5)));
+    s.redo().unwrap();
+    assert!(tiles(&s).is_empty() && !view_dir(&s).is_plan());
+}
+
+/// ZOOM Previous belongs to each tile: the Front tile never takes the Top tile's old view.
+#[test]
+fn zoom_previous_is_each_tiles_own() {
+    let mut s = session();
+    s.execute("viewports.rhino", &json!({})).unwrap();
+    let top = s.state().unwrap().view();
+    s.execute("zoom", &json!({ "mode": "window", "p1": [0, 0], "p2": [5, 5] })).unwrap();
+    let (fi, front) = at(&s, 0.0, 0.0);
+    s.activate_tile(fi).unwrap();
+    let r = s.execute("zoom", &json!({ "mode": "previous" })).unwrap();
+    assert!(r["message"].as_str().is_some_and(|m| m.contains("No previous")), "{r}");
+    assert_eq!(view_dir(&s), front.look.dir);
+    assert_eq!(s.state().unwrap().view(), front.view);
+    // Back in Top, its own previous view.
+    let (ti, _) = at(&s, 0.0, 0.5);
+    s.activate_tile(ti).unwrap();
+    s.execute("zoom", &json!({ "mode": "previous" })).unwrap();
+    assert!(view_dir(&s).is_plan());
+    assert_eq!(s.state().unwrap().view(), top);
+}
+
+/// MVIEW Restore of the tiles on show: tiles looking another way than plan keep a plan frame
+/// of the model, not their view-plane centres.
+#[test]
+fn mview_restore_frames_the_model_for_tiles_not_in_plan() {
+    let mut s = session();
+    s.execute("viewports.rhino", &json!({})).unwrap();
+    s.execute("layout.set", &json!({ "name": "Layout1" })).unwrap();
+    s.execute("mview", &json!({ "option": "restore" })).unwrap();
+    let d = s.doc().unwrap();
+    let vps: Vec<_> = d
+        .layouts
+        .iter()
+        .find(|l| l.name == "Layout1")
+        .unwrap()
+        .entities
+        .iter()
+        .filter_map(|e| if let cadcraft_engine::doc::EntityKind::Viewport(v) = &e.kind { Some(v.clone()) } else { None })
+        .collect();
+    assert!(vps.len() >= 4);
+    for v in vps {
+        let c = v.view_center;
+        assert!((-1.0..=21.0).contains(&c.x) && (-1.0..=11.0).contains(&c.y), "{c:?}");
+    }
+}
+
+/// Undo of a tile change from a layout tab: back on the Model tab the current tile shows its
+/// own view and look.
+#[test]
+fn undo_from_a_layout_brings_the_current_tiles_look_back() {
+    let mut s = session();
+    s.execute("viewports.rhino", &json!({})).unwrap();
+    let top = s.state().unwrap().view();
+    s.execute("-vports", &json!({ "option": "single" })).unwrap();
+    s.execute("view.swiso", &json!({})).unwrap();
+    assert!(!view_dir(&s).is_plan());
+    s.execute("layout.set", &json!({ "name": "Layout1" })).unwrap();
+    s.undo().unwrap();
+    s.execute("layout.set", &json!({ "name": "Model" })).unwrap();
+    assert_eq!(tiles(&s).len(), 4);
+    let cur = tiles(&s).into_iter().find(|t| t.active).unwrap();
+    assert!(cur.look.dir.is_plan() && view_dir(&s).is_plan(), "{:?}", cur.look);
+    assert_eq!(cur.view, top);
+}

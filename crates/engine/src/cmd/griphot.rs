@@ -107,7 +107,7 @@ impl GripEdit {
     /// The grips of the selected objects at `p` (typed `GRIP`): all objects with a grip there.
     fn grips_at(s: &Session, p: Vec2) -> Vec<(Handle, usize)> {
         let tol = (s.pixel_size() * (s.settings.gripsize + 3.0)).max(1e-9 * (1.0 + p.len()));
-        let Ok(d) = s.doc() else { return Vec::new() };
+        let Ok(d) = s.pick_doc() else { return Vec::new() };
         let mut out = Vec::new();
         for h in s.selection().into_iter().take(MAX_HOT) {
             if super::curves::is_locked(s, h) {
@@ -164,7 +164,7 @@ impl GripEdit {
     fn actions(&self, s: &Session) -> Vec<GripAction> {
         match self.hot.as_slice() {
             [(h, i)] if self.mode == GripMode::Stretch => {
-                s.doc().ok().and_then(|d| d.entity(*h)).map(|e| grip_actions(&e.kind, *i)).unwrap_or_default()
+                s.pick_doc().ok().and_then(|d| d.entity(*h).cloned()).map(|e| grip_actions(&e.kind, *i)).unwrap_or_default()
             }
             _ => Vec::new(),
         }
@@ -174,8 +174,8 @@ impl GripEdit {
     /// object's plane) or value `value`.
     fn acted(&self, s: &Session, action: GripAction, to: Option<Vec2>, value: Option<f64>) -> Option<(Handle, EntityKind)> {
         let &(h, i) = self.hot.first()?;
-        let e = s.doc().ok()?.entity(h)?;
-        grip_action_plan(e, i, action, to, value).map(|k| (h, k))
+        let e = s.pick_doc().ok()?.entity(h)?.clone();
+        grip_action_plan(&e, i, action, to, value).map(|k| (h, k))
     }
 
     /// Apply a multifunctional option; the grip edit ends.
@@ -184,7 +184,7 @@ impl GripEdit {
             return Err(other("The object is on a locked layer."));
         }
         let (h, k) = self.acted(s, action, to, value).ok_or_else(|| other("That would make a degenerate object."))?;
-        s.doc_mut()?.modify_entity(h, |e| e.kind = k)?;
+        super::gripcmds::commit(s, &[(h, k)], false)?;
         Ok(Step::Done)
     }
 
@@ -439,7 +439,9 @@ impl Interactive for GripEdit {
                 // The result in its object's plane, as plan view shows it.
                 let mut out: Vec<EntityKind> = self
                     .acted(s, a, Some(c), None)
-                    .and_then(|(h, kind)| Some(super::helpers::plan_kinds(&cadcraft_doc::Entity { kind, ..(**s.doc().ok()?.entity(h)?).clone() })))
+                    .and_then(|(h, kind)| {
+                        Some(super::helpers::plan_kinds(&cadcraft_doc::Entity { kind, ..(**s.pick_doc().ok()?.entity(h)?).clone() }))
+                    })
                     .unwrap_or_default();
                 out.push(line(self.base, c));
                 return out;
@@ -448,18 +450,19 @@ impl Interactive for GripEdit {
             Ask::RefSecond(a) => return vec![line(a, c)],
             Ask::Base | Ask::RefFirst => return Vec::new(),
         };
-        let Ok(d) = s.doc() else { return Vec::new() };
+        let (Ok(seen), Ok(d)) = (s.pick_doc(), s.doc()) else { return Vec::new() };
         let mut out: Vec<EntityKind> = if self.mode == GripMode::Stretch {
-            // Each stretched shape in its object's plane, as plan view shows it.
+            // Each stretched shape in its object's plane, as plan view (or the construction
+            // plane) shows it.
             super::gripcmds::stretched(s, &self.hot, &self.targets, c - base)
                 .into_iter()
                 .take(500)
-                .filter_map(|(h, kind)| d.entity(h).map(|e| cadcraft_doc::Entity { kind, ..(**e).clone() }))
+                .filter_map(|(h, kind)| seen.entity(h).map(|e| cadcraft_doc::Entity { kind, ..(**e).clone() }))
                 .flat_map(|e| super::helpers::plan_kinds(&e))
                 .collect()
         } else {
             match self.matrix(c) {
-                Some(m) => self.targets.iter().take(500).filter_map(|h| d.entity(*h)).flat_map(|e| super::helpers::plan_preview(e, &m)).collect(),
+                Some(m) => self.targets.iter().take(500).filter_map(|h| d.entity(*h)).flat_map(|e| s.local_preview(e, &m)).collect(),
                 None => Vec::new(),
             }
         };

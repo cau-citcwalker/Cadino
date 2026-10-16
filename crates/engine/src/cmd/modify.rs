@@ -99,7 +99,10 @@ pub fn specs() -> Vec<CommandSpec> {
 
 // ---------------- core operations ----------------
 
+/// Transform objects by `m`, given in the current construction plane's coordinates (in a plane
+/// other than World it acts in 3D: [`Session::cplane_matrix`]).
 pub(crate) fn transform_entities(s: &mut Session, hs: &[Handle], m: &Mat3, copy: bool) -> Result<Vec<Handle>> {
+    let in_3d = s.cplane_matrix(m);
     let d = s.doc_mut()?;
     // Every object transformed first (objects in tilted planes move in 3D): one that can't take
     // the transform refuses the command before anything changes.
@@ -109,7 +112,18 @@ pub(crate) fn transform_entities(s: &mut Session, hs: &[Handle], m: &Mat3, copy:
         if !copy && d.layer(&e.common.layer).is_some_and(|l| l.locked) {
             continue;
         }
-        done.push((sp, super::helpers::transformed(e, m)?));
+        let t = match &in_3d {
+            None => super::helpers::transformed(e, m)?,
+            Some(t) => {
+                let mut ne = (**e).clone();
+                if !ne.transform3(t) {
+                    let what = e.kind.type_name().to_ascii_lowercase();
+                    return Err(EngineError::Other(format!("A {what} can't be transformed that way in this construction plane.")));
+                }
+                ne
+            }
+        };
+        done.push((sp, t));
     }
     let mut out = Vec::new();
     for (sp, mut ne) in done {
@@ -286,27 +300,48 @@ fn run_stretch(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok(Some(pts))
     };
+    let seen = s.pick_doc()?;
     // A fence marks no area: the objects it crosses move whole.
     if let Some(fence) = listed("fence", 2)? {
-        let hs = crate::select::select_fence(s.doc()?, &space, &fence);
+        let hs = crate::select::select_fence(&seen, &space, &fence);
         let moved = transform_entities(s, &hs, &Mat3::translate(d), false)?;
         return Ok(json!({ "stretched": moved.len() }));
     }
     let (mut hs, area) = if let Some(poly) = listed("polygon", 3)? {
-        (crate::select::select_polygon(s.doc()?, &space, &poly, true), StretchArea::Polygon(poly))
+        (crate::select::select_polygon(&seen, &space, &poly, true), StretchArea::Polygon(poly))
     } else {
         let w = points_param(p, "window").ok_or_else(|| bad("stretch", "`window` [[x,y],[x,y]], `polygon` or `fence` is required"))?;
         let (Some(a), Some(b)) = (w.first(), w.get(1)) else { return Err(bad("stretch", "window needs 2 corners")) };
         let bx = cadcraft_geom::Bounds2::new(*a, *b);
-        (crate::select::select_window(s.doc()?, &space, bx, true), StretchArea::Box(bx))
+        (crate::select::select_window(&seen, &space, bx, true), StretchArea::Box(bx))
     };
     hs.retain(|h| !super::curves::is_locked(s, *h));
-    let doc = s.doc_mut()?;
-    let areas = [area];
-    for h in &hs {
-        doc.modify_entity(*h, |e| stretch_entity(e, &areas, d))?;
-    }
+    stretch_all(s, &hs, &[area], d)?;
     Ok(json!({ "stretched": hs.len() }))
+}
+
+/// Stretch the objects `hs` (not locked) by `d` in the areas `wins`. In a construction plane
+/// other than World each is stretched as the plane sees it and placed back; one that then
+/// can't be placed refuses the command before anything changes.
+fn stretch_all(s: &mut Session, hs: &[Handle], wins: &[StretchArea], d: Vec2) -> Result<()> {
+    if s.cplane() == cadcraft_geom::Mat4::IDENTITY {
+        let doc = s.doc_mut()?;
+        for h in hs {
+            doc.modify_entity(*h, |e| stretch_entity(e, wins, d))?;
+        }
+        return Ok(());
+    }
+    let mut out = Vec::with_capacity(hs.len());
+    for h in hs {
+        let mut l = s.local_entity(*h)?;
+        stretch_entity(&mut l, wins, d);
+        out.push(s.place_local(&l)?);
+    }
+    let doc = s.doc_mut()?;
+    for e in out {
+        doc.modify_entity(e.handle, |x| *x = e.clone())?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -366,7 +401,7 @@ impl StretchM {
     /// of two) the mode is dropped.
     fn finish_mode(&mut self, s: &mut Session, m: SelectMode) -> Result<()> {
         let space = s.space();
-        let Some(hs) = m.select(s.doc()?, &space) else { return Ok(()) };
+        let Some(hs) = m.select(&*s.pick_doc()?, &space) else { return Ok(()) };
         let area = match (m.kind, m.pts.first().zip(m.pts.get(1))) {
             (SelectKind::WPolygon | SelectKind::CPolygon, _) => Some(StretchArea::Polygon(m.pts)),
             (SelectKind::Window | SelectKind::Crossing | SelectKind::Box, Some((a, b))) => {
@@ -413,7 +448,7 @@ impl StretchM {
                 Some(c) => {
                     let bx = cadcraft_geom::Bounds2::new(c, p);
                     let space = s.space();
-                    let hs = crate::select::select_window(s.doc()?, &space, bx, p.x < c.x);
+                    let hs = crate::select::select_window(&*s.pick_doc()?, &space, bx, p.x < c.x);
                     if !self.removing {
                         self.windows.push(StretchArea::Box(bx));
                     }
@@ -422,7 +457,7 @@ impl StretchM {
                 None => {
                     let aperture = s.pixel_size() * s.settings.pickbox.max(1.0) * 1.5;
                     let space = s.space();
-                    match crate::select::pick(s.doc()?, &space, p, aperture) {
+                    match crate::select::pick(&*s.pick_doc()?, &space, p, aperture) {
                         Some(h) => self.add(s, vec![h], true),
                         None => self.corner = Some(p),
                     }
@@ -472,13 +507,19 @@ impl StretchM {
 
     fn apply(&self, s: &mut Session, d: Vec2) -> Result<Step> {
         let whole: Vec<Handle> = self.objs.iter().filter(|h| self.whole.contains(h)).copied().collect();
-        transform_entities(s, &whole, &Mat3::translate(d), false)?;
-        let doc = s.doc_mut()?;
-        for h in self.objs.iter().filter(|h| !self.whole.contains(h)) {
-            let locked = doc.entity(*h).and_then(|e| doc.layer(&e.common.layer)).is_some_and(|l| l.locked);
-            if !locked {
-                doc.modify_entity(*h, |e| stretch_entity(e, &self.windows, d))?;
-            }
+        let doc = s.doc()?;
+        let parts: Vec<Handle> = self
+            .objs
+            .iter()
+            .filter(|h| !self.whole.contains(h) && !doc.entity(**h).and_then(|e| doc.layer(&e.common.layer)).is_some_and(|l| l.locked))
+            .copied()
+            .collect();
+        // Both checked before anything changes: the stretched ones are placed first.
+        let before = s.state()?.doc.clone();
+        stretch_all(s, &parts, &self.windows, d)?;
+        if let Err(e) = transform_entities(s, &whole, &Mat3::translate(d), false) {
+            s.state_mut()?.doc = before;
+            return Err(e);
         }
         s.set_selection(Vec::new());
         Ok(Step::Done)
@@ -550,7 +591,8 @@ impl Interactive for StretchM {
         match (self.phase, self.corner, self.base) {
             (StretchPhase::Select, Some(a), _) => rect(a),
             (StretchPhase::Second, _, Some(base)) => {
-                let Ok(doc) = s.doc() else { return Vec::new() };
+                // The objects as the construction plane sees them, as the windows and the cursor.
+                let Ok(doc) = s.pick_doc() else { return Vec::new() };
                 let m = Mat3::translate(c - base);
                 let mut out: Vec<EntityKind> = self
                     .objs
@@ -1854,8 +1896,7 @@ impl SelectThen {
         match (self.ref_angle, self.ref_points, self.ref_from) {
             (Some(r), false, _) => {
                 let m = Mat3::rotate_about(base, base.angle_to(c) - r);
-                let mut out: Vec<EntityKind> =
-                    self.objs.iter().take(500).filter_map(|h| d.entity(*h)).flat_map(|e| super::helpers::plan_preview(e, &m)).collect();
+                let mut out: Vec<EntityKind> = self.objs.iter().take(500).filter_map(|h| d.entity(*h)).flat_map(|e| s.local_preview(e, &m)).collect();
                 out.push(line(base, c));
                 out
             }
@@ -2095,8 +2136,7 @@ impl Interactive for SelectThen {
             _ => return Vec::new(),
         };
         let Ok(d) = s.doc() else { return Vec::new() };
-        let mut out: Vec<EntityKind> =
-            self.objs.iter().take(500).filter_map(|h| d.entity(*h)).flat_map(|e| super::helpers::plan_preview(e, &m)).collect();
+        let mut out: Vec<EntityKind> = self.objs.iter().take(500).filter_map(|h| d.entity(*h)).flat_map(|e| s.local_preview(e, &m)).collect();
         out.push(line(base, c));
         out
     }
@@ -2118,8 +2158,9 @@ impl Interactive for SelectThen {
             return Some(crate::prompt::Drag { handles: self.objs.clone(), matrix, extra, clipboard: false });
         }
         // Mirrored text keeps reading left to right (MIRRTEXT 0), which the matrix alone can't
-        // draw: those objects are transformed one by one, the rest is mirrored on the GPU.
-        let d = s.doc().ok()?;
+        // draw: those objects are transformed one by one (as the construction plane sees them,
+        // as the matrix), the rest is mirrored on the GPU.
+        let d = s.pick_doc().ok()?;
         let mut handles = Vec::with_capacity(self.objs.len());
         let mut texts = 0;
         for h in &self.objs {

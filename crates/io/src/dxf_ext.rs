@@ -407,6 +407,10 @@ fn read_dimvar_list(
     out
 }
 
+/// Xdata marker (`1000 CPLANE`) of a VPORT record whose UCS (110/111/112) is a construction plane
+/// Cadino saved; another program's UCS is kept, not used as one.
+pub(crate) const CPLANE: &str = "CPLANE";
+
 /// Xdata marker of the paper-space viewport (id 1) the writer adds to layouts that have none;
 /// CADCraft keeps that viewport implicit, so the reader drops it.
 pub(crate) const PAPER_VIEW: &str = "PAPERVIEW";

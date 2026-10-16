@@ -233,8 +233,9 @@ fn run_aligned(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Centre and radius of a circle/arc entity.
 fn circle_of(s: &Session, h: Handle) -> Option<(Vec2, f64)> {
-    // In a tilted plane a circle shows in plan as an ellipse or a line: nothing to measure.
-    match &s.doc().ok()?.entity(h).filter(|e| e.plan_xf().is_none())?.kind {
+    // As the construction plane sees it; in a plane tilted to it a circle shows as an ellipse or
+    // a line: nothing to measure.
+    match &s.pick_doc().ok()?.entity(h).filter(|e| e.plan_xf().is_none())?.kind {
         EntityKind::Circle(c) => Some((c.center.xy(), c.radius)),
         EntityKind::Arc(a) => Some((a.center.xy(), a.radius)),
         _ => None,
@@ -558,7 +559,8 @@ fn run_override(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The two points a picked object is dimensioned between (DIMLINEAR "select object").
 fn object_extent(s: &Session, h: Handle) -> Option<(Vec2, Vec2)> {
-    let e = s.doc().ok()?.entity(h)?;
+    let seen = s.pick_doc().ok()?;
+    let e = seen.entity(h)?;
     if let Some((c, r)) = circle_of(s, h).filter(|_| matches!(e.kind, EntityKind::Circle(_))) {
         return Some((c - Vec2::X * r, c + Vec2::X * r));
     }
@@ -889,9 +891,9 @@ impl Interactive for OverrideM {
 
 // ---------------- interactive ----------------
 
+/// The object under `p`, as the construction plane sees the drawing.
 fn pick_at(s: &Session, p: Vec2) -> Option<Handle> {
-    let ap = s.pixel_size() * s.settings.pickbox.max(1.0) * 1.5;
-    crate::select::pick(s.doc().ok()?, &s.space(), p, ap)
+    super::curves::pick_at(s, p)
 }
 
 /// The straight or curved piece of `h` picked at `p`: a line, an arc, or the polyline segment nearest `p`.
@@ -1027,7 +1029,8 @@ impl Interactive for LinearM {
                     s.echo("*Invalid selection*");
                     return Ok(Step::Continue);
                 };
-                let seg = s.doc()?.entity(h).and_then(|e| e.prims().into_iter().find_map(|pr| if let Prim::Seg(sg) = pr { Some(sg) } else { None }));
+                let seg =
+                    s.pick_doc()?.entity(h).and_then(|e| e.prims().into_iter().find_map(|pr| if let Prim::Seg(sg) = pr { Some(sg) } else { None }));
                 match seg {
                     Some(sg @ Segment::Line(_)) | Some(sg @ Segment::Arc { .. }) => {
                         self.pts = vec![sg.start(), sg.end()];

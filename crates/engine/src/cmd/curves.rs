@@ -18,10 +18,10 @@ pub fn pick_aperture(s: &Session) -> f64 {
     s.pixel_size() * s.settings.pickbox.max(1.0) * 1.5
 }
 
-/// The object under `p` in the current space.
+/// The object under `p` in the current space (as the current construction plane sees it).
 pub fn pick_at(s: &Session, p: Vec2) -> Option<Handle> {
     let space = s.space();
-    crate::select::pick(s.doc().ok()?, &space, p, pick_aperture(s))
+    crate::select::pick(&*s.pick_doc().ok()?, &space, p, pick_aperture(s))
 }
 
 pub fn entity(s: &Session, h: Handle) -> Result<Entity> {

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use cadcraft_color::{Color, Rgb};
 use cadcraft_doc::*;
 use cadcraft_dxf::{Tag, records, sections};
-use cadcraft_geom::{Mat4, PolyVertex, Spline, Vec2, Vec3};
+use cadcraft_geom::{Mat4, PolyVertex, Spline, Vec2, Vec3, ViewDir};
 
 use crate::{IoError, Result};
 
@@ -1394,6 +1394,10 @@ fn header(tags: &[Tag], d: &mut Drawing) {
                 vals.push(v);
                 i += 1;
             }
+            // Cadino's own session variables (the construction plane) never come from a file.
+            if name.starts_with("CADCRAFT_") {
+                continue;
+            }
             // Legacy files keep spacing in HEADER; modern *ACTIVE VPORT entries override it.
             if matches!(name.as_str(), "SNAPUNIT" | "GRIDUNIT") {
                 let (Some(x), Some(y)) = (vals.iter().find(|t| t.code == 10), vals.iter().find(|t| t.code == 20)) else { continue };
@@ -1574,6 +1578,11 @@ fn tables(tags: &[Tag], d: &mut Drawing, rx: &mut Rx) {
             "VPORT" if !active_vport && t.s(2).is_some_and(|n| n.trim().eq_ignore_ascii_case("*ACTIVE")) => {
                 active_vport = true;
                 vport_record(d, &t);
+                // Cadino's construction plane of the one view (another program's UCS stays in
+                // the header as read: the drawing opens in World).
+                if cplane_marked(&t) {
+                    d.header.set_cplane(&vport_ucs(&t));
+                }
                 for (name, code) in [("SNAPUNIT", 14), ("GRIDUNIT", 15)] {
                     if let (Some(x), Some(y)) = (t.f(code), t.f(code + 10)) {
                         let p = Vec2::new(x, y);
@@ -1654,12 +1663,28 @@ fn tables(tags: &[Tag], d: &mut Drawing, rx: &mut Rx) {
             _ => {}
         }
     }
-    // One *Active viewport is no tiling: the view is the editor's (it zooms to the extents).
-    d.vports.retain(|c| c.tiles.len() > usize::from(c.is_active()));
+    // One *Active viewport is no tiling: the view is the editor's (it zooms to the extents),
+    // unless it looks along a direction or in a style of its own (kept for the editor to show).
+    let own_look = |t: &VportTile| t.shaded || !matches!(t.view_dir, [x, y, z] if x == 0.0 && y == 0.0 && z > 0.0);
+    d.vports.retain(|c| c.tiles.len() > usize::from(c.is_active()) || c.tiles.first().is_some_and(own_look));
 }
 
 /// Most tiles a viewport configuration keeps.
 const MAX_VPORT_TILES: usize = 64;
+
+/// Whether a VPORT record's UCS is a construction plane Cadino saved (`CADCRAFT` xdata
+/// `1000 CPLANE`); another program's UCS is not one.
+fn cplane_marked(t: &T) -> bool {
+    crate::dxf_ext::xdata(t.0, crate::dxf_ext::APP).iter().any(|x| x.code == 1000 && x.str().trim().eq_ignore_ascii_case(crate::dxf_ext::CPLANE))
+}
+
+/// A VPORT record's UCS (110/111/112: origin, x and y axes) as a frame: World when it stores
+/// none, or axes that make no plane.
+fn vport_ucs(t: &T) -> Mat4 {
+    let given = |c: i32| [c, c + 10, c + 20].into_iter().any(|c| t.f(c).is_some());
+    let axis = |c: i32, or: Vec3| if given(c) { t.p(c) } else { or };
+    Mat4::frame(axis(110, Vec3::ZERO), axis(111, Vec3::X), axis(112, Vec3::Y)).unwrap_or(Mat4::IDENTITY)
+}
 
 /// A VPORT record: one tile of the configuration it names (`*ACTIVE` the one shown). Corners
 /// are fractions of the drawing area; unusable tiles are skipped.
@@ -1685,9 +1710,14 @@ fn vport_record(d: &mut Drawing, t: &T) {
     // there reads as wireframe; upgrade: resolve 348 to its VISUALSTYLE's type.
     let v = t.p(16);
     let view_dir = if v.is_finite() && v != Vec3::ZERO { [v.x, v.y, v.z] } else { [0.0, 0.0, 1.0] };
+    // 12 is in display coordinates, whose origin is the target (17); a tile's centre is in the
+    // view plane from the world origin. Twist (51) is not applied: tiles have none.
+    let target = t.p(17);
+    let center = Some(center + ViewDir::new(v).project(target)).filter(|c| c.is_finite()).unwrap_or(center);
     let mode = t.i(281).unwrap_or(0);
     let (shaded, edges) = (matches!(mode, 3..=6), matches!(mode, 5 | 6));
-    let tile = VportTile { min: clamp(min), max: clamp(max), center, height, aspect, view_dir, shaded, edges };
+    let (ucs, cplane) = if cplane_marked(t) { (Mat4::IDENTITY, vport_ucs(t)) } else { (vport_ucs(t), Mat4::IDENTITY) };
+    let tile = VportTile { min: clamp(min), max: clamp(max), center, height, aspect, view_dir, shaded, edges, cplane, ucs };
     let name = if name.eq_ignore_ascii_case(VportConfig::ACTIVE) { VportConfig::ACTIVE.to_string() } else { name };
     let room = d.vports.len() < MAX_OBJECTS;
     match d.vports.iter_mut().find(|c| c.name.eq_ignore_ascii_case(&name)) {

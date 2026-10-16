@@ -9,6 +9,7 @@ use super::machines::{SelectRun, number};
 use super::*;
 use crate::{Accept, Input, Interactive, Prompt, Result, Session, Step, View};
 
+pub(crate) mod cplane;
 mod named_views;
 pub(crate) mod vports;
 
@@ -104,6 +105,7 @@ pub fn specs() -> Vec<CommandSpec> {
     ];
     v.extend(named_views::specs());
     v.extend(vports::specs());
+    v.extend(cplane::specs());
     v
 }
 

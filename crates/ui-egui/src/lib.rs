@@ -78,6 +78,8 @@ pub struct UiState {
     pub show_command_line: bool,
     pub show_viewcube: bool,
     pub show_ucs_icon: bool,
+    /// Rhino's gumball on objects selected in 3D views (`ui.gumball`).
+    pub gumball: bool,
     pub show_layer_list: bool,
     /// Keep the system cursor visible over the drawing area (a small crosshair at the centre of the
     /// drawn one) instead of hiding it. Screen magnifiers (Windows Magnifier "follow the mouse
@@ -164,6 +166,7 @@ impl Default for UiState {
             show_command_line: true,
             show_viewcube: true,
             show_ucs_icon: true,
+            gumball: true,
             show_layer_list: false,
             system_cursor: std::env::var("CADCRAFT_SYSTEM_CURSOR").is_ok_and(|v| !matches!(v.trim(), "" | "0" | "false" | "off")),
             toolset_tab: "Drafting".into(),
@@ -322,6 +325,17 @@ impl CadApp {
             self.session.echo(e.clone());
         }
         r
+    }
+
+    /// Run a drawing-changing command the canvas offers outside the command line (a viewport
+    /// title or UCS icon menu pick): a command still running is cancelled first, as a menu pick
+    /// cancels it ([`CadApp::start`]), or its undo step would land after this one's and undo
+    /// both together. A refusal is echoed.
+    pub fn run_after_cancel(&mut self, id: &str, params: Value) {
+        if self.session.running.is_some() {
+            self.session.cancel();
+        }
+        let _ = self.run(id, params);
     }
 
     /// Start a command as if typed (interactive when it has prompts).

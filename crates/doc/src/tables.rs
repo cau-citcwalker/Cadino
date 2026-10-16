@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use cadcraft_color::Color;
-use cadcraft_geom::{Vec2, Vec3};
+use cadcraft_geom::{Mat4, Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 
 use crate::{EntityStore, Lineweight};
@@ -834,6 +834,15 @@ pub struct VportTile {
     /// ...and shaded with their edges (Shaded with Edges).
     #[serde(default)]
     pub edges: bool,
+    /// The tile's construction plane (CPLANE, UCS): its coordinates → world, an orthonormal
+    /// frame; the identity is World (Top). DXF 110/111/112 (UCS origin and axes) with Cadino's
+    /// mark; a file from another program opens in World.
+    #[serde(default)]
+    pub cplane: Mat4,
+    /// The UCS another program saved with the tile (DXF 110/111/112 without Cadino's mark), kept
+    /// to write back; not a construction plane.
+    #[serde(default)]
+    pub ucs: Mat4,
 }
 
 fn plan_dir() -> [f64; 3] {
@@ -851,6 +860,8 @@ impl Default for VportTile {
             view_dir: plan_dir(),
             shaded: false,
             edges: false,
+            cplane: Mat4::IDENTITY,
+            ucs: Mat4::IDENTITY,
         }
     }
 }

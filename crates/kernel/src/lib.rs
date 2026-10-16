@@ -629,6 +629,43 @@ pub fn import_iges(path: &Path) -> Result<Imported> {
     run(Request::ImportIges(path.to_owned()))?.imported()
 }
 
+/// A solid's tessellation for drawings, with which of its edges are smooth (parallel to
+/// `mesh.edges`): a seam, or an edge whose two faces meet tangentially (a fillet running into a
+/// flat face). A drawing shows a smooth edge only where it is a silhouette; any other edge, however
+/// shallow the angle its faces meet at, is a real edge.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Outline {
+    pub mesh: Mesh3,
+    pub smooth: Vec<bool>,
+}
+
+/// The [`Outline`] of each stored B-rep (in its model coordinates), in one worker; `None` for one
+/// that can't be read.
+pub fn outlines(breps: &[&str]) -> Result<Vec<Option<Outline>>> {
+    if !available() {
+        return Err(KernelError::Unavailable);
+    }
+    if breps.is_empty() {
+        return Ok(Vec::new());
+    }
+    run(Request::Outlines(breps.iter().map(|b| check_brep(b).ok().map(|_| (*b).to_owned())).collect()))?.outlines()
+}
+
+/// The bounding box (min, max) of each placed solid's B-rep, from its geometry rather than its
+/// tessellation (a round face measures its full size), in one worker; `None` for one that can't
+/// be read or placed.
+/// ponytail: B-spline curves and surfaces are bounded by their control points (a little large);
+/// exact extrema (BRepBndLib::AddOptimal) when free-form parts go in cut lists.
+pub fn boxes(solids: &[Placed]) -> Result<Vec<Option<(Vec3, Vec3)>>> {
+    if !available() {
+        return Err(KernelError::Unavailable);
+    }
+    if solids.is_empty() {
+        return Ok(Vec::new());
+    }
+    run(Request::Boxes(solids.iter().map(|s| check_brep(s.brep).ok().map(|_| Solid::of(*s))).collect()))?.boxes()
+}
+
 /// One kernel operation with its data, as the worker process receives it.
 #[derive(Serialize, Deserialize)]
 enum Request {
@@ -650,6 +687,8 @@ enum Request {
     ImportStep(PathBuf),
     ExportIges(Vec<Solid>, Vec<Curve>, PathBuf),
     ImportIges(PathBuf),
+    Outlines(Vec<Option<String>>),
+    Boxes(Vec<Option<Solid>>),
 }
 
 /// [`Placed`], owning its data.
@@ -677,6 +716,8 @@ enum Reply {
     /// The two pieces of [`Request::Slice`], each `None` where the shape has nothing.
     Pieces(Vec<Option<Built>>),
     Imported(Imported),
+    Outlines(Vec<Option<Outline>>),
+    Boxes(Vec<Option<(Vec3, Vec3)>>),
     Done,
 }
 
@@ -703,6 +744,8 @@ impl Request {
             Request::ImportStep(_) => "reading STEP",
             Request::ExportIges(..) => "writing IGES",
             Request::ImportIges(_) => "reading IGES",
+            Request::Outlines(_) => "outlining solids",
+            Request::Boxes(_) => "measuring solids",
         }
     }
 
@@ -730,6 +773,8 @@ impl Request {
             Request::ImportStep(path) => backend::import_step(path).map(Reply::Built),
             Request::ExportIges(ss, cs, path) => backend::export_iges(&placed(ss), cs, path).map(|_| Reply::Done),
             Request::ImportIges(path) => backend::import_iges(path).map(Reply::Imported),
+            Request::Outlines(breps) => Ok(Reply::Outlines(breps.iter().map(|b| b.as_deref().and_then(|b| backend::outline(b).ok())).collect())),
+            Request::Boxes(ss) => Ok(Reply::Boxes(ss.iter().map(|s| s.as_ref().and_then(|s| backend::bounding(s.placed()).ok())).collect())),
         }
     }
 }
@@ -749,6 +794,12 @@ impl Reply {
     }
     fn imported(self) -> Result<Imported> {
         if let Reply::Imported(i) = self { Ok(i) } else { Err(mismatch()) }
+    }
+    fn outlines(self) -> Result<Vec<Option<Outline>>> {
+        if let Reply::Outlines(o) = self { Ok(o) } else { Err(mismatch()) }
+    }
+    fn boxes(self) -> Result<Vec<Option<(Vec3, Vec3)>>> {
+        if let Reply::Boxes(b) = self { Ok(b) } else { Err(mismatch()) }
     }
     fn done(self) -> Result<()> {
         if let Reply::Done = self { Ok(()) } else { Err(mismatch()) }

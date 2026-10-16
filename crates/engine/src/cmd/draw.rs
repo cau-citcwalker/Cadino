@@ -549,9 +549,7 @@ impl PlineM {
         }
         let k = self.entity(closed);
         match self.handle {
-            Some(h) => {
-                s.doc_mut()?.modify_entity(h, |e| e.kind = k)?;
-            }
+            Some(h) => s.set_local_kind(h, k)?,
             None => self.handle = Some(s.add_entity(k)?),
         }
         Ok(())

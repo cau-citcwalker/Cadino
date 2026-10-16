@@ -10,9 +10,11 @@
 
 mod hlr;
 
-use cadcraft_doc::{Common, EntityKind, Handle, Layer, Part, Solid3d, Space};
-use cadcraft_geom::{Bounds2, EPS, Mat4, PolyVertex, Vec2, Vec3, ViewDir};
-use cadcraft_kernel::Seg;
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+use cadcraft_doc::{Common, Drawing, Entity, EntityKind, Handle, Layer, MAX_BLOCK_DEPTH, Part, Solid3d, Space};
+use cadcraft_geom::{Bounds2, EPS, Mat3, Mat4, Mesh3, PolyVertex, Vec2, Vec3, ViewDir};
+use cadcraft_kernel::{Placed, Seg};
 use serde_json::{Value, json};
 
 use super::curves::KW;
@@ -34,7 +36,8 @@ pub fn specs() -> Vec<CommandSpec> {
             .params(
                 "{handle (closed profile) | corner1: [x,y], corner2: [x,y], thickness? (default 18), orientation?: \"top\" | \"front\" | \"right\", \
                  base?: [x,y] (profile point at the plane's origin; default its lower-left), at?: [x,y,z] (where that point goes), name?, material?}: \
-                 a profile in a tilted or standing plane is used where it is, its thickness along the plane's normal (no orientation, base or at)",
+                 a profile in a tilted or standing plane is used where it is, its thickness along the plane's normal (no orientation, base or at); \
+                 a profile's base and at are world points, corners and their at the construction plane's",
             )
             .interactive(|_| Ok(Box::new(PanelM::default()))),
         CommandSpec::new("part", "Part", run_part)
@@ -44,15 +47,16 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("cutlist", "Cut List", run_cutlist)
             .menu(&["Tools", "Cut List"])
             .params(
-                "{handles? (default every 3D solid in model space, on any layer), at?: [x,y] (insert a table), csv?: path (UTF-8 with BOM), group?: bool (default true)} \
-                 → {rows: [{name, material, length, width, thickness, quantity}], total}",
+                "{handles? (default every 3D solid in model space, on any layer; a block reference counts the solids in its block, each copy), \
+                 at?: [x,y,z?] (insert a table there in the world; a long list goes on in more tables to the right), csv?: path (UTF-8 with BOM), group?: bool (default true)} \
+                 → {rows: [{name, material, length, width, thickness, quantity}], total, handles?}: sizes along each part's own axes",
             )
             .interactive(|_| Ok(Box::new(PickThenPoint::new(PickFor::CutList)))),
         CommandSpec::new("viewbase", "Base View", run_viewbase)
             .menu(&["Draw", "Drawing Views", "Base View"])
             .alias(&["make2d"])
             .params(
-                "{handles? (default every 3D solid on a layer that is on and thawed), views?: [\"front\",\"top\",\"right\",\"iso\"] (default front, top, right), \
+                "{handles? (default every 3D solid on a layer that is on and thawed; block references draw the solids in their blocks), views?: [\"front\",\"top\",\"right\",\"iso\"] (default front, top, right), \
                  layout?: name (default \"Drawing views\", made when missing; the views go on its sheet), space?: \"paper\" | \"model\" (default paper; model draws them in model space), \
                  at?: [x,y] (front view's lower-left: on the sheet, default the views centred in its printable area; in model space default beside the model), \
                  scale?: model units per paper unit or \"1:10\" (default on a sheet the largest drawing of 1, 2 or 5 times a power of ten that fits; in model space 1), \
@@ -120,13 +124,14 @@ fn run_panel(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) => v.as_str().and_then(Plane::parse).ok_or_else(|| bad(CMD, format!("`orientation` is \"top\", \"front\" or \"right\", not {v}")))?,
     };
     let (name, material) = part_params(CMD, p)?;
-    // The profile: an object's, or a rectangle's; with its lower-left corner.
-    let (segs, lower_left, standing) = match p.get("handle").filter(|v| !v.is_null()) {
-        Some(_) => object_profile(s, targets(s, p)?.first().copied().ok_or_else(|| bad(CMD, "`handle` is required"))?)?,
-        None => {
-            let (segs, lo) = rect_profile(point_req(CMD, p, "corner1")?, point_req(CMD, p, "corner2")?)?;
-            (segs, lo, None)
-        }
+    // The profile: an object's (in the world: its base and insertion point are world points too),
+    // or a rectangle's (in the construction plane, as BOX's corners); with its lower-left corner.
+    let world = p.get("handle").is_some_and(|v| !v.is_null());
+    let (segs, lower_left, standing) = if world {
+        object_profile(s, targets(s, p)?.first().copied().ok_or_else(|| bad(CMD, "`handle` is required"))?)?
+    } else {
+        let (segs, lo) = rect_profile(point_req(CMD, p, "corner1")?, point_req(CMD, p, "corner2")?)?;
+        (segs, lo, None)
     };
     // A profile standing in a plane of its own is the panel's face where it is.
     if let Some(n) = standing {
@@ -134,7 +139,7 @@ fn run_panel(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(bad(CMD, "the profile stands in a plane of its own and is used where it is: leave out orientation, base and at"));
         }
         let built = cadcraft_kernel::extrude(&segs, n * thickness).map_err(kernel)?;
-        return add_panel(s, built, name, material);
+        return add_panel(s, built, name, material, true);
     }
     let base = match p.get("base").filter(|v| !v.is_null()) {
         Some(_) => point_req(CMD, p, "base")?,
@@ -168,15 +173,17 @@ fn run_panel(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(CMD, "the panel's corners are out of range"));
     }
     let built = cadcraft_kernel::extrude(&placed, plane.thickness_dir() * thickness).map_err(kernel)?;
-    add_panel(s, built, name, material)
+    add_panel(s, built, name, material, world)
 }
 
-fn add_panel(s: &mut Session, built: cadcraft_kernel::Built, name: Option<String>, material: Option<String>) -> Result<Value> {
+/// The panel added: made from corners, in the construction plane's coordinates (placed in it, as
+/// a BOX is); made from a profile object, where that profile is in the world (`world`).
+fn add_panel(s: &mut Session, built: cadcraft_kernel::Built, name: Option<String>, material: Option<String>, world: bool) -> Result<Value> {
     let mut k = solid(built);
     if let EntityKind::Solid3d(x) = &mut k {
         x.part = Part { name: name.unwrap_or_default(), material: material.unwrap_or_default() };
     }
-    let h = s.add_entity(k)?;
+    let h = if world { s.add_entity_world(k)? } else { s.add_entity(k)? };
     Ok(json!({ "handle": h.hex() }))
 }
 
@@ -345,17 +352,30 @@ impl Interactive for PanelM {
             self.vals.insert("orientation".into(), json!(name));
             return Ok(Step::Continue);
         }
+        // A profile object's base and insertion point are world points (as the profile is):
+        // points picked in a construction plane are taken there; a rectangle's stay in the plane.
+        let z = s.point_z.filter(|z| z.is_finite()).unwrap_or(0.0);
+        let c = if self.vals.contains_key("handle") { s.cplane() } else { Mat4::IDENTITY };
         if !self.vals.contains_key("base") {
             match i {
-                Input::Point(p) => self.vals.insert("base".into(), json!([p.x, p.y])),
+                Input::Point(p) => {
+                    let q = if c == Mat4::IDENTITY { p } else { c.apply(p.to3(z)).xy() };
+                    self.vals.insert("base".into(), json!([q.x, q.y]))
+                }
                 Input::Enter => self.vals.insert("base".into(), Value::Null),
                 _ => return Ok(Step::Continue),
             };
             return Ok(Step::Continue);
         }
         let at = match i {
-            Input::Point(p) => json!([p.x, p.y, s.point_z.filter(|z| z.is_finite()).unwrap_or(0.0)]),
-            Input::Enter => json!([0, 0, 0]),
+            Input::Point(p) => {
+                let q = c.apply(p.to3(z));
+                json!([q.x, q.y, q.z])
+            }
+            Input::Enter => {
+                let o = c.apply(Vec3::ZERO);
+                json!([o.x, o.y, o.z])
+            }
             _ => return Ok(Step::Continue),
         };
         self.vals.insert("at".into(), at);
@@ -489,19 +509,79 @@ impl PartM {
 
 // ---------------- CUTLIST ----------------
 
-/// The solids a command works on: those given, else every one in model space (`seen`: only those
-/// on a layer that is on and thawed).
-fn chosen(s: &Session, p: &Value, cmd: &str, seen: bool) -> Result<Vec<(Handle, Solid3d)>> {
+/// Most solids one cut list or drawing gathers, and most block reference copies it opens on the
+/// way (hostile arrays and nesting).
+const MAX_PARTS: usize = 100_000;
+const MAX_COPIES: usize = 1_000_000;
+
+/// The solids a command works on, placed in the world: those given, else every one in model
+/// space (`seen`: only those on a layer that is on and thawed). A block reference stands for the
+/// solids in its block, once for each of its copies and where it puts them (nested references
+/// too, as the canvas draws them).
+fn chosen(s: &Session, p: &Value, cmd: &str, seen: bool) -> Result<Vec<Solid3d>> {
     // An empty list (as MCP clients send optional arrays) counts as none given.
     let given = ["handle", "handles"].iter().any(|k| p.get(k).is_some_and(|v| !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty())));
-    let xs = if given {
-        solids(s, &targets(s, p)?)?
-    } else {
-        let d = s.doc()?;
-        let hs: Vec<Handle> = d.model.iter().filter(|e| !seen || d.layer(&e.common.layer).is_none_or(Layer::visible)).map(|e| e.handle).collect();
-        solids(s, &hs)?
-    };
-    if xs.is_empty() { Err(bad(cmd, "there are no 3D solids")) } else { Ok(xs) }
+    let d = s.doc()?;
+    let hs: Vec<Handle> = if given { targets(s, p)? } else { d.model.iter().map(|e| e.handle).collect() };
+    let mut g = Gather { d, seen, out: Vec::new(), copies: 0 };
+    let mut once = HashSet::with_capacity(hs.len());
+    for h in hs.into_iter().filter(|h| once.insert(*h)) {
+        let Some(e) = d.entity(h) else { continue };
+        if given || g.shown(&e.common.layer) {
+            g.add(e, &Mat4::IDENTITY, &e.common.layer, 0);
+        }
+    }
+    if g.out.len() >= MAX_PARTS || g.copies >= MAX_COPIES {
+        log::warn!("{cmd}: past {MAX_PARTS} solids or {MAX_COPIES} block copies, the rest were left out");
+    }
+    if g.out.is_empty() { Err(bad(cmd, "there are no 3D solids")) } else { Ok(g.out) }
+}
+
+/// [`chosen`]'s walk through objects and the blocks they reference.
+struct Gather<'a> {
+    d: &'a Drawing,
+    seen: bool,
+    out: Vec<Solid3d>,
+    copies: usize,
+}
+
+impl Gather<'_> {
+    fn shown(&self, layer: &str) -> bool {
+        !self.seen || self.d.layer(layer).is_none_or(Layer::visible)
+    }
+
+    /// `e`, on `layer` (a block's layer 0 objects take their reference's), placed by `at`.
+    fn add(&mut self, e: &Entity, at: &Mat4, layer: &str, depth: usize) {
+        if self.out.len() >= MAX_PARTS {
+            return;
+        }
+        match &e.kind {
+            EntityKind::Solid3d(x) => self.out.push(Solid3d { xform: at.mul(&x.xform), ..x.clone() }),
+            EntityKind::Insert(ins) if depth < MAX_BLOCK_DEPTH => {
+                let Some(blk) = self.d.block(&ins.block) else { return };
+                // The reference's own plane takes the block's XY plane on to the world.
+                let plane = at.mul(&e.plane().unwrap_or(Mat4::IDENTITY));
+                for r in 0..ins.rows.clamp(1, 10_000) {
+                    for c in 0..ins.cols.clamp(1, 10_000) {
+                        self.copies += 1;
+                        if self.copies > MAX_COPIES || self.out.len() >= MAX_PARTS {
+                            return;
+                        }
+                        let off = Vec2::new(ins.col_spacing * f64::from(c), ins.row_spacing * f64::from(r)).rotate(ins.rotation);
+                        let m = Mat3::translate(off).then_before(ins.transform(blk.base.xy()));
+                        let w = plane.mul(&ins.lift(&m, blk.base));
+                        for be in blk.entities.iter() {
+                            let l = if be.common.layer == "0" { layer } else { be.common.layer.as_str() };
+                            if self.shown(l) {
+                                self.add(be, &w, l, depth + 1);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// A size in tenths of a millimetre (drawing unit).
@@ -518,20 +598,138 @@ fn scale_of(m: &Mat4) -> f64 {
     det.abs().cbrt()
 }
 
-/// A part's length, width and thickness in tenths, longest first: its mesh's box in its own frame.
-/// ponytail: the box along the solid's own axes; a part that a boolean left turned in its frame
-/// (the kernel returns world shapes) measures by its axis-aligned box, an oriented minimal box
-/// when that shows in cut lists.
-fn part_size(x: &Solid3d) -> Option<[i64; 3]> {
-    let k = scale_of(&x.xform);
-    let mut pts = x.mesh.points().filter(|p| p.is_finite());
+/// Most outline points [`part_axes`] tries directions for (each one against every point).
+const MAX_HULL_TRIES: usize = 512;
+
+/// A part's own axes in its model coordinates, as a rotation onto them (rows: length, width and
+/// thickness directions, longest first not implied): the thickness along the normal of its
+/// largest flat faces (a board's two faces count together), length and width along the smallest
+/// rectangle round its outline seen along that normal. So a board measures the same however it
+/// was made or turned: drawn at an angle in plan, standing in a tilted plane, after a boolean.
+/// ponytail: the smallest rectangle tries at most [`MAX_HULL_TRIES`] outline edges; every one
+/// (rotating calipers) when parts with huge round outlines need the last tenth.
+fn part_axes(m: &Mesh3) -> Mat4 {
+    // Facet area by direction, opposite directions together (quantised unit normals).
+    let mut area: BTreeMap<(i64, i64, i64), (f64, Vec3)> = BTreeMap::new();
+    for t in &m.tris {
+        let Some([a, b, c]) = m.tri(t) else { continue };
+        let n = (b - a).cross(c - a);
+        let l = n.len();
+        if !(l > 0.0 && l.is_finite()) {
+            continue;
+        }
+        let u = n * (1.0 / l);
+        let q = |v: f64| (v * 1e6).round() as i64;
+        let k = (q(u.x), q(u.y), q(u.z));
+        let (k, u) = if k < (0, 0, 0) { ((-k.0, -k.1, -k.2), -u) } else { (k, u) };
+        area.entry(k).or_insert((0.0, u)).0 += l;
+    }
+    let n =
+        area.values().fold(None::<(f64, Vec3)>, |best, x| if best.is_some_and(|b| b.0 >= x.0) { best } else { Some(*x) }).map_or(Vec3::Z, |b| b.1);
+    // Two axes across it: X and Y for a part lying flat.
+    let e1 = if n.x.abs() < 0.9 { Vec3::new(1.0, 0.0, 0.0) - n * n.x } else { Vec3::new(0.0, 1.0, 0.0) - n * n.y }.normalized();
+    let e2 = n.cross(e1);
+    let flat: Vec<Vec2> = m.points().filter(|p| p.is_finite()).map(|p| Vec2::new(p.dot(e1), p.dot(e2))).collect();
+    let hull = hull(flat);
+    // The outline edge whose direction gives the smallest rectangle (an outline with no area
+    // keeps the first axis).
+    let step = hull.len().div_ceil(MAX_HULL_TRIES).max(1);
+    let mut best: Option<(f64, Vec2)> = None;
+    for i in (0..hull.len()).step_by(step).filter(|_| hull.len() >= 3) {
+        let (Some(a), Some(b)) = (hull.get(i), hull.get((i + 1) % hull.len())) else { continue };
+        let d = (*b - *a).normalized();
+        if d == Vec2::ZERO {
+            continue;
+        }
+        let w = d.perp();
+        let span = |f: &dyn Fn(Vec2) -> f64| hull.iter().map(|p| f(*p)).fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
+        let ((a0, a1), (b0, b1)) = (span(&|p| p.dot(d)), span(&|p| p.dot(w)));
+        let size = (a1 - a0) * (b1 - b0);
+        if size.is_finite() && best.is_none_or(|(s, _)| size < s - 1e-9 * s.abs()) {
+            best = Some((size, d));
+        }
+    }
+    let d = best.map_or(Vec2::new(1.0, 0.0), |b| b.1);
+    let u = e1 * d.x + e2 * d.y;
+    let v = n.cross(u);
+    Mat4 { m: [[u.x, u.y, u.z, 0.0], [v.x, v.y, v.z, 0.0], [n.x, n.y, n.z, 0.0], [0.0, 0.0, 0.0, 1.0]] }
+}
+
+/// The convex hull of `pts`, counterclockwise (Andrew's monotone chain); fewer than three points
+/// when they don't span an area.
+fn hull(mut pts: Vec<Vec2>) -> Vec<Vec2> {
+    pts.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+    pts.dedup();
+    if pts.len() < 3 {
+        return pts;
+    }
+    let mut out: Vec<Vec2> = Vec::with_capacity(pts.len() + 1);
+    // Whether `p` keeps the turn at the end of `out` counterclockwise (else the end goes).
+    let left = |out: &[Vec2], p: Vec2| match out {
+        [.., o, a] => (*a - *o).cross(p - *o) > 0.0,
+        _ => true,
+    };
+    // The lower chain left to right, then the upper one back.
+    for p in &pts {
+        while out.len() >= 2 && !left(&out, *p) {
+            out.pop();
+        }
+        out.push(*p);
+    }
+    let lower = out.len() + 1;
+    for p in pts.iter().rev().skip(1) {
+        while out.len() >= lower && !left(&out, *p) {
+            out.pop();
+        }
+        out.push(*p);
+    }
+    out.pop();
+    out
+}
+
+/// Each part's length, width and thickness in tenths, longest first: the box of its B-rep along
+/// its own axes ([`part_axes`]), from the kernel (round faces measure their full size); from its
+/// mesh where the kernel can't measure it (no B-rep, a transform it can't apply, a build without
+/// it). A part scaled as a whole measures its scaled size.
+fn part_sizes(xs: &[&Solid3d]) -> Vec<Option<[i64; 3]>> {
+    // Model coordinates → along the part's axes, at its scale.
+    let frames: Vec<Mat4> = xs
+        .iter()
+        .map(|x| {
+            let mut t = part_axes(&x.mesh);
+            let k = scale_of(&x.xform);
+            t.m.iter_mut().take(3).flat_map(|r| r.iter_mut().take(3)).for_each(|v| *v *= k);
+            t
+        })
+        .collect();
+    let exact = if xs.iter().any(|x| !x.brep.is_empty()) {
+        let placed: Vec<Placed> = xs.iter().zip(&frames).map(|(x, t)| Placed { brep: &x.brep, xform: t }).collect();
+        cadcraft_kernel::boxes(&placed).unwrap_or_else(|e| {
+            log::warn!("cut list: sizes from the meshes ({e})");
+            Vec::new()
+        })
+    } else {
+        Vec::new()
+    };
+    xs.iter()
+        .zip(&frames)
+        .enumerate()
+        .map(|(i, (x, t))| {
+            let (lo, hi) = exact.get(i).copied().flatten().or_else(|| point_box(x.mesh.points().map(|p| t.apply(p))))?;
+            let mut s = [tenths(hi.x - lo.x)?, tenths(hi.y - lo.y)?, tenths(hi.z - lo.z)?];
+            s.sort_unstable_by(|a, b| b.cmp(a));
+            Some(s)
+        })
+        .collect()
+}
+
+/// The box of the finite points among `pts`.
+fn point_box(pts: impl Iterator<Item = Vec3>) -> Option<(Vec3, Vec3)> {
+    let mut pts = pts.filter(|p| p.is_finite());
     let first = pts.next()?;
-    let (lo, hi) = pts.fold((first, first), |(lo, hi), p| {
+    Some(pts.fold((first, first), |(lo, hi), p| {
         (Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z)), Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z)))
-    });
-    let mut s = [tenths((hi.x - lo.x) * k)?, tenths((hi.y - lo.y) * k)?, tenths((hi.z - lo.z) * k)?];
-    s.sort_unstable_by(|a, b| b.cmp(a));
-    Some(s)
+    }))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -544,10 +742,11 @@ struct Row {
 
 /// One row per part (identical name, material and size grouped when `group`), by material, name
 /// and size, longest first.
-fn cut_rows(xs: &[(Handle, Solid3d)], group: bool) -> Vec<Row> {
+fn cut_rows(xs: &[Solid3d], group: bool) -> Vec<Row> {
+    let closed: Vec<&Solid3d> = xs.iter().filter(|x| !x.mesh.open).collect();
     let mut rows: Vec<Row> = Vec::new();
-    for (_, x) in xs.iter().filter(|(_, x)| !x.mesh.open) {
-        let Some(size) = part_size(x) else { continue };
+    for (x, size) in closed.iter().zip(part_sizes(&closed)) {
+        let Some(size) = size else { continue };
         let row = Row { name: x.part.name.clone(), material: x.part.material.clone(), size, qty: 1 };
         match rows.iter_mut().find(|r| group && r.name == row.name && r.material == row.material && r.size == row.size) {
             Some(r) => r.qty += 1,
@@ -593,8 +792,9 @@ fn run_cutlist(s: &mut Session, p: &Value) -> Result<Value> {
         })).collect::<Vec<_>>(),
         "total": total,
     });
+    // Where the table goes in the world (a table lies level, whatever the construction plane).
     let at = match p.get("at").filter(|v| !v.is_null()) {
-        Some(_) => Some(point_req(CMD, p, "at")?),
+        Some(_) => Some(p3(p, "at").ok_or_else(|| bad(CMD, "`at` must be [x, y] or [x, y, z]"))?),
         None => None,
     };
     // The file first: when it can't be written the drawing stays as it was.
@@ -611,22 +811,58 @@ fn run_cutlist(s: &mut Session, p: &Value) -> Result<Value> {
         out["csv"] = json!(path);
     }
     if let Some(at) = at {
-        let d = s.doc()?;
-        let cur = d.header.str("CTABLESTYLE", "Standard");
-        let st = d.table_styles.iter().find(|t| t.name.eq_ignore_ascii_case(&cur)).or(d.table_styles.first()).cloned().unwrap_or_default();
-        let header = HEADER.iter().map(|h| h.to_string()).collect();
-        let mut t = super::table::make_table(&st, at, cells.len(), HEADER.len(), None, None, Some("Cut list"), Some(header), &cells);
-        // Columns as wide as their longest text.
-        let th = t.text_height;
-        for (c, w) in t.col_widths.iter_mut().enumerate() {
+        let hs = all_or_nothing(s, |s| cut_tables(s, at, &cells))?;
+        out["handle"] = json!(hs.first().map(|h| h.hex()));
+        out["handles"] = json!(hs.iter().map(|h| h.hex()).collect::<Vec<_>>());
+    }
+    Ok(out)
+}
+
+/// Most rows one cut-list table holds (well within a table's limit); a longer list goes on in
+/// more tables to the right, each with the header, the last with the total.
+const ROWS_PER_TABLE: usize = 1000;
+
+/// The cut list's tables (title, header, `cells`) from `at` on, in the world.
+fn cut_tables(s: &mut Session, at: Vec3, cells: &[Vec<String>]) -> Result<Vec<Handle>> {
+    let d = s.doc()?;
+    let cur = d.header.str("CTABLESTYLE", "Standard");
+    let st = d.table_styles.iter().find(|t| t.name.eq_ignore_ascii_case(&cur)).or(d.table_styles.first()).cloned().unwrap_or_default();
+    let header: Vec<String> = HEADER.iter().map(|h| h.to_string()).collect();
+    // Columns as wide as their longest text, alike in every table.
+    let th = st.text_height;
+    let widths: Vec<f64> = (0..HEADER.len())
+        .map(|c| {
             let chars = std::iter::once(HEADER.get(c).map_or(0, |h| h.chars().count()))
                 .chain(cells.iter().map(|r| r.get(c).map_or(0, |x| x.chars().count())))
                 .max()
                 .unwrap_or(0);
-            *w = (chars.max(3) as f64 + 2.0) * th;
+            (chars.max(3) as f64 + 2.0) * th
+        })
+        .collect();
+    let parts = cells.len().div_ceil(ROWS_PER_TABLE);
+    let mut x = 0.0;
+    let mut out = Vec::with_capacity(parts);
+    for (i, chunk) in cells.chunks(ROWS_PER_TABLE).enumerate() {
+        let title = if parts > 1 { format!("Cut list ({}/{parts})", i + 1) } else { "Cut list".to_string() };
+        let mut t = super::table::make_table(
+            &st,
+            at.xy() + Vec2::new(x, 0.0),
+            chunk.len(),
+            HEADER.len(),
+            None,
+            None,
+            Some(&title),
+            Some(header.clone()),
+            chunk,
+        );
+        // Every row or none: a table that took fewer rows than it was given is an error.
+        if t.cells.len() != chunk.len() + 2 {
+            return Err(EngineError::Other("The cut list does not fit its table.".into()));
         }
-        let h = s.add_entity(EntityKind::Table(t))?;
-        out["handle"] = json!(h.hex());
+        t.insert.z = at.z;
+        t.col_widths.clone_from(&widths);
+        x += widths.iter().sum::<f64>() + 2.0 * th;
+        out.push(s.add_entity_world(EntityKind::Table(t))?);
     }
     Ok(out)
 }
@@ -766,6 +1002,45 @@ fn in_space<T>(s: &mut Session, space: &Space, f: impl FnOnce(&mut Session) -> R
     r
 }
 
+/// Runs `f` with the construction plane World, so the objects commands add for it (VIEWBASE's
+/// dimensions, computed in the world) are not placed in the plane again; the plane is put back.
+fn in_world<T>(s: &mut Session, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
+    let c = s.cplane();
+    if c == Mat4::IDENTITY {
+        return f(s);
+    }
+    s.set_cplane(Mat4::IDENTITY)?;
+    let r = f(s);
+    let back = s.set_cplane(c);
+    r.and_then(|v| back.map(|()| v))
+}
+
+/// Each named view's extent in model units: the solids' B-rep boxes seen along it, from the
+/// kernel (round faces reach their full size); a solid it can't measure by its mesh.
+fn view_extents(xs: &[&Solid3d], names: &[&str]) -> Vec<Bounds2> {
+    let turns: Vec<Mat4> = names.iter().map(|n| view_dir(n).rotation()).collect();
+    let placed: Vec<(&Solid3d, Mat4)> = turns.iter().flat_map(|t| xs.iter().map(move |x| (*x, t.mul(&x.xform)))).collect();
+    let exact = if xs.iter().any(|x| !x.brep.is_empty()) {
+        let all: Vec<Placed> = placed.iter().map(|(x, m)| Placed { brep: &x.brep, xform: m }).collect();
+        cadcraft_kernel::boxes(&all).unwrap_or_else(|e| {
+            log::warn!("VIEWBASE: view sizes from the meshes ({e})");
+            Vec::new()
+        })
+    } else {
+        Vec::new()
+    };
+    names
+        .iter()
+        .enumerate()
+        .map(|(v, n)| {
+            xs.iter().enumerate().fold(Bounds2::EMPTY, |b, (i, x)| match exact.get(v * xs.len() + i).copied().flatten() {
+                Some((lo, hi)) => b.union(&Bounds2 { min: lo.xy(), max: hi.xy() }),
+                None => b.union(&hlr::extent(&[*x], view_dir(n))),
+            })
+        })
+        .collect()
+}
+
 /// How the views are dimensioned: at all, the dimension lines' offset from a view, the model
 /// units per drawn unit (the dimensions read model sizes), and on a sheet the text height.
 struct Dims {
@@ -862,10 +1137,10 @@ fn run_viewbase(s: &mut Session, p: &Value) -> Result<Value> {
         Some(_) => Some(point_req(CMD, p, "at")?),
         None => None,
     };
-    let refs: Vec<&Solid3d> = xs.iter().map(|(_, x)| x).collect();
+    let refs: Vec<&Solid3d> = xs.iter().collect();
     // Each view's extent in model units, once.
-    let exts: Vec<(&str, Bounds2)> =
-        VIEWS.iter().filter(|(n, _)| *n != "iso" || names.contains(n)).map(|(n, _)| (*n, hlr::extent(&refs, view_dir(n)))).collect();
+    let wanted: Vec<&str> = VIEWS.iter().filter(|(n, _)| *n != "iso" || names.contains(n)).map(|(n, _)| *n).collect();
+    let exts: Vec<(&str, Bounds2)> = wanted.iter().copied().zip(view_extents(&refs, &wanted)).collect();
     let ext = |n: &str| exts.iter().find(|(m, _)| *m == n).map_or(Bounds2::EMPTY, |(_, b)| *b);
     let (front, top) = (ext("front"), ext("top"));
     // The model's size: its extent along X, Y and Z.
@@ -873,11 +1148,44 @@ fn run_viewbase(s: &mut Session, p: &Value) -> Result<Value> {
     if !size.is_finite() || size <= EPS {
         return Err(bad(CMD, "the solids have no size"));
     }
+    // The solids as drawn: meshed again by the kernel, which tells their smooth edges (a seam, a
+    // fillet's tangent edge) from real ones however shallow; as stored where it can't. Each B-rep
+    // once, however many block copies share it.
+    let mut slot: HashMap<&str, usize> = HashMap::new();
+    let mut breps: Vec<&str> = Vec::new();
+    let which: Vec<usize> = refs
+        .iter()
+        .map(|x| {
+            *slot.entry(&*x.brep).or_insert_with(|| {
+                breps.push(&x.brep);
+                breps.len() - 1
+            })
+        })
+        .collect();
+    let outlined = if breps.iter().any(|b| !b.is_empty()) {
+        cadcraft_kernel::outlines(&breps).unwrap_or_else(|e| {
+            log::warn!("VIEWBASE: edges judged from the stored meshes ({e})");
+            Vec::new()
+        })
+    } else {
+        Vec::new()
+    };
+    let meshes: Vec<Option<(std::sync::Arc<Mesh3>, &[bool])>> =
+        outlined.iter().map(|o| o.as_ref().map(|o| (std::sync::Arc::new(o.mesh.clone()), o.smooth.as_slice()))).collect();
+    let remeshed: Vec<(Solid3d, Option<&[bool]>)> = refs
+        .iter()
+        .zip(&which)
+        .map(|(x, i)| match meshes.get(*i).and_then(Option::as_ref) {
+            Some((m, smooth)) => (Solid3d { mesh: m.clone(), ..(*x).clone() }, Some(*smooth)),
+            None => ((*x).clone(), None),
+        })
+        .collect();
+    let drawn: Vec<hlr::Drawn> = remeshed.iter().map(|(x, smooth)| hlr::Drawn { solid: x, smooth: *smooth }).collect();
     // Every view's lines (in model units) before the drawing changes.
     let mut lines = Vec::with_capacity(names.len());
     let mut capped: Vec<String> = Vec::new();
     for n in &names {
-        let l = hlr::lines(&refs, view_dir(n));
+        let l = hlr::lines(&drawn, view_dir(n));
         for c in &l.capped {
             log::warn!("VIEWBASE {n} view: {c}");
             capped.push(format!("{n}: {c}"));
@@ -942,7 +1250,7 @@ fn run_viewbase(s: &mut Session, p: &Value) -> Result<Value> {
             })
             .collect();
         let space = sheet.as_ref().map_or(Space::Model, |(n, _)| Space::Paper(n.clone()));
-        let report = in_space(s, &space, |s| draw_views(s, views, &Dims { on: dims, off: off(gap), k, text }))?;
+        let report = in_world(s, |s| in_space(s, &space, |s| draw_views(s, views, &Dims { on: dims, off: off(gap), k, text })))?;
         Ok(json!({ "views": report, "capped": capped, "layout": sheet.map(|(n, _)| n), "scale": k }))
     })
 }
@@ -1053,8 +1361,10 @@ impl PickThenPoint {
     }
     fn run(&mut self, s: &mut Session, at: Option<Vec2>) -> Result<Step> {
         let mut p = Self::params(self.hs.as_deref().unwrap_or_default());
+        // The point picked in the construction plane, in the world (where the JSON form takes it).
         if let Some(at) = at {
-            p["at"] = json!([at.x, at.y]);
+            let q = s.cplane().apply(at.to3(s.point_z.filter(|z| z.is_finite()).unwrap_or(0.0)));
+            p["at"] = if self.what == PickFor::CutList { json!([q.x, q.y, q.z]) } else { json!([q.x, q.y]) };
         }
         if let Some(k) = self.scale {
             p["scale"] = json!(k);
@@ -1677,6 +1987,158 @@ mod tests {
         assert!(msg(&s).contains("insertion point for the table"), "{}", msg(&s));
         s.cancel();
         assert_eq!(s.doc().unwrap().model.iter().count(), 2);
+    }
+
+    /// A box mesh `size` big, turned by `turn` in its own model coordinates (as PANEL leaves a
+    /// board drawn at an angle: the turn is in the mesh, not the transform).
+    fn turned_board(s: &mut Session, size: Vec3, turn: Mat4, name: &str) -> Handle {
+        let x = hlr::tests::cube(Vec3::ZERO, size);
+        let mut m = (*x.mesh).clone();
+        m.verts.iter_mut().for_each(|p| *p = turn.apply(*p));
+        m.edges.iter_mut().flatten().for_each(|p| *p = turn.apply(*p));
+        let x = Solid3d { mesh: Arc::new(m), part: Part { name: name.into(), material: "Birch".into() }, ..Default::default() };
+        s.add_entity(EntityKind::Solid3d(x)).unwrap()
+    }
+
+    fn sizes(r: &Value) -> Vec<(f64, f64, f64, u64)> {
+        r["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| (r["length"].as_f64().unwrap(), r["width"].as_f64().unwrap(), r["thickness"].as_f64().unwrap(), r["quantity"].as_u64().unwrap()))
+            .collect()
+    }
+
+    /// A board drawn at 30° in plan, one standing at 45° in plan, one tilted 30° about X and
+    /// then turned: each lists its board size, not its world box.
+    #[test]
+    fn cut_lists_measure_turned_boards_along_their_own_axes() {
+        let mut s = Session::new();
+        let board = Vec3::new(600.0, 400.0, 18.0);
+        let z30 = Mat4::rotation(Vec3::Z, 30f64.to_radians());
+        turned_board(&mut s, board, z30, "A");
+        turned_board(
+            &mut s,
+            board,
+            Mat4::rotation(Vec3::Z, 45f64.to_radians()).mul(&Mat4::rotation(Vec3::new(1.0, 0.0, 0.0), 90f64.to_radians())),
+            "B",
+        );
+        turned_board(&mut s, board, z30.mul(&Mat4::rotation(Vec3::new(1.0, 0.0, 0.0), 30f64.to_radians())), "C");
+        let r = s.execute("cutlist", &json!({})).unwrap();
+        assert_eq!(sizes(&r), vec![(600.0, 400.0, 18.0, 1); 3], "{r}");
+        // Turned again by ROTATE (its transform): the same.
+        let h = turned_board(&mut s, board, z30, "A");
+        s.execute("rotate", &json!({ "handles": [h.hex()], "base": [0, 0], "angle": 17 })).unwrap();
+        let r = s.execute("cutlist", &json!({})).unwrap();
+        assert_eq!(sizes(&r).first(), Some(&(600.0, 400.0, 18.0, 2)), "{r}");
+    }
+
+    /// A drawer box made into a block and inserted three times (once as a two-copy array), and
+    /// inside another block once more: every copy counts, where it is; VIEWBASE draws them, even
+    /// when the model holds only references. A reference on a layer that is off is listed, not
+    /// drawn.
+    #[test]
+    fn cut_lists_and_views_take_solids_in_block_references() {
+        let mut s = Session::new();
+        let part = |s: &mut Session, hi: Vec3, name: &str| {
+            let x = Solid3d { part: Part { name: name.into(), material: "Birch".into() }, ..hlr::tests::cube(Vec3::ZERO, hi) };
+            s.add_entity(EntityKind::Solid3d(x)).unwrap()
+        };
+        let f = part(&mut s, Vec3::new(500.0, 18.0, 200.0), "Front");
+        let sd = part(&mut s, Vec3::new(18.0, 450.0, 200.0), "Side");
+        s.execute("block", &json!({ "name": "DRAWER", "base": [0, 0], "handles": [f.hex(), sd.hex()], "keep": "delete" })).unwrap();
+        assert!(err(s.execute("cutlist", &json!({}))).contains("no 3D solids"), "the model has none yet");
+        let ins = |s: &mut Session, at: [f64; 2]| {
+            Handle::parse_hex(s.execute("insert", &json!({ "name": "DRAWER", "at": at })).unwrap()["handle"].as_str().unwrap()).unwrap()
+        };
+        let a = ins(&mut s, [0.0, 0.0]);
+        ins(&mut s, [0.0, 1000.0]);
+        s.doc_mut()
+            .unwrap()
+            .modify_entity(a, |e| {
+                if let EntityKind::Insert(i) = &mut e.kind {
+                    i.cols = 2;
+                    i.col_spacing = 1000.0;
+                }
+            })
+            .unwrap();
+        let r = s.execute("cutlist", &json!({})).unwrap();
+        assert_eq!(r["total"], 6, "{r}");
+        assert_eq!(sizes(&r), vec![(500.0, 200.0, 18.0, 3), (450.0, 200.0, 18.0, 3)], "{r}");
+        // Given by handle: the reference stands for its solids.
+        assert_eq!(s.execute("cutlist", &json!({ "handles": [a.hex()] })).unwrap()["total"], 4);
+        // Nested: a unit holding a drawer.
+        let inner = ins(&mut s, [5000.0, 0.0]);
+        s.execute("block", &json!({ "name": "UNIT", "base": [0, 0], "handles": [inner.hex()], "keep": "delete" })).unwrap();
+        let unit = Handle::parse_hex(s.execute("insert", &json!({ "name": "UNIT", "at": [0, 3000] })).unwrap()["handle"].as_str().unwrap()).unwrap();
+        assert_eq!(s.execute("cutlist", &json!({})).unwrap()["total"], 8);
+        // VIEWBASE draws the copies where they are: the top view spans the array and the unit.
+        let r = s.execute("viewbase", &json!({ "views": ["top"], "space": "model", "dims": false, "at": [0, -9000] })).unwrap();
+        let v = &r["views"][0];
+        let (w, h) = (v["max"][0].as_f64().unwrap() - v["min"][0].as_f64().unwrap(), v["max"][1].as_f64().unwrap() - v["min"][1].as_f64().unwrap());
+        assert!((w - 5500.0).abs() < 1e-6 && (h - 3450.0).abs() < 1e-6, "{r}");
+        // Off: still in the cut list, not in the views.
+        s.doc_mut().unwrap().layers.push(Layer { on: false, ..Layer::new("HIDE") });
+        s.doc_mut().unwrap().modify_entity(unit, |e| e.common.layer = "HIDE".into()).unwrap();
+        assert_eq!(s.execute("cutlist", &json!({})).unwrap()["total"], 8);
+        let r = s.execute("viewbase", &json!({ "views": ["top"], "space": "model", "dims": false, "at": [0, -9000] })).unwrap();
+        let v = &r["views"][0];
+        assert!((v["max"][1].as_f64().unwrap() - v["min"][1].as_f64().unwrap() - 1450.0).abs() < 1e-6, "{r}");
+    }
+
+    /// Hostile references: a block holding a reference to itself, and a huge array, end.
+    #[test]
+    fn hostile_block_references_end() {
+        let mut s = Session::new();
+        let a = block(&mut s, [10.0, 10.0, 10.0], "P", "");
+        s.execute("block", &json!({ "name": "LOOP", "base": [0, 0], "handles": [a.hex()], "keep": "delete" })).unwrap();
+        let h = Handle::parse_hex(s.execute("insert", &json!({ "name": "LOOP", "at": [0, 0] })).unwrap()["handle"].as_str().unwrap()).unwrap();
+        let me = s.doc().unwrap().entity(h).unwrap().as_ref().clone();
+        Arc::make_mut(s.doc_mut().unwrap().blocks.get_mut("LOOP").unwrap()).entities.push(me);
+        s.doc_mut()
+            .unwrap()
+            .modify_entity(h, |e| {
+                if let EntityKind::Insert(i) = &mut e.kind {
+                    (i.cols, i.rows) = (u32::MAX, u32::MAX);
+                }
+            })
+            .unwrap();
+        let r = s.execute("cutlist", &json!({ "group": false }));
+        assert!(!matches!(r, Err(EngineError::Internal(..))), "{r:?}");
+        let total = r.unwrap()["total"].as_u64().unwrap();
+        assert!(total > 0 && total <= MAX_PARTS as u64, "{total}");
+    }
+
+    /// A list longer than a table holds goes on in more tables side by side, every row kept and
+    /// the total in the last.
+    #[test]
+    fn long_cut_lists_go_on_in_more_tables() {
+        let mut s = Session::new();
+        let n = ROWS_PER_TABLE * 2 + 500;
+        for i in 0..n {
+            block(&mut s, [100.0 + i as f64, 50.0, 18.0], "P", "");
+        }
+        let r = s.execute("cutlist", &json!({ "group": false, "at": [0, 0, 5] })).unwrap();
+        let hs: Vec<Handle> = r["handles"].as_array().unwrap().iter().map(|h| Handle::parse_hex(h.as_str().unwrap()).unwrap()).collect();
+        assert_eq!(hs.len(), 3);
+        let d = s.doc().unwrap();
+        let tables: Vec<&cadcraft_doc::Table> = hs
+            .iter()
+            .map(|h| match &d.entity(*h).unwrap().kind {
+                EntityKind::Table(t) => t,
+                _ => panic!("not a table"),
+            })
+            .collect();
+        // Title and header in each, then the rows; the total last.
+        assert_eq!(tables.iter().map(|t| t.cells.len() - 2).sum::<usize>(), n + 1);
+        assert_eq!(tables[2].cells.last().unwrap()[0].text, "Total");
+        assert_eq!(tables[1].cells[0][0].text, "Cut list (2/3)");
+        // Side by side, at the height asked.
+        assert!(tables.windows(2).all(|w| w[1].insert.x > w[0].insert.x && w[1].insert.y == w[0].insert.y));
+        assert!(tables.iter().all(|t| t.insert.z == 5.0));
+        // One undo takes every table back.
+        s.undo().unwrap();
+        assert!(s.doc().unwrap().model.iter().all(|e| !matches!(e.kind, EntityKind::Table(_))));
     }
 
     #[test]

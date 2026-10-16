@@ -3,7 +3,7 @@
 //!
 //! The current tile is the canvas's own view (its list, picks and snaps follow
 //! `DocState::view_dir`); every other tile draws, and a click in one makes it current (and in a
-//! 3D layout picks there, [`click`]). A tile looking the way the current one does draws the
+//! 3D tile picks there, [`click`]). A tile looking the way the current one does draws the
 //! canvas's list; one looking along another direction or in another visual style gets a list of
 //! its own, built in the background like the canvas's view rebuilds (see [`super::rebuild`]) a
 //! band coarser, and shown when it lands. Making a tile current trades its list with the
@@ -82,9 +82,9 @@ pub(super) fn trade(app: &mut CadApp) {
 }
 
 /// A primary click in a tile other than the current one: it answers -VPORTS Join's prompts, else
-/// makes the tile current ([`cadcraft_engine::Session::click_tile`]). In a 3D layout (a tile
-/// looking other than in plan) the click then picks in that tile too, as in Rhino, with its own
-/// list ([`trade`]) and view; tiles all in plan keep AutoCAD's way (the click only makes the
+/// makes the tile current ([`cadcraft_engine::Session::click_tile`]). In a 3D tile (looking other
+/// than in plan) the click then picks in that tile too, as in Rhino, with its own list
+/// ([`trade`]) and view; a plan tile keeps AutoCAD's way, in any layout (the click only makes the
 /// tile current). `None`: no such click; else whether the click goes on to pick.
 /// ponytail: inactive tiles show no rollover highlight or snap marker until clicked (the click
 /// itself picks and snaps in its tile); run the hover pass with the hovered tile's list and
@@ -99,7 +99,8 @@ pub(super) fn click(app: &mut CadApp, ui: &egui::Ui, canvas: &egui::Response, ti
         app.session.echo(e.to_string());
         return Some(false);
     }
-    if answers || tiles.iter().all(|(_, t)| t.look.dir.is_plan()) {
+    // `tiles` is from before the click: the clicked tile's own direction decides.
+    if answers || tiles.get(i).is_none_or(|(_, t)| t.look.dir.is_plan()) {
         return Some(false);
     }
     trade(app);
@@ -383,7 +384,14 @@ pub(super) fn title(app: &mut CadApp, ui: &egui::Ui, r: Rect, tile: Option<(usiz
         chosen = Some(("viewports.maximize", json!({})));
     }
     if let Some((id, params)) = chosen {
-        let _ = app.run(id, params);
+        // The tile commands change the drawing (an undo step): a command still running ends
+        // first, as it does for a menu pick, or its own undo step would land after this one's.
+        // Views and visual styles change it transparently, as AutoCAD's 'VIEW does.
+        if id.starts_with("viewports.") {
+            app.run_after_cancel(id, params);
+        } else {
+            let _ = app.run(id, params);
+        }
         ui.ctx().request_repaint();
     }
     resp.hovered()

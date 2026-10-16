@@ -7,7 +7,7 @@
 //! ([`Viewport::clip`], DXF group 340).
 
 use cadcraft_doc::{Drawing, EntityKind, Handle, Space, Viewport, VportConfig, VportTile};
-use cadcraft_geom::{Bounds2, PolyVertex, Vec2};
+use cadcraft_geom::{Bounds2, PolyVertex, Vec2, Vec3, ViewDir};
 use serde_json::{Value, json};
 
 use super::super::curves::{self, handle_value};
@@ -227,8 +227,13 @@ fn tile_rect(t: &VportTile, r: Bounds2) -> Option<Bounds2> {
 
 /// The view a restored tile shows in a viewport of size `r`: its saved centre, and its height
 /// grown when the viewport is narrower than the tile was, so the whole saved view still shows.
+/// `None` (the viewport keeps its plan frame of the model) for a tile looking along another
+/// direction than plan, whose centre is in its own view plane.
+/// ponytail: layout viewports show plan only; upgrade: a view direction on `Viewport`, drawn
+/// as model tiles are.
 fn tile_view(t: &VportTile, r: Bounds2) -> Option<(Vec2, f64)> {
-    if !(t.center.is_finite() && t.height.is_finite() && t.height > 0.0) {
+    let [x, y, z] = t.view_dir;
+    if !(t.center.is_finite() && t.height.is_finite() && t.height > 0.0) || !ViewDir::new(Vec3::new(x, y, z)).is_plan() {
         return None;
     }
     let aspect = r.width() / r.height().max(1e-12);

@@ -69,7 +69,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("revolve", "Revolve", run_revolve)
             .menu(&["Draw", "Modeling", "Revolve"])
             .alias(&["rev"])
-            .params("{handles?, axis: [[x,y],[x,y]], angle? (degrees, default 360)}")
+            .params("{handles?, axis: [[x,y],[x,y]] (in each profile's plane) | [[x,y,z],[x,y,z]] (world points), angle? (degrees, default 360)}")
             .interactive(|_| Ok(Box::new(ProfileM::new(ProfileOp::Revolve)))),
         CommandSpec::new("filletedge", "Fillet Edge", run_filletedge)
             .menu(&["Modify", "Solid Editing", "Fillet Edges"])
@@ -117,6 +117,7 @@ pub(super) fn all_or_nothing<T>(s: &mut Session, f: impl FnOnce(&mut Session) ->
     r
 }
 
+/// A shape built from points given in the construction plane (a primitive), placed there.
 pub(super) fn add(s: &mut Session, b: Built) -> Result<Value> {
     let h = s.add_entity(solid(b))?;
     Ok(json!({ "handle": h.hex() }))
@@ -259,7 +260,8 @@ pub(super) fn curve_of(e: &Entity) -> Result<Option<Curve>> {
 
 /// A planar object's curve, made in its 2D coordinates, put in its plane (others as they are).
 pub(super) fn in_plane(e: &Entity, c: Curve) -> Curve {
-    let planar = matches!(e.kind, EntityKind::Arc(_) | EntityKind::Circle(_) | EntityKind::LwPolyline(_) | EntityKind::Spline(_));
+    let planar =
+        matches!(e.kind, EntityKind::Arc(_) | EntityKind::Circle(_) | EntityKind::Ellipse(_) | EntityKind::LwPolyline(_) | EntityKind::Spline(_));
     match e.plane().filter(|_| planar) {
         Some(pl) => c.map(&|p: Vec3| pl.apply(Vec3::new(p.x, p.y, 0.0)), &|v: Vec3| pl.apply_vec(v)),
         None => c,
@@ -292,8 +294,41 @@ fn flat_curve(k: &EntityKind) -> Result<Option<Curve>> {
         },
         EntityKind::Spline(sp) => spline_curve(sp)?,
         EntityKind::Helix(h) => helix_curve(h),
+        EntityKind::Ellipse(el) => ellipse_curve(el)?,
         _ => return Ok(None),
     }))
+}
+
+/// Every curve of a curve object where it is ([`curve_of`]): a region's loops one by one (its
+/// outline and its holes), any other curve whole; none for other objects.
+pub(super) fn curves_of(e: &Entity) -> Result<Vec<Curve>> {
+    match &e.kind {
+        EntityKind::Region(r) if r.loops.len() > 1 => r.loops.iter().map(|l| Ok(Curve::Segs(loop_segs(&l.vertices, 0.0)?))).collect(),
+        _ => Ok(curve_of(e)?.into_iter().collect()),
+    }
+}
+
+/// An ellipse or elliptical arc as the smooth curve through points on it (a closed one ends where
+/// it starts), within a ten-millionth of its size.
+/// ponytail: sampled at a ten-thousandth of its size and fitted with free ends: OpenCASCADE's
+/// interpolation given end tangents strays near the ends (0.3% of the size for a half ellipse
+/// through 100 points). A rational NURBS when the bindings take one.
+fn ellipse_curve(el: &cadcraft_doc::Ellipse) -> Result<Curve> {
+    let g = cadcraft_geom::Ellipse { center: el.center.xy(), major: el.major.xy(), ratio: el.ratio, start: el.start, end: el.end };
+    let r = g.major.len();
+    if !(r.is_finite() && r > EPS && g.ratio.is_finite() && g.ratio > 1e-9 && g.center.is_finite() && g.sweep().is_finite()) {
+        return Err(EngineError::Other("An ellipse has no size.".into()));
+    }
+    let mut pts = Vec::new();
+    g.tessellate(r * 1e-4, &mut pts);
+    let z = el.center.z;
+    let mut points: Vec<Vec3> = pts.into_iter().take(MAX_SPLINE_POINTS).map(|p| p.to3(z)).collect();
+    if g.is_full()
+        && let (Some(first), Some(last)) = (points.first().copied(), points.last_mut())
+    {
+        *last = first;
+    }
+    Ok(Curve::Spline { points, tangents: None })
 }
 
 /// A circle as a path: two half circles from its rightmost point, so the path has a start.
@@ -482,14 +517,23 @@ fn run_extrude(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// The axis is in each profile's plane: its points are 2D coordinates there (world XY for a
-/// profile in plan, raised to its elevation).
-/// ponytail: no 3D axis; picks in a 3D view are taken as the profile's plane coordinates. World
-/// axis points (`[x,y,z]`) when revolving standing profiles at the prompts needs them.
+/// profile in plan, raised to its elevation); or two world points (`[x,y,z]`), as the prompts
+/// give them in a construction plane other than World.
 fn run_revolve(s: &mut Session, p: &Value) -> Result<Value> {
     let hs = targets(s, p)?;
+    let raw = p.get("axis").and_then(Value::as_array).filter(|a| a.len() == 2).ok_or_else(|| bad("revolve", "`axis` ([[x,y],[x,y]]) is required"))?;
+    let angle = f64_or(p, "angle", 360.0).to_radians();
+    if raw.iter().any(|q| q.as_array().is_some_and(|c| c.len() >= 3)) {
+        let pts: Option<Vec<Vec3>> = raw.iter().map(p3_value).collect();
+        let Some([a, b]) = pts.as_deref() else { return Err(bad("revolve", "`axis` must be two points [x, y, z]")) };
+        let (a, d) = (*a, *b - *a);
+        if d.len() <= EPS * (1.0 + a.len()) {
+            return Err(bad("revolve", "the axis needs two different points"));
+        }
+        return from_profiles(s, "revolve", &hs, true, |_, prof| cadcraft_kernel::revolve(prof, a, d, angle));
+    }
     let axis = points_param(p, "axis").filter(|a| a.len() == 2).ok_or_else(|| bad("revolve", "`axis` ([[x,y],[x,y]]) is required"))?;
     let (Some(a), Some(b)) = (axis.first().copied(), axis.get(1).copied()) else { return Err(bad("revolve", "`axis` needs two points")) };
-    let angle = f64_or(p, "angle", 360.0).to_radians();
     from_profiles(s, "revolve", &hs, true, |e, prof| {
         let pl = e.plane().unwrap_or(Mat4::IDENTITY);
         cadcraft_kernel::revolve(prof, pl.apply(a.to3(0.0)), pl.apply_vec((b - a).to3(0.0)), angle)
@@ -602,7 +646,7 @@ fn finish(s: &mut Session, keep: Handle, r: Solid3d, all: &[Handle]) -> Result<O
 fn export_set(s: &Session, p: &Value) -> Result<Vec<Solid3d>> {
     // An empty list (as MCP clients send optional arrays) counts as none given.
     let given = ["handle", "handles"].iter().any(|k| p.get(k).is_some_and(|v| !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty())));
-    let mut hs = targets(s, p)?;
+    let mut hs = if given { targets(s, p)? } else { s.selection() };
     if !given && solids(s, &hs)?.is_empty() {
         hs = s.doc()?.model.iter().map(|e| e.handle).collect();
     }
@@ -628,9 +672,11 @@ fn run_stlout(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "exported": xs.len(), "path": path }))
 }
 
+/// The file's shape where it is in the world (not placed in the construction plane).
 fn run_stepin(s: &mut Session, p: &Value) -> Result<Value> {
     let path = path_req("stepin", p)?;
-    add(s, cadcraft_kernel::import_step(Path::new(path)).map_err(kernel)?)
+    let h = s.add_entity_world(solid(cadcraft_kernel::import_step(Path::new(path)).map_err(kernel)?))?;
+    Ok(json!({ "handle": h.hex() }))
 }
 
 /// The prompts of a primitive, then its JSON form.
@@ -806,10 +852,10 @@ impl Interactive for ProfileM {
                 self.axis.push(p);
                 Ok(Step::Continue)
             }
-            (ProfileOp::Revolve, Input::Enter) if self.axis.len() == 2 => self.run(s, json!({ "axis": axis_json(&self.axis) })),
+            (ProfileOp::Revolve, Input::Enter) if self.axis.len() == 2 => self.run(s, json!({ "axis": axis_json(s, &self.axis) })),
             (ProfileOp::Revolve, Input::Text(t)) if self.axis.len() == 2 => {
                 let a = number(&t).ok_or_else(|| EngineError::Other("Requires an angle.".into()))?;
-                self.run(s, json!({ "axis": axis_json(&self.axis), "angle": a }))
+                self.run(s, json!({ "axis": axis_json(s, &self.axis), "angle": a }))
             }
             (ProfileOp::Extrude, Input::Text(t)) => self.run(s, json!({ "height": distance(&t)? })),
             (ProfileOp::Fillet, Input::Text(t)) => self.run(s, json!({ "radius": distance(&t)? })),
@@ -820,8 +866,22 @@ impl Interactive for ProfileM {
     }
 }
 
-fn axis_json(a: &[Vec2]) -> Value {
-    Value::Array(a.iter().map(|p| json!([p.x, p.y])).collect())
+/// The axis picked: in World, 2D points in each profile's plane (as before construction planes);
+/// in another construction plane, its points in the world.
+fn axis_json(s: &Session, a: &[Vec2]) -> Value {
+    let c = s.cplane();
+    Value::Array(
+        a.iter()
+            .map(|p| {
+                if c == Mat4::IDENTITY {
+                    json!([p.x, p.y])
+                } else {
+                    let q = c.apply(p.to3(0.0));
+                    json!([q.x, q.y, q.z])
+                }
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -1113,6 +1173,36 @@ mod plain_tests {
         assert_eq!(*s.doc().unwrap(), before);
         all_or_nothing(&mut s, |s| Ok(circle(s, 0.0))).unwrap();
         assert_ne!(*s.doc().unwrap(), before);
+    }
+
+    /// An ellipse and an elliptical arc are smooth curves through points on them, in their plane;
+    /// a closed one ends where it starts. A region with a hole is one
+    /// curve a loop.
+    #[test]
+    fn ellipses_and_regions_with_holes_are_curves() {
+        let el = cadcraft_doc::Ellipse { center: Vec3::new(1.0, 2.0, 3.0), major: Vec3::new(400.0, 0.0, 0.0), ratio: 0.5, start: 0.0, end: TAU };
+        let Some(Curve::Spline { points, tangents: None }) = curve_of(&entity(EntityKind::Ellipse(el.clone()), Vec3::Z)).unwrap() else {
+            panic!("not a spline")
+        };
+        assert!(points.len() > 100 && points.len() < MAX_SPLINE_POINTS && points.first() == points.last(), "{points:?}");
+        for p in &points {
+            let (x, y) = ((p.x - 1.0) / 400.0, (p.y - 2.0) / 200.0);
+            assert!((x * x + y * y - 1.0).abs() < 1e-9 && p.z == 3.0, "{p:?}");
+        }
+        // Consecutive points apart, in order round it.
+        assert!(points.windows(2).all(|w| (w[1] - w[0]).len() > 1.0), "{points:?}");
+        // A quarter arc, upside down (extrusion -Z): mirrored in X.
+        let arc = cadcraft_doc::Ellipse { start: 0.0, end: PI / 2.0, ..el };
+        let Some(Curve::Spline { points, .. }) = curve_of(&entity(EntityKind::Ellipse(arc), Vec3::new(0.0, 0.0, -1.0))).unwrap() else { panic!() };
+        assert!(
+            (points[0] - Vec3::new(-401.0, 2.0, -3.0)).len() < 1e-9 && (*points.last().unwrap() - Vec3::new(-1.0, 202.0, -3.0)).len() < 1e-9,
+            "{points:?}"
+        );
+        let mut r = Region::from_loop(vec![pv(0.0, 0.0, 0.0), pv(10.0, 0.0, 0.0), pv(10.0, 10.0, 0.0), pv(0.0, 10.0, 0.0)]);
+        r.loops.extend(Region::from_loop(vec![pv(2.0, 2.0, 0.0), pv(4.0, 2.0, 0.0), pv(4.0, 4.0, 0.0)]).loops);
+        assert_eq!(curves_of(&entity(EntityKind::Region(r), Vec3::Z)).unwrap().len(), 2);
+        let flat = cadcraft_doc::Ellipse { major: Vec3::ZERO, ..el };
+        assert!(curve_of(&entity(EntityKind::Ellipse(flat), Vec3::Z)).is_err());
     }
 
     #[test]

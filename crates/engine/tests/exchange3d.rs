@@ -199,3 +199,76 @@ fn touching_cabinets_and_a_standing_circle_round_trip() {
     assert!(closed && pts.iter().all(|p| p.y.abs() < 1e-6), "in the XZ plane: {pts:?}");
     assert!(pts.iter().all(|p| ((*p - Vec3::new(300.0, 0.0, 360.0)).len() - 100.0).abs() < 1e-6), "{pts:?}");
 }
+
+/// In a Front construction plane, STEPIN and IGESIN put what they read where the file has it in
+/// the world (not turned into the plane again).
+#[test]
+fn imports_land_where_the_file_has_them_in_any_construction_plane() {
+    let mut s = session();
+    s.execute("box", &json!({ "corner1": [10, 20, 30], "corner2": [110, 80], "height": 40 })).unwrap();
+    s.execute("line", &json!({ "points": [[0, -50], [600, -50]] })).unwrap();
+    let (igs, stp) = (temp("front.igs"), temp("front.stp"));
+    s.execute("igesout", &json!({ "path": igs.to_str().unwrap() })).unwrap();
+    s.execute("stepout", &json!({ "path": stp.to_str().unwrap() })).unwrap();
+    let mut t = session();
+    t.execute("cplane", &json!({ "preset": "front" })).unwrap();
+    t.execute("igesin", &json!({ "path": igs.to_str().unwrap() })).unwrap();
+    t.execute("stepin", &json!({ "path": stp.to_str().unwrap() })).unwrap();
+    let _ = (std::fs::remove_file(&igs), std::fs::remove_file(&stp));
+    let xs = solids(&t);
+    assert_eq!(xs.len(), 2);
+    for x in &xs {
+        let (a, b) = bounds(x);
+        assert!(near(a, Vec3::new(10.0, 20.0, 30.0)) && near(b, Vec3::new(110.0, 80.0, 70.0)), "{a:?} {b:?}");
+    }
+    let ps = polylines(&t);
+    assert!(ps.iter().all(|(p, _)| p.iter().all(|q| (q.y + 50.0).abs() < 1e-6 && q.z.abs() < 1e-6)), "{ps:?}");
+}
+
+/// Ellipses and regions with holes go out (as curves: an ellipse whole, a region loop by loop),
+/// and IGESIN's solids are the closed ones, its surfaces the open ones.
+#[test]
+fn ellipses_regions_with_holes_and_surfaces_round_trip() {
+    let mut s = session();
+    s.execute("ellipse", &json!({ "center": [0, 0], "major": [400, 0], "ratio": 0.5 })).unwrap();
+    let pv = |x: f64, y: f64| cadcraft_engine::geom::PolyVertex::new(cadcraft_engine::geom::Vec2::new(x, y));
+    let mut region = cadcraft_engine::doc::Region::from_loop(vec![pv(1000.0, 0.0), pv(1200.0, 0.0), pv(1200.0, 200.0), pv(1000.0, 200.0)]);
+    let hole = cadcraft_engine::doc::Region::from_loop(vec![pv(1050.0, 50.0), pv(1150.0, 50.0), pv(1150.0, 150.0), pv(1050.0, 150.0)]);
+    region.loops.extend(hole.loops.into_iter().map(|mut l| {
+        l.outer = false;
+        l
+    }));
+    s.add_entity(EntityKind::Region(region)).unwrap();
+    // An open surface beside a box.
+    s.execute("box", &json!({ "corner1": [0, 500, 0], "corner2": [100, 600], "height": 50 })).unwrap();
+    s.execute("planesurf", &json!({ "corner1": [300, 500, 0], "corner2": [400, 600] })).unwrap();
+    let path = temp("ellipse.igs");
+    let r = s.execute("igesout", &json!({ "path": path.to_str().unwrap() })).unwrap();
+    assert_eq!((r["curves"].as_u64(), r["skipped"].as_u64()), (Some(3), Some(0)), "{r}");
+    let mut t = session();
+    let r = t.execute("igesin", &json!({ "path": path.to_str().unwrap() })).unwrap();
+    std::fs::remove_file(&path).ok();
+    assert_eq!((r["solids"].as_u64(), r["surfaces"].as_u64(), r["curves"].as_u64()), (Some(1), Some(1), Some(3)), "{r}");
+    assert!(r["message"].as_str().unwrap().contains("1 solid, 1 surface and 3 curves"), "{r}");
+    // The ellipse: closed, on its outline.
+    let ps = polylines(&t);
+    let oval = ps.iter().find(|(p, _)| p.iter().all(|q| q.x.abs() <= 400.0 + 1e-6)).expect("the ellipse");
+    assert!(oval.1 && oval.0.iter().all(|q| ((q.x / 400.0).powi(2) + (q.y / 200.0).powi(2) - 1.0).abs() < 1e-4), "{oval:?}");
+}
+
+/// `handles: []` (as MCP clients send optional arrays) is none given: the selection is exported,
+/// as STEPOUT does.
+#[test]
+fn an_empty_handle_list_exports_the_selection() {
+    let mut s = session();
+    let a = s.execute("box", &json!({ "corner1": [0, 0, 0], "corner2": [10, 10], "height": 10 })).unwrap()["handle"].clone();
+    s.execute("box", &json!({ "corner1": [50, 0, 0], "corner2": [60, 10], "height": 10 })).unwrap();
+    s.execute("line", &json!({ "points": [[0, -50], [600, -50]] })).unwrap();
+    s.set_selection(vec![cadcraft_engine::doc::Handle::parse_hex(a.as_str().unwrap()).unwrap()]);
+    let (igs, stp) = (temp("sel.igs"), temp("sel.stp"));
+    let r = s.execute("igesout", &json!({ "path": igs.to_str().unwrap(), "handles": [] })).unwrap();
+    assert_eq!((r["solids"].as_u64(), r["curves"].as_u64()), (Some(1), Some(0)), "{r}");
+    let r = s.execute("stepout", &json!({ "path": stp.to_str().unwrap(), "handles": [] })).unwrap();
+    assert_eq!(r["exported"], 1, "{r}");
+    let _ = (std::fs::remove_file(&igs), std::fs::remove_file(&stp));
+}

@@ -158,6 +158,21 @@ impl Mat4 {
     pub fn from_cols(x: Vec3, y: Vec3, z: Vec3, o: Vec3) -> Mat4 {
         Mat4 { m: [[x.x, y.x, z.x, o.x], [x.y, y.y, z.y, o.y], [x.z, y.z, z.z, o.z], [0.0, 0.0, 0.0, 1.0]] }
     }
+    /// A construction plane (CPLANE, UCS): the orthonormal frame at `o` whose x axis runs along
+    /// `x` and whose y axis leans toward `y` (made perpendicular to x), z = x × y; local → world.
+    /// `None` when a vector is zero or not finite or `x` and `y` are parallel.
+    pub fn frame(o: Vec3, x: Vec3, y: Vec3) -> Option<Mat4> {
+        if !(o.is_finite() && x.is_finite() && y.is_finite()) {
+            return None;
+        }
+        let (xn, yn) = (x.normalized(), y.normalized());
+        let z = xn.cross(yn);
+        if z.len() < 1e-9 {
+            return None;
+        }
+        let z = z.normalized();
+        Some(Mat4::from_cols(xn, z.cross(xn).normalized(), z, o))
+    }
     pub fn translate(v: Vec3) -> Mat4 {
         Mat4::from_cols(Vec3::X, Vec3::Y, Vec3::Z, v)
     }

@@ -386,3 +386,18 @@ fn ellipse_transformed_keeps_its_points() {
     assert!(full.transformed(&Mat3::rotate(1.0)).unwrap().is_full());
     assert!(full.transformed(&Mat3::scale(1.0, 0.0)).is_none());
 }
+
+#[test]
+fn mat4_frame_is_an_orthonormal_construction_plane() {
+    // Front: x = world X, y toward world Z, so the normal is -Y.
+    let f = Mat4::frame(Vec3::new(1.0, 2.0, 3.0), Vec3::new(2.0, 0.0, 0.0), Vec3::new(0.3, 0.0, 5.0)).unwrap();
+    assert!((f.col(0) - Vec3::X).len() < 1e-12 && (f.col(1) - Vec3::Z).len() < 1e-12 && (f.col(2) + Vec3::Y).len() < 1e-12);
+    assert_eq!(f.col(3), Vec3::new(1.0, 2.0, 3.0));
+    assert_eq!(f.similarity_scale(), Some(1.0));
+    assert_eq!(Mat4::frame(Vec3::ZERO, Vec3::X, Vec3::Y), Some(Mat4::IDENTITY));
+    // Parallel, zero or non-finite axes make no plane.
+    assert!(Mat4::frame(Vec3::ZERO, Vec3::X, Vec3::X * -3.0).is_none());
+    assert!(Mat4::frame(Vec3::ZERO, Vec3::ZERO, Vec3::Y).is_none());
+    assert!(Mat4::frame(Vec3::new(f64::NAN, 0.0, 0.0), Vec3::X, Vec3::Y).is_none());
+    assert!(Mat4::frame(Vec3::ZERO, Vec3::new(f64::INFINITY, 0.0, 0.0), Vec3::Y).is_none());
+}

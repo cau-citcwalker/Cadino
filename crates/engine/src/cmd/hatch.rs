@@ -84,8 +84,14 @@ fn handles_of(owners: &[Handle], idx: &[usize]) -> Vec<Handle> {
     hs
 }
 
-/// Closed loops of entities that are closed curves (for islands and "select objects").
+/// Closed loops of entities that are closed curves (for islands and "select objects"). None for
+/// one in a tilted plane: its own coordinates are not plan's.
+/// ponytail: hatches and regions are made on the XY plane; upgrade: give them the source's
+/// extrusion and elevation when every loop shares its plane (a Hatch is OCS already).
 fn closed_loop(d: &Drawing, e: &Entity) -> Option<Vec<PolyVertex>> {
+    if e.plan_xf().is_some() {
+        return None;
+    }
     match &e.kind {
         EntityKind::Circle(c) => {
             let ctr = c.center.xy();
@@ -252,6 +258,10 @@ pub(crate) fn loops_from_handles(s: &Session, hs: &[Handle]) -> Result<Vec<Hatch
         }
     }
     if loops.is_empty() {
+        // Why, when it is a tilted plane.
+        if let Some(e) = hs.iter().filter_map(|h| d.entity(*h)).find(|e| e.plan_xf().is_some()) {
+            super::helpers::level_only(e)?;
+        }
         return Err(EngineError::Other("No closed boundary objects selected.".into()));
     }
     Ok(loops)
@@ -504,7 +514,7 @@ fn run_boundary(s: &mut Session, p: &Value) -> Result<Value> {
 fn run_region(s: &mut Session, p: &Value) -> Result<Value> {
     let hs = targets(s, p)?;
     let mut n = 0;
-    for h in hs {
+    for &h in &hs {
         let vs = {
             let d = s.doc()?;
             d.entity(h).and_then(|e| closed_loop(d, e).map(|v| (v, e.common.clone())))
@@ -517,6 +527,11 @@ fn run_region(s: &mut Session, p: &Value) -> Result<Value> {
             })?;
             n += 1;
         }
+    }
+    if n == 0
+        && let Some(e) = hs.iter().filter_map(|h| s.doc().ok()?.entity(*h).cloned()).find(|e| e.plan_xf().is_some())
+    {
+        super::helpers::level_only(&e)?;
     }
     Ok(json!({ "message": format!("{n} Region(s) created.") }))
 }

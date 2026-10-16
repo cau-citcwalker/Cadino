@@ -522,7 +522,10 @@ fn run_circle_variant(s: &mut Session, p: &Value) -> Result<Value> {
 // ---------------- tangent circles ----------------
 
 fn tan_obj(s: &Session, h: Handle, pick: Vec2) -> Result<TanObj> {
-    let e = curves::entity(s, h)?;
+    // As the construction plane sees it: picks and the new circle are in its coordinates (an
+    // object tilted to the plane has other coordinates of its own).
+    let e = s.local_entity(h)?;
+    super::helpers::level_only(&e)?;
     TanObj::from_kind(&e.kind, pick).ok_or_else(|| other("Select a line, circle, arc or polyline segment."))
 }
 
@@ -1313,8 +1316,10 @@ fn add_xline(s: &mut Session, base: Vec2, dir: Vec2) -> Result<Handle> {
 
 /// A line-like object for XLINE Offset/Reference: (base, direction). For a polyline, the
 /// segment nearest `pick` (the first without one), which must be straight.
+/// As the construction plane sees it: picks and the new xline are in its coordinates.
 fn linear_of(s: &Session, h: Handle, pick: Option<Vec2>) -> Result<(Vec2, Vec2)> {
-    let e = curves::entity(s, h)?;
+    let e = s.local_entity(h)?;
+    super::helpers::level_only(&e)?;
     match &e.kind {
         EntityKind::Line(l) => Ok((l.a.xy(), (l.b.xy() - l.a.xy()).normalized())),
         EntityKind::XLine(r) | EntityKind::Ray(r) => Ok((r.base.xy(), r.dir.xy().normalized())),
@@ -1856,7 +1861,7 @@ impl Poly3dM {
     fn sync(&mut self, s: &mut Session, closed: bool) -> Result<()> {
         let k = EntityKind::Polyline3d(Polyline3d { points: self.pts.iter().map(|p| v3(*p)).collect(), closed });
         match (self.handle, self.pts.len() >= 2) {
-            (Some(h), true) => s.doc_mut()?.modify_entity(h, |e| e.kind = k)?,
+            (Some(h), true) => s.set_local_kind(h, k)?,
             (None, true) => self.handle = Some(s.add_entity(k)?),
             (Some(h), false) => {
                 s.doc_mut()?.remove_entity(h);

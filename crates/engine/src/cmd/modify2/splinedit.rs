@@ -22,7 +22,13 @@ pub(super) fn run_splinedit(s: &mut Session, p: &Value) -> Result<Value> {
         let removed = join(s, h, sp, &others)?;
         return Ok(json!({ "handle": h.hex(), "joined": removed.len() }));
     }
-    let k = edit(sp, &opt, p)?;
+    // Points and directions are given in plan: a spline in a tilted plane takes none.
+    if matches!(opt.as_str(), "move" | "fitmove" | "fitadd" | "kink" | "tangents" | "vertexmove" | "vertexadd") {
+        level_only(&e)?;
+    }
+    let mut k = edit(sp, &opt, p)?;
+    // Refits (and the polyline) start at elevation 0: the spline stays where it is.
+    k.set_elevation(e.kind.elevation());
     set_kind(s, h, k)?;
     Ok(json!({ "handle": h.hex() }))
 }

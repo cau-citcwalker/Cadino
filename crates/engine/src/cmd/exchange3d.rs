@@ -4,7 +4,7 @@
 //! Curves go out where they are: a planar object (arc, circle, polyline, spline) through its own
 //! plane ([`cadcraft_doc::Entity::plane`]: extrusion direction and elevation).
 //! ponytail: objects inside block references are not exported; IGES is written in millimetres
-//! (OpenCASCADE's default).
+//! (OpenCASCADE's default); ellipses go out as splines through points on them.
 
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -15,7 +15,7 @@ use cadcraft_geom::Vec3;
 use cadcraft_kernel::Curve;
 use serde_json::{Value, json};
 
-use super::solids::{all_or_nothing, curve_of, kernel, placed, solid};
+use super::solids::{all_or_nothing, curves_of, kernel, placed, solid};
 use super::*;
 use crate::{Accept, EngineError, Input, Interactive, Prompt, Result, Session, Step};
 
@@ -24,13 +24,19 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("igesout", "Export IGES", run_igesout)
             .menu(&["File", "Export", "IGES"])
             .alias(&["igesexport"])
-            .params("{path, handles?}: 3D solids, surfaces and curves (lines, arcs, circles, polylines, splines, helices); those given or selected, else all of model space")
+            .params(
+                "{path, handles?}: 3D solids, surfaces and curves (lines, arcs, circles, ellipses, polylines, splines, helices, regions' loops); \
+                 those given, else the selected ones (also for an empty list), else all of model space",
+            )
             .noundo()
             .interactive(|_| Ok(Box::new(AskPath { id: "igesout", name: "IGESOUT", msg: "Enter name of IGES file to write" }))),
         CommandSpec::new("igesin", "Import IGES", run_igesin)
             .menu(&["File", "Import", "IGES"])
             .alias(&["igesimport"])
-            .params("{path}: surfaces and solids become 3D solids, free curves 3D polylines, on the current layer")
+            .params(
+                "{path}: surfaces and solids become 3D solids, free curves 3D polylines, on the current layer where they are in the world \
+                 → {handles, solids (closed), surfaces (open), curves}",
+            )
             .interactive(|_| Ok(Box::new(AskPath { id: "igesin", name: "IGESIN", msg: "Enter name of IGES file to import" }))),
         CommandSpec::new("rhinoout", "Export for Rhino", run_rhinoout)
             .menu(&["File", "Export", "Rhino (IGES + STEP)"])
@@ -44,8 +50,9 @@ fn path_req<'a>(cmd: &str, p: &'a Value) -> Result<&'a str> {
     str_param(p, "path").map(str::trim).filter(|x| !x.is_empty()).ok_or_else(|| bad(cmd, "`path` is required"))
 }
 
-/// What to export: the objects among `handle`/`handles`, else the selected ones, else all of model
-/// space; as solids, curves, and how many of the curves the kernel can't make (degenerate).
+/// What to export: the objects among `handle`/`handles`, else the selected ones (as STEPOUT
+/// chooses), else all of model space; as solids, curves, and how many curve objects can't be made
+/// into curves (degenerate).
 fn export_set(s: &Session, p: &Value) -> Result<(Vec<Solid3d>, Vec<Curve>, usize)> {
     // An empty list (as MCP clients send optional arrays) counts as none given.
     let given = ["handle", "handles"].iter().any(|k| p.get(k).is_some_and(|v| !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty())));
@@ -54,18 +61,31 @@ fn export_set(s: &Session, p: &Value) -> Result<(Vec<Solid3d>, Vec<Curve>, usize
         let (mut xs, mut cs, mut bad) = (Vec::new(), Vec::new(), 0usize);
         let mut seen = HashSet::with_capacity(hs.len());
         for e in hs.iter().filter(|h| seen.insert(**h)).filter_map(|h| d.entity(*h)) {
+            let curve = matches!(
+                e.kind,
+                EntityKind::Line(_)
+                    | EntityKind::Arc(_)
+                    | EntityKind::Circle(_)
+                    | EntityKind::Ellipse(_)
+                    | EntityKind::LwPolyline(_)
+                    | EntityKind::Polyline3d(_)
+                    | EntityKind::Spline(_)
+                    | EntityKind::Helix(_)
+                    | EntityKind::Region(_)
+            );
             match &e.kind {
                 EntityKind::Solid3d(x) => xs.push(x.clone()),
-                _ => match curve_of(e) {
-                    Ok(Some(c)) => cs.push(c),
-                    Ok(None) => {}
-                    Err(_) => bad += 1,
+                // A curve object that makes no curve is left out, and counted.
+                _ => match curves_of(e) {
+                    Ok(c) if !c.is_empty() => cs.extend(c),
+                    Ok(_) if !curve => {}
+                    _ => bad += 1,
                 },
             }
         }
         (xs, cs, bad)
     };
-    let mut got = pick(&targets(s, p)?);
+    let mut got = pick(&if given { targets(s, p)? } else { s.selection() });
     if !given && got.0.is_empty() && got.1.is_empty() {
         got = pick(&d.model.iter().map(|e| e.handle).collect::<Vec<_>>());
     }
@@ -86,7 +106,7 @@ fn write_iges(xs: &[Solid3d], cs: &[Curve], bad: usize, path: &Path) -> Result<(
 }
 
 fn left_out(n: usize) -> String {
-    if n == 0 { String::new() } else { format!(" ({} too small to export left out)", plural(n, "curve")) }
+    if n == 0 { String::new() } else { format!(" ({} left out: no length, too small, or pieces that don't meet)", plural(n, "curve")) }
 }
 
 fn run_igesout(s: &mut Session, p: &Value) -> Result<Value> {
@@ -150,15 +170,11 @@ fn run_igesin(s: &mut Session, p: &Value) -> Result<Value> {
     let mut kinds: Vec<EntityKind> = got.shapes.into_iter().map(solid).collect();
     kinds.extend(got.curves.into_iter().filter_map(polyline));
     let curves = kinds.len().saturating_sub(shapes);
-    // Everything is read before the drawing changes.
-    let handles = all_or_nothing(s, |s| kinds.into_iter().map(|k| s.add_entity(k).map(|h| h.hex())).collect::<Result<Vec<_>>>())?;
-    let message = format!(
-        "Imported {}, {} and {} from {path}.",
-        plural(shapes.saturating_sub(surfaces), "solid"),
-        plural(surfaces, "surface"),
-        plural(curves, "curve")
-    );
-    Ok(json!({ "handles": handles, "solids": shapes, "surfaces": surfaces, "curves": curves, "message": message }))
+    // Everything is read before the drawing changes; it goes where the file has it in the world.
+    let handles = all_or_nothing(s, |s| kinds.into_iter().map(|k| s.add_entity_world(k).map(|h| h.hex())).collect::<Result<Vec<_>>>())?;
+    let solids = shapes.saturating_sub(surfaces);
+    let message = format!("Imported {}, {} and {} from {path}.", plural(solids, "solid"), plural(surfaces, "surface"), plural(curves, "curve"));
+    Ok(json!({ "handles": handles, "solids": solids, "surfaces": surfaces, "curves": curves, "message": message }))
 }
 
 /// The interactive form: the file name is typed (no dialog), then the JSON form runs.

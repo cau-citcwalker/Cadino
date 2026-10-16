@@ -94,16 +94,50 @@ pub fn entity_bounds(d: &Drawing, e: &Entity, depth: usize) -> Bounds2 {
 /// depth). The depth is part of the key because [`MAX_BLOCK_DEPTH`] cuts a deep visit short: its
 /// bounds must not stand in for a shallower reference to the same block (#706).
 fn bounds_in<'a>(d: &'a Drawing, e: &Entity, depth: usize, blocks: &mut HashMap<(&'a str, usize), Bounds2>) -> Bounds2 {
-    let b = bounds_own(d, e, depth, blocks);
-    // An object in a tilted or standing plane: its box in the plane, seen from above.
+    let Some(a) = e.plan_xf() else { return bounds_own(d, e, depth, blocks) };
+    // An object in a tilted or standing plane, seen from above: the curves it draws there (a
+    // circle is an ellipse, whose box is tighter than its square's), so a window round what is
+    // drawn selects it...
+    if matches!(
+        e.kind,
+        EntityKind::Circle(_)
+            | EntityKind::Arc(_)
+            | EntityKind::Ellipse(_)
+            | EntityKind::LwPolyline(_)
+            | EntityKind::Spline(_)
+            | EntityKind::Solid(_)
+            | EntityKind::Trace(_)
+            | EntityKind::Hatch(_)
+    ) {
+        return prims_bounds(e.prims());
+    }
+    // ...else (text, block references) its box in the plane.
     // ponytail: a tilted block reference's box is its contents' 2D box at block z = 0, so
     // contents raised or in 3D inside it (seen along the tilted normal) can reach past it and
     // ZOOM Extents may clip them; upgrade: cache a z range with each block's bounds and take
     // the box's corners at both heights through the plane.
-    match e.plan_xf() {
-        Some(a) if !b.is_empty() => Bounds2::from_points(b.corners().map(|c| a.apply(c))),
-        _ => b,
+    let b = bounds_own(d, e, depth, blocks);
+    if b.is_empty() { b } else { Bounds2::from_points(b.corners().map(|c| a.apply(c))) }
+}
+
+/// The box of what `prims` draw (infinite lines add nothing).
+fn prims_bounds(prims: impl IntoIterator<Item = Prim>) -> Bounds2 {
+    let mut b = Bounds2::EMPTY;
+    for p in prims {
+        let pb = match p {
+            Prim::Seg(s) => s.bounds(),
+            Prim::Circle(c) => c.bounds(),
+            Prim::Ellipse(e) => e.bounds(),
+            Prim::Spline(s) => s.bounds(),
+            Prim::Point(p) => Bounds2::from_points([p]),
+            // Infinite lines don't contribute to extents, rays included (as in ZOOM Extents;
+            // real drawings carry stray rays millions of units away).
+            Prim::Infinite { .. } => Bounds2::EMPTY,
+            Prim::Fill(pts) => Bounds2::from_points(pts),
+        };
+        b = b.union(&pb);
     }
+    b
 }
 
 /// [`bounds_in`] in the object's own plane (its 2D coordinates).
@@ -215,24 +249,7 @@ fn bounds_own<'a>(d: &'a Drawing, e: &Entity, depth: usize, blocks: &mut HashMap
             Bounds2::from_points([o, o + u, o + v, o + u + v])
         }
         EntityKind::LwPolyline(p) => lwpolyline_bounds(p),
-        kind => {
-            let mut b = Bounds2::EMPTY;
-            for p in kind.prims() {
-                let pb = match p {
-                    Prim::Seg(s) => s.bounds(),
-                    Prim::Circle(c) => c.bounds(),
-                    Prim::Ellipse(e) => e.bounds(),
-                    Prim::Spline(s) => s.bounds(),
-                    Prim::Point(p) => Bounds2::from_points([p]),
-                    // Infinite lines don't contribute to extents, rays included (as in ZOOM Extents;
-                    // real drawings carry stray rays millions of units away).
-                    Prim::Infinite { .. } => Bounds2::EMPTY,
-                    Prim::Fill(pts) => Bounds2::from_points(pts),
-                };
-                b = b.union(&pb);
-            }
-            b
-        }
+        kind => prims_bounds(kind.prims()),
     }
 }
 

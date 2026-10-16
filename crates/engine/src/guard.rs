@@ -5,10 +5,15 @@
 //! taking down the app: from `begin` or `input` at once (the session restores the drawing), from
 //! `prompt` or `preview` (which can't end the command) at the next input, with a fallback prompt
 //! and no preview until then.
+//!
+//! It also runs a plan-only command in a level construction plane in World (see
+//! [`crate::cplane`]): every step with [`Session::cplane`] World, the points given in the plane
+//! taken into the world, the prompt's rubber-band base and the previews brought back.
 
 use std::any::Any;
 use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::Ordering::Relaxed;
 
 use cadcraft_doc::EntityKind;
 use cadcraft_geom::Vec2;
@@ -20,6 +25,19 @@ pub(crate) struct Guarded {
     inner: Box<dyn Interactive>,
     /// What panicked in `prompt` or `preview`; the command ends at the next input.
     broken: Cell<Option<&'static str>>,
+    /// A plan-only command started in a level construction plane: it works in World.
+    world: bool,
+}
+
+/// While `s` runs a step of a command that works in World: [`Session::cplane`] is World.
+fn in_world<T>(s: &Session, on: bool, f: impl FnOnce() -> T) -> T {
+    if !on {
+        return f();
+    }
+    let was = s.plan_world.swap(true, Relaxed);
+    let r = f();
+    s.plan_world.store(was, Relaxed);
+    r
 }
 
 pub(crate) fn message(p: &(dyn Any + Send)) -> String {
@@ -29,13 +47,15 @@ pub(crate) fn message(p: &(dyn Any + Send)) -> String {
 impl Guarded {
     /// Create the machine of command `id` and wrap it.
     pub(crate) fn create(id: &str, factory: Factory, s: &Session) -> Result<Box<dyn Interactive>> {
-        let inner = catch_unwind(AssertUnwindSafe(|| factory(s))).map_err(|p| EngineError::Internal(id.into(), message(&*p)))??;
-        Ok(Box::new(Guarded { inner, broken: Cell::new(None) }))
+        let world = crate::cplane::in_world(s, id);
+        let inner =
+            in_world(s, world, || catch_unwind(AssertUnwindSafe(|| factory(s)))).map_err(|p| EngineError::Internal(id.into(), message(&*p)))??;
+        Ok(Box::new(Guarded { inner, broken: Cell::new(None), world }))
     }
 
     /// Wrap a machine created by other means (the hot-grip edit).
     pub(crate) fn wrap(inner: Box<dyn Interactive>) -> Box<dyn Interactive> {
-        Box::new(Guarded { inner, broken: Cell::new(None) })
+        Box::new(Guarded { inner, broken: Cell::new(None), world: false })
     }
 
     fn internal(&self, p: &(dyn Any + Send)) -> EngineError {
@@ -49,9 +69,15 @@ impl Interactive for Guarded {
     }
     fn prompt(&self, s: &Session) -> Prompt {
         if self.broken.get().is_none() {
-            match catch_unwind(AssertUnwindSafe(|| self.inner.prompt(s))) {
+            let c = s.cplane();
+            match in_world(s, self.world, || catch_unwind(AssertUnwindSafe(|| self.inner.prompt(s)))) {
                 // Pending point modifiers (FROM, M2P…) ask for their points in its place.
-                Ok(p) => return s.overlay_prompt(p),
+                Ok(mut p) => {
+                    if self.world {
+                        p.base = p.base.map(|b| crate::cplane::plan_to_plane(&c, b));
+                    }
+                    return s.overlay_prompt(p);
+                }
                 Err(_) => self.broken.set(Some("panic in prompt")),
             }
         }
@@ -61,28 +87,59 @@ impl Interactive for Guarded {
         if let Some(m) = self.broken.get() {
             return Err(EngineError::Internal(self.inner.name().to_ascii_lowercase(), m.into()));
         }
-        catch_unwind(AssertUnwindSafe(|| self.inner.input(s, i))).unwrap_or_else(|p| Err(self.internal(&*p)))
+        if !self.world {
+            return catch_unwind(AssertUnwindSafe(|| self.inner.input(s, i))).unwrap_or_else(|p| Err(self.internal(&*p)));
+        }
+        // Points given in the plane, taken into the world (with their heights) for this step.
+        let (i, z) = crate::cplane::input_to_world(&s.cplane(), i, s.point_z);
+        let given = std::mem::replace(&mut s.point_z, z);
+        let was = s.plan_world.swap(true, Relaxed);
+        let r = catch_unwind(AssertUnwindSafe(|| self.inner.input(s, i)));
+        s.plan_world.store(was, Relaxed);
+        s.point_z = given;
+        r.unwrap_or_else(|p| Err(self.internal(&*p)))
     }
     fn begin(&mut self, s: &mut Session) -> Result<Step> {
-        catch_unwind(AssertUnwindSafe(|| self.inner.begin(s))).unwrap_or_else(|p| Err(self.internal(&*p)))
+        let was = self.world.then(|| s.plan_world.swap(true, Relaxed));
+        let r = catch_unwind(AssertUnwindSafe(|| self.inner.begin(s)));
+        if let Some(w) = was {
+            s.plan_world.store(w, Relaxed);
+        }
+        r.unwrap_or_else(|p| Err(self.internal(&*p)))
     }
     fn preview(&self, s: &Session, cursor: Vec2) -> Vec<EntityKind> {
         if self.broken.get().is_some() {
             return Vec::new();
         }
-        catch_unwind(AssertUnwindSafe(|| self.inner.preview(s, cursor))).unwrap_or_else(|_| {
-            self.broken.set(Some("panic in preview"));
-            Vec::new()
-        })
+        let c = s.cplane();
+        let at = if self.world { crate::cplane::plane_to_plan(&c, cursor) } else { cursor };
+        match in_world(s, self.world, || catch_unwind(AssertUnwindSafe(|| self.inner.preview(s, at)))) {
+            Ok(k) if self.world => crate::cplane::kinds_to_plane(&c, k),
+            Ok(k) => k,
+            Err(_) => {
+                self.broken.set(Some("panic in preview"));
+                Vec::new()
+            }
+        }
     }
     fn drag(&self, s: &Session, cursor: Vec2) -> Option<crate::prompt::Drag> {
         if self.broken.get().is_some() {
             return None;
         }
-        catch_unwind(AssertUnwindSafe(|| self.inner.drag(s, cursor))).unwrap_or_else(|_| {
-            self.broken.set(Some("panic in preview"));
-            None
-        })
+        let c = s.cplane();
+        let at = if self.world { crate::cplane::plane_to_plan(&c, cursor) } else { cursor };
+        match in_world(s, self.world, || catch_unwind(AssertUnwindSafe(|| self.inner.drag(s, at)))) {
+            Ok(Some(d)) if self.world => Some(crate::prompt::Drag {
+                matrix: crate::cplane::matrix_to_plane(&c, d.matrix),
+                extra: crate::cplane::kinds_to_plane(&c, d.extra),
+                ..d
+            }),
+            Ok(d) => d,
+            Err(_) => {
+                self.broken.set(Some("panic in preview"));
+                None
+            }
+        }
     }
     fn editing_mtext(&self) -> Option<cadcraft_doc::MText> {
         if self.broken.get().is_some() {

@@ -1536,13 +1536,18 @@ fn paper_view(w: &mut W, d: &Drawing, e: &Entity, owner: &str, cx: &Ctx) {
 /// The VPORT table: the `*Active` model space tiles (one viewport on the extents when there is no
 /// tiled configuration) and the saved configurations, each tile a record, the current one first.
 fn vport_table(w: &mut W, d: &Drawing, ext: Bounds2) {
-    let single = VportTile {
-        min: Vec2::ZERO,
-        max: Vec2::new(1.0, 1.0),
-        center: if ext.is_empty() { Vec2::new(6.0, 4.5) } else { ext.center() },
-        height: if ext.is_empty() { 9.0 } else { (ext.height() * 1.1).max(1e-6) },
-        aspect: 1.6,
-        ..VportTile::default()
+    // One view: the one-tile `*Active` that keeps its direction or style, else plan on the extents.
+    let one = d.vports.iter().find(|c| c.is_active() && c.tiles.len() == 1).and_then(|c| c.tiles.first());
+    let single = match one {
+        Some(t) => VportTile { min: Vec2::ZERO, max: Vec2::new(1.0, 1.0), ..*t },
+        None => VportTile {
+            min: Vec2::ZERO,
+            max: Vec2::new(1.0, 1.0),
+            center: if ext.is_empty() { Vec2::new(6.0, 4.5) } else { ext.center() },
+            height: if ext.is_empty() { 9.0 } else { (ext.height() * 1.1).max(1e-6) },
+            aspect: 1.6,
+            ..VportTile::default()
+        },
     };
     let tiled = d.vports.iter().find(|c| c.is_active() && c.tiles.len() > 1);
     let mut records: Vec<(&str, &VportTile)> = match tiled {
@@ -1580,6 +1585,23 @@ fn vport_table(w: &mut W, d: &Drawing, ext: Bounds2) {
                 (true, true) => 6,
             },
         );
+        // The tile's construction plane (CPLANE) saved as its UCS (UCSVP 1: origin and axes),
+        // marked as Cadino's; else the UCS another program saved with it, as it was. One view
+        // keeps the drawing's ([`Header::cplane`], else the file's $UCSORG/$UCSXDIR/$UCSYDIR).
+        // World writes none.
+        let (cplane, ucs) = if std::ptr::eq(t, &single) { (d.header.cplane(), d.header.file_ucs()) } else { (t.cplane, t.ucs) };
+        let ours = cplane != Mat4::IDENTITY;
+        let u = if ours { cplane } else { ucs };
+        if u != Mat4::IDENTITY && u.is_affine() {
+            w.i(65, 1);
+            w.p(110, u.col(3));
+            w.p(111, u.col(0));
+            w.p(112, u.col(1));
+            if ours {
+                w.s(1001, dxf_ext::APP);
+                w.s(1000, dxf_ext::CPLANE);
+            }
+        }
     }
     w.s(0, "ENDTAB");
 }

@@ -308,13 +308,15 @@ impl Session {
             match top {
                 Frame::From { base: None } => {
                     self.point_mods.push(Frame::From { base: Some(p) });
-                    // `@dx,dy` at "<Offset>:" is measured from the base point.
+                    // `@dx,dy` at "<Offset>:" is measured from the base point (its height too).
                     self.last_point = p;
+                    self.last_point_z = self.point_z.filter(|z| z.is_finite());
                     return Ok(());
                 }
                 Frame::Mid { first: None } => {
                     self.point_mods.push(Frame::Mid { first: Some(p) });
                     self.last_point = p;
+                    self.last_point_z = self.point_z.filter(|z| z.is_finite());
                     return Ok(());
                 }
                 Frame::Filter { keep, first: None } => {
@@ -324,6 +326,7 @@ impl Session {
                 Frame::TempTrack => {
                     self.tracking.acquire_temporary(p);
                     self.last_point = p;
+                    self.last_point_z = self.point_z.filter(|z| z.is_finite());
                     return Ok(());
                 }
                 Frame::Track { last } => {
@@ -331,6 +334,7 @@ impl Session {
                     let q = last.map_or(p, |l| crate::snap::ortho(l, p));
                     self.point_mods.push(Frame::Track { last: Some(q) });
                     self.last_point = q;
+                    self.last_point_z = self.point_z.filter(|z| z.is_finite());
                     return Ok(());
                 }
                 // The offset point is already measured from the base (`@` reads the last point).
@@ -349,7 +353,7 @@ impl Session {
                     let hatch = hatch | if self.state()?.screen_dir().is_plan() { 0 } else { mode::NO_SOLIDS };
                     let base = prompt.as_ref().and_then(|q| q.base);
                     let deferred = prompt.as_ref().is_some_and(|q| q.deferred);
-                    let hit = crate::snap::osnap(self.doc()?, &space, p, aperture, mode | hatch, base, deferred);
+                    let hit = crate::snap::osnap(&*self.pick_doc()?, &space, p, aperture, mode | hatch, base, deferred);
                     match hit {
                         Some(h) if self.point_mods.is_empty() => return self.input_snapped(h),
                         Some(h) => p = h.point,

@@ -102,6 +102,8 @@ fn missing_marked_ui_literals(language: &str) -> BTreeSet<String> {
         include_str!("../canvas/compare.rs"),
         include_str!("../canvas/blockedit.rs"),
         include_str!("../canvas/tiles.rs"),
+        include_str!("../canvas/gumball.rs"),
+        include_str!("../viewcube.rs"),
         include_str!("../bedit.rs"),
         include_str!("../palettes.rs"),
         include_str!("../parametric.rs"),

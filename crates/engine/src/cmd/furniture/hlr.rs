@@ -2,11 +2,13 @@
 //!
 //! The lines of a view are the B-rep edges (each mesh's edge polylines) and the silhouettes of
 //! curved faces (triangle edges between a front- and a back-facing triangle). A B-rep edge whose
-//! faces meet smoothly (a seam, or a tangent edge where a fillet runs into a flat face) is drawn
-//! only where it is a silhouette. Each line is sampled along its length: a sample is hidden when
-//! a triangle of any solid covers it, strictly inside, and lies in front of it. Runs of samples
-//! with one state become the visible and hidden lines; where the state changes the boundary is
-//! found by bisection.
+//! faces meet smoothly (a seam, or a tangent edge where a fillet runs into a flat face, as the
+//! kernel tells: [`Drawn::smooth`]) is drawn only where it is a silhouette; every other edge is
+//! drawn, however shallow the angle its faces meet at. Each line is sampled along its length: a
+//! sample is hidden when a triangle of any solid covers it (inside or on its boundary) and lies
+//! in front of it by more than a tolerance (so an edge's own faces never hide it). Runs of
+//! samples with one state become the visible and hidden lines; where the state changes the
+//! boundary is found by bisection.
 //!
 //! ponytail: sampled visibility over a uniform grid of projected triangles, with every count, the
 //! memory and the work capped per view (logged and reported: past a cap, triangles hide nothing,
@@ -38,8 +40,10 @@ const MAX_SAMPLES: usize = 4_000_000;
 const MAX_CELL_ENTRIES: usize = 16_000_000;
 /// Samples along the view's size, when the caps allow.
 const SAMPLES_ACROSS: f64 = 400.0;
-/// Faces meeting at an edge with facet normals closer than this (cos 40°) meet smoothly:
-/// OpenCASCADE meshes curved faces with facets up to about 29° apart.
+/// Without the kernel's word, faces meeting at an edge with facet normals closer than this (cos
+/// 40°) meet smoothly: OpenCASCADE meshes curved faces with facets up to about 29° apart.
+/// ponytail: a guess that also drops real creases under 40°; only for solids the kernel can't
+/// outline (no B-rep, a build without it).
 const SMOOTH_COS: f64 = 0.766;
 /// Bisection steps that place a visible/hidden boundary between two samples.
 const BISECT: usize = 12;
@@ -71,6 +75,13 @@ fn whole_usize(v: f64) -> Option<usize> {
     (0.0..1.0e15).contains(&v).then_some(v as usize)
 }
 
+/// A solid to draw, and which of its mesh's edges are smooth (parallel to them) when the kernel
+/// told ([`cadcraft_kernel::Outline`]); else facets meeting at under 40° mark them.
+pub(crate) struct Drawn<'a> {
+    pub solid: &'a Solid3d,
+    pub smooth: Option<&'a [bool]>,
+}
+
 /// The projected bounds of the solids' meshes (empty when they have no finite points).
 pub(crate) fn extent(solids: &[&Solid3d], view: ViewDir) -> Bounds2 {
     Bounds2::from_points(solids.iter().flat_map(|x| x.mesh.points().map(|p| view.project(x.world(p)))).filter(|p| p.is_finite()))
@@ -82,19 +93,20 @@ fn world_pts(x: &Solid3d) -> impl Iterator<Item = Vec3> + '_ {
 }
 
 /// The visible and hidden lines of `solids` seen along `view`.
-pub(crate) fn lines(solids: &[&Solid3d], view: ViewDir) -> Lines {
+pub(crate) fn lines(solids: &[Drawn], view: ViewDir) -> Lines {
     let mut out = Lines::default();
     let (_, _, toward) = view.axes();
     // World points are made as they are needed (no copies of the meshes); a solid with a
     // non-finite point is left out.
     let (mut lo, mut hi, mut reach) = (Vec3::new(f64::MAX, f64::MAX, f64::MAX), Vec3::new(f64::MIN, f64::MIN, f64::MIN), 0.0_f64);
-    let mut kept: Vec<&Solid3d> = Vec::with_capacity(solids.len());
-    for x in solids {
+    let mut kept: Vec<&Drawn> = Vec::with_capacity(solids.len());
+    for d in solids {
+        let x = d.solid;
         if !world_pts(x).all(|p| p.is_finite()) {
             out.capped.push("a solid with non-finite points was left out".into());
             continue;
         }
-        kept.push(x);
+        kept.push(d);
         for p in world_pts(x) {
             lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
             hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
@@ -114,7 +126,8 @@ pub(crate) fn lines(solids: &[&Solid3d], view: ViewDir) -> Lines {
     let mut dropped = 0usize;
     let mut tris: Vec<Tri> = Vec::new();
     let mut budget = MAX_MATCHED_TRIS;
-    for x in kept {
+    for d in kept {
+        let x = d.solid;
         let corner = |i: u32| x.mesh.verts.get(i as usize).map(|p| x.world(*p));
         // Facet normals, and the facets on each edge (by position: faces don't share vertices).
         let n = x.mesh.tris.len();
@@ -171,12 +184,13 @@ pub(crate) fn lines(solids: &[&Solid3d], view: ViewDir) -> Lines {
                 dropped += 1;
             }
         };
-        for e in &x.mesh.edges {
+        for (i, e) in x.mesh.edges.iter().enumerate() {
+            let told = d.smooth.map(|f| f.get(i).copied().unwrap_or(false));
             for w in e.windows(2) {
                 let (Some(a), Some(b)) = (w.first().map(|p| x.world(*p)), w.get(1).map(|p| x.world(*p))) else { continue };
                 let k = key(a).zip(key(b)).map(|(ka, kb)| if ka < kb { (ka, kb) } else { (kb, ka) });
                 let faces = k.and_then(|k| on_edge.get(&k)).map(|f| f.2.as_slice()).unwrap_or(&[]);
-                if !smooth(faces) || silhouette(faces) {
+                if !told.unwrap_or_else(|| smooth(faces)) || silhouette(faces) {
                     keep(a, b);
                 }
                 brep.extend(k);
@@ -192,7 +206,8 @@ pub(crate) fn lines(solids: &[&Solid3d], view: ViewDir) -> Lines {
         out.capped.push(format!("{dropped} line pieces past {MAX_SEGS} were left out"));
     }
 
-    let ext = extent(solids, view);
+    let all: Vec<&Solid3d> = solids.iter().map(|d| d.solid).collect();
+    let ext = extent(&all, view);
     let span = ext.width().max(ext.height());
     if !span.is_finite() || span <= 0.0 {
         return out;
@@ -357,8 +372,9 @@ impl Grid {
         Some((c(p.x, self.lo.x)?, c(p.y, self.lo.y)?))
     }
 
-    /// Whether a triangle covers `p` strictly inside and is nearer the viewer than `depth`; never
-    /// once `tests` (the triangles tried so far) reaches [`MAX_TESTS`].
+    /// Whether a triangle covers `p` (inside or on its boundary: a hidden edge running along an
+    /// inner edge of a nearer face's triangulation is covered) and is nearer the viewer than
+    /// `depth`; never once `tests` (the triangles tried so far) reaches [`MAX_TESTS`].
     fn covers(&self, tris: &[Tri], p: Vec2, depth: f64, tests: &std::cell::Cell<usize>) -> bool {
         let Some((x, y)) = self.at(p) else { return false };
         let Some(cell) = self.cells.get(y * self.n + x) else { return false };
@@ -366,16 +382,18 @@ impl Grid {
             return false;
         }
         tests.set(tests.get().saturating_add(cell.len()));
+        // On the boundary within rounding.
+        const ON: f64 = 1e-9;
         cell.iter().filter_map(|i| tris.get(*i as usize)).any(|t| {
-            if p.x <= t.lo.x || p.x >= t.hi.x || p.y <= t.lo.y || p.y >= t.hi.y {
+            let pad = ON * ((t.hi.x - t.lo.x) + (t.hi.y - t.lo.y));
+            if p.x < t.lo.x - pad || p.x > t.hi.x + pad || p.y < t.lo.y - pad || p.y > t.hi.y + pad {
                 return false;
             }
             let [a, b, c] = t.p;
             let area = (b - a).cross(c - a);
             let (u, v) = ((c - b).cross(p - b) / area, (a - c).cross(p - c) / area);
             let w = 1.0 - u - v;
-            const IN: f64 = 1e-9;
-            u > IN && v > IN && w > IN && u * t.d[0] + v * t.d[1] + w * t.d[2] > depth
+            u >= -ON && v >= -ON && w >= -ON && u * t.d[0] + v * t.d[1] + w * t.d[2] > depth
         })
     }
 }
@@ -448,6 +466,44 @@ pub(super) mod tests {
 
     fn total(ls: &[Vec<Vec2>]) -> f64 {
         ls.iter().flat_map(|l| l.windows(2)).map(|w| w[0].dist(w[1])).sum()
+    }
+
+    /// [`super::lines`] of solids the kernel told nothing about.
+    fn lines(xs: &[&Solid3d], view: ViewDir) -> Lines {
+        super::lines(&xs.iter().map(|x| Drawn { solid: x, smooth: None }).collect::<Vec<_>>(), view)
+    }
+
+    /// The iso view of a cube: the far corner's three edges are behind the near faces, also the
+    /// one running exactly along a near face's triangulation diagonal (from the hexagon's centre).
+    #[test]
+    fn hidden_edges_along_a_near_face_diagonal_stay_hidden() {
+        let l = lines(&[&cube(Vec3::ZERO, Vec3::new(10.0, 10.0, 10.0))], ViewDir::new(Vec3::new(1.0, -1.0, 1.0)));
+        // Three edges of length 10 seen at sqrt(2/3) of it.
+        let edge = 10.0 * (2.0f64 / 3.0).sqrt();
+        assert!((total(&l.hidden) - 3.0 * edge).abs() < 1e-3, "{} {:?}", total(&l.hidden), l.hidden);
+        // Visible: the hexagon and the near corner's three edges.
+        assert!((total(&l.visible) - 9.0 * edge).abs() < 1e-3, "{}", total(&l.visible));
+    }
+
+    /// A tapered leg's crease 1.4° shallow, seen from the right where both faces face the viewer:
+    /// drawn when the kernel says it is a real edge; a smooth one (a fillet's tangent edge) is
+    /// not, nor is it by the facet guess without the kernel's word.
+    #[test]
+    fn shallow_creases_are_drawn_when_the_kernel_says_they_are_edges() {
+        let v = Vec3::new;
+        let m = Mesh3 {
+            verts: vec![v(45.0, 0.0, 600.0), v(45.0, 18.0, 600.0), v(45.0, 18.0, 700.0), v(45.0, 0.0, 700.0), v(30.0, 0.0, 0.0), v(30.0, 18.0, 0.0)],
+            // The straight face (+X) and the taper below it (outward, 1.4° off).
+            tris: vec![[0, 1, 2], [0, 2, 3], [4, 1, 0], [4, 5, 1]],
+            edges: vec![vec![v(45.0, 0.0, 600.0), v(45.0, 18.0, 600.0)]],
+            ..Default::default()
+        };
+        let leg = Solid3d { mesh: Arc::new(m), ..Default::default() };
+        let right = ViewDir::new(v(1.0, 0.0, 0.0));
+        let with = |smooth: Option<&[bool]>| total(&super::lines(&[Drawn { solid: &leg, smooth }], right).visible);
+        assert!((with(Some(&[false])) - 18.0).abs() < 1e-6, "{}", with(Some(&[false])));
+        assert_eq!(with(Some(&[true])), 0.0);
+        assert_eq!(with(None), 0.0);
     }
 
     #[test]

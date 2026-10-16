@@ -5,7 +5,7 @@ use cadcraft_color::Rgb;
 use cadcraft_doc::Handle;
 use cadcraft_engine::Input;
 use cadcraft_engine::snap::{self, SnapHit};
-use cadcraft_geom::{Bounds2, Mat3, Vec2, ViewDir};
+use cadcraft_geom::{Bounds2, Mat3, Mat4, Vec2, ViewDir};
 use cadcraft_render::{DisplayList, Kind};
 use egui::{Color32, Pos2, Rect, Sense, Shape, Stroke, pos2, vec2};
 
@@ -13,6 +13,11 @@ use crate::CadApp;
 use crate::theme::Tokens;
 
 /// World ↔ screen transform for the canvas rect.
+///
+/// The drawing points it gives and takes ([`Xf::to_world`], [`Xf::to_screen`]) are in the
+/// coordinates of its construction plane (CPlane, Rhino's; AutoCAD's UCS): on the CPlane's XY
+/// plane, where the view ray through the cursor meets it. With the World CPlane (the identity)
+/// they are world XY points, as they always were.
 #[derive(Clone, Copy, Debug)]
 pub struct Xf {
     pub rect: Rect,
@@ -20,29 +25,61 @@ pub struct Xf {
     pub center: Vec2,
     /// Pixels (points) per drawing unit.
     pub scale: f64,
-    /// World XY plane → view plane: the identity in plan view, the view direction's projection
-    /// of the XY plane in a 3D view.
+    /// CPlane XY plane → view plane: the identity in plan view with the World CPlane, the view
+    /// direction's projection of the CPlane in a 3D view.
     plane: Mat3,
-    /// View plane → world XY plane: `plane` inverted, or where the view sees the XY plane edge-on
-    /// the least-squares inverse ([`ViewDir::unproject_xy`]).
+    /// View plane → CPlane XY plane: `plane` inverted, or where the view sees the CPlane edge-on
+    /// the least-squares inverse (the nearest point of the plane's line, [`unproject`]).
     unplane: Mat3,
     /// The view direction display lists for this transform are built with.
     dir: ViewDir,
+    /// The construction plane: CPlane coordinates → world (identity: World, the WCS XY plane).
+    cplane: Mat4,
 }
 
 impl Xf {
     pub fn new(rect: Rect, center: Vec2, scale: f64) -> Self {
-        Xf { rect, center, scale, plane: Mat3::IDENTITY, unplane: Mat3::IDENTITY, dir: ViewDir::PLAN }
+        Xf { rect, center, scale, plane: Mat3::IDENTITY, unplane: Mat3::IDENTITY, dir: ViewDir::PLAN, cplane: Mat4::IDENTITY }
     }
     /// The same transform looking along `dir`.
     pub fn looking(self, dir: ViewDir) -> Self {
-        // `unproject_xy` is linear: its matrix is where it takes the axes.
-        let (x, y) = (dir.unproject_xy(Vec2::new(1.0, 0.0)), dir.unproject_xy(Vec2::new(0.0, 1.0)));
-        Xf { plane: dir.plane_xf(), unplane: Mat3 { a: x.x, b: x.y, c: y.x, d: y.y, e: 0.0, f: 0.0 }, dir, ..self }
+        Xf { dir, ..self }.on(self.cplane)
     }
-    /// Screen position of a world point (on the XY plane).
+    /// The same transform drawing on construction plane `c` (CPlane → world).
+    pub fn on(self, c: Mat4) -> Self {
+        if c == Mat4::IDENTITY {
+            // `unproject_xy` is linear: its matrix is where it takes the axes.
+            let (x, y) = (self.dir.unproject_xy(Vec2::new(1.0, 0.0)), self.dir.unproject_xy(Vec2::new(0.0, 1.0)));
+            let unplane = Mat3 { a: x.x, b: x.y, c: y.x, d: y.y, e: 0.0, f: 0.0 };
+            return Xf { plane: self.dir.plane_xf(), unplane, cplane: c, ..self };
+        }
+        let plane = self.dir.rotation().mul(&c).plane_xy();
+        Xf { plane, unplane: unproject(&plane), cplane: c, ..self }
+    }
+    /// The same view drawing on the World plane: [`Xf::to_screen`] then takes world XY points
+    /// (for overlays of world geometry: constraints, compare boxes).
+    pub fn world(self) -> Self {
+        self.on(Mat4::IDENTITY)
+    }
+    /// The construction plane (CPlane → world).
+    pub fn cplane(&self) -> Mat4 {
+        self.cplane
+    }
+    /// The view direction.
+    pub fn dir(&self) -> ViewDir {
+        self.dir
+    }
+    /// Screen position of a drawing point (on the CPlane's XY plane).
     pub fn to_screen(&self, p: Vec2) -> Pos2 {
         self.view_to_screen(self.plane.apply(p))
+    }
+    /// Screen position of a CPlane point with its height (z along the CPlane's normal).
+    pub fn local_to_screen(&self, p: cadcraft_geom::Vec3) -> Pos2 {
+        self.world_to_screen(self.cplane.apply(p))
+    }
+    /// Screen position of a world point.
+    pub fn world_to_screen(&self, p: cadcraft_geom::Vec3) -> Pos2 {
+        self.view_to_screen(self.dir.project(p))
     }
     /// Screen position of a view-plane (display list) point.
     pub fn view_to_screen(&self, p: Vec2) -> Pos2 {
@@ -54,18 +91,87 @@ impl Xf {
         let c = self.rect.center();
         Vec2::new(self.center.x + f64::from(p.x - c.x) / self.scale, self.center.y - f64::from(p.y - c.y) / self.scale)
     }
-    /// The world point under a screen position, on the XY plane (seen edge-on, the nearest
-    /// point of the plane's line).
+    /// The drawing point under a screen position: where the view ray meets the CPlane, in its
+    /// coordinates (seen edge-on, the nearest point of the plane's line).
     pub fn to_world(&self, p: Pos2) -> Vec2 {
         self.unplane.apply(self.to_view(p))
     }
+    /// The world point where the view ray under screen position `at` meets the plane through `o`
+    /// with normal `n`; `None` when the view sees that plane edge-on.
+    pub fn ray_on(&self, at: Pos2, o: cadcraft_geom::Vec3, n: cadcraft_geom::Vec3) -> Option<cadcraft_geom::Vec3> {
+        let (x, y, d) = self.dir.axes();
+        let v = self.to_view(at);
+        let p0 = x * v.x + y * v.y;
+        let nd = n.dot(d);
+        if nd.abs() < 1e-6 * n.len() {
+            return None;
+        }
+        let p = p0 + d * (n.dot(o - p0) / nd);
+        p.is_finite().then_some(p)
+    }
+    /// A plan view (looking down world Z): the canvas works as AutoCAD's 2D drawing area, with
+    /// AutoCAD's picks, grips and UCS icon, whatever the construction plane (a UCS moved or
+    /// turned in plan keeps them; points still arrive in its coordinates). Every other direction
+    /// is a 3D view with Rhino's ways (gumball, picking what is drawn, the 3D UCS icon).
     pub fn is_plan(&self) -> bool {
+        self.dir.is_plan()
+    }
+    /// Drawing points are view-plane points: plan view with the World CPlane, where the old 2D
+    /// shortcuts (an axis-aligned grid, a drag's matrix as it is) hold.
+    fn flat(&self) -> bool {
         self.plane == Mat3::IDENTITY
+    }
+    /// Whether the view sees the CPlane edge-on: points picked land on its line.
+    pub fn edge_on(&self) -> bool {
+        self.plane.det().abs() <= 1e-6
     }
     /// The visible area in view-plane coordinates.
     pub fn view_bounds(&self) -> Bounds2 {
         Bounds2::new(self.to_view(self.rect.left_bottom()), self.to_view(self.rect.right_top()))
     }
+}
+
+/// View plane → plane for `m` (plane → view plane): its inverse, or where the view sees the plane
+/// edge-on (or nearly) the least-squares one, onto the plane's projected line (as
+/// [`ViewDir::unproject_xy`]).
+fn unproject(m: &Mat3) -> Mat3 {
+    if m.det().abs() > 1e-6
+        && let Some(i) = m.inverse()
+    {
+        return i;
+    }
+    // Rank one: the pseudo-inverse is the transpose over the squared Frobenius norm.
+    let n2 = m.a * m.a + m.b * m.b + m.c * m.c + m.d * m.d;
+    if n2 < 1e-24 {
+        return Mat3::IDENTITY;
+    }
+    let (a, b, c, d) = (m.a / n2, m.c / n2, m.b / n2, m.d / n2);
+    Mat3 { a, b, c, d, e: -(a * m.e + c * m.f), f: -(b * m.e + d * m.f) }
+}
+
+/// `m`, a transform of CPlane coordinates (a MOVE, ROTATE … drag), in the world: C·M·C⁻¹, z scaled
+/// with the plane as [`cadcraft_doc::Entity::transform`] scales it.
+fn in_world(c: &Mat4, m: &Mat3) -> Mat4 {
+    let mut t = Mat4::from_mat3(m);
+    t.m[2][2] = m.det().abs().sqrt();
+    match c.inverse() {
+        Some(ci) => c.mul(&t).mul(&ci),
+        None => t,
+    }
+}
+
+/// Preview entities built in CPlane coordinates (a command's rubber band), placed in the world.
+/// ponytail: one that can't be placed (a dimension tilted out of the horizontal) previews flat.
+fn placed(ents: Vec<cadcraft_doc::Entity>, c: &Mat4) -> Vec<cadcraft_doc::Entity> {
+    if *c == Mat4::IDENTITY {
+        return ents;
+    }
+    ents.into_iter()
+        .map(|mut e| {
+            let _ = e.transform3(c);
+            e
+        })
+        .collect()
 }
 
 /// The model view's transform for the canvas `rect` at `view` (its centre is in the view plane),
@@ -77,19 +183,21 @@ fn view_xfs(app: &CadApp, rect: Rect, view: cadcraft_engine::View) -> (Xf, Xf) {
         Ok(st) if st.space == cadcraft_doc::Space::Model => (st.view_dir, st.orbit_target),
         _ => (ViewDir::PLAN, None),
     };
+    let cplane = app.session.cplane();
     let scale = f64::from(rect.height()) / view.height.max(1e-12);
-    let now = Xf::new(rect, view.center, scale).looking(dir);
+    let now = Xf::new(rect, view.center, scale).looking(dir).on(cplane);
     let built = app.canvas.list_dir;
     if app.canvas.list.is_none() || built == dir {
         return (now, now);
     }
     // The world point at the centre of the view, as the current list sees it: the point the
-    // last orbit turned about, else the one on z = 0.
+    // last orbit turned about, else the one on the CPlane.
     let center = match pivot {
         Some(t) => built.project(t),
-        None => built.plane_xf().apply(now.unplane.apply(view.center)),
+        None if cplane == Mat4::IDENTITY => built.plane_xf().apply(now.unplane.apply(view.center)),
+        None => built.project(cplane.apply(now.unplane.apply(view.center).to3(0.0))),
     };
-    (now, Xf::new(rect, center, scale).looking(built))
+    (now, Xf::new(rect, center, scale).looking(built).on(cplane))
 }
 
 /// Whether `v` is inside triangle `abc` (either winding); never for a zero-area triangle, which
@@ -315,6 +423,15 @@ pub struct CanvasState {
     rnav: Option<(Pos2, bool)>,
     /// The model look `list` was last built for ([`tiles::trade`]).
     last_look: Option<cadcraft_engine::TileLook>,
+    /// Rhino's gumball on the selection in a 3D view ([`gumball`]).
+    pub(crate) gumball: gumball::Gumball,
+    /// The edge-on construction plane warning is showing (it is given once per hover).
+    edge_warned: bool,
+    /// While a grip edit in a 3D view drags a grip off the construction plane: the plane (world
+    /// point, normal) the cursor moves it in ([`grip_plane`], [`point_at`]).
+    grip_plane: Option<(cadcraft_geom::Vec3, cadcraft_geom::Vec3)>,
+    /// The drawing the engine's object snaps run on in a 3D view ([`snap3d::ground_doc`]).
+    pub(crate) ground: snap3d::Ground,
 }
 
 impl CanvasState {
@@ -885,8 +1002,10 @@ fn adaptive(unit: f64, scale: f64, min_px: f64) -> f64 {
 }
 
 fn draw_grid(app: &CadApp, p: &egui::Painter, xf: &Xf) {
-    // ponytail: no grid in 3D views (it would need projecting); plan view only.
-    if !xf.is_plan() {
+    // ponytail: in a UCS moved or turned in plan the grid follows the UCS but is never isometric
+    // (SNAPSTYL 1 draws the rectangular one there); turn `iso::grid_lines` with it if asked.
+    if !xf.flat() {
+        draw_cplane_grid(app, p, xf);
         return;
     }
     let t = Tokens::get();
@@ -934,6 +1053,55 @@ fn draw_grid(app: &CadApp, p: &egui::Painter, xf: &Xf) {
     if xf.rect.x_range().contains(o.x) {
         p.line_segment([pos2(o.x, xf.rect.top()), pos2(o.x, xf.rect.bottom())], Stroke::new(1.0, t.axis_y));
     }
+}
+
+/// The construction plane's grid in a 3D view, as Rhino draws it: minor and major lines (GRIDMODE,
+/// GRIDUNIT, GRIDMAJOR) about the point of the plane at the view's centre, its x axis red and its
+/// y axis green. Nothing where the view sees the plane edge-on.
+/// ponytail: the grid reaches a view's size around the centre point; a plane receding to the
+/// horizon in a steep view ends there (Rhino's grid has a fixed extent too).
+fn draw_cplane_grid(app: &CadApp, p: &egui::Painter, xf: &Xf) {
+    if xf.edge_on() {
+        return;
+    }
+    let t = Tokens::get();
+    let s = app.session.drafting_settings();
+    let unit = if s.gridunit.x == 0.0 { s.snapunit.x } else { s.gridunit.x };
+    // Spaced for the more foreshortened axis.
+    let short = xf.plane.apply_vec(Vec2::X).len().min(xf.plane.apply_vec(Vec2::Y).len()).max(0.2);
+    let minor = adaptive(unit, xf.scale * short, 8.0);
+    let major = minor * f64::from(s.gridmajor.max(1));
+    let c = xf.to_world(xf.rect.center());
+    let reach = f64::from(xf.rect.width().max(xf.rect.height())) / xf.scale / short;
+    let span = |v: f64| (((v - reach) / minor).floor(), ((v + reach) / minor).ceil());
+    let ((i0, i1), (j0, j1)) = (span(c.x), span(c.y));
+    if !(i1 - i0 < 2000.0 && j1 - j0 < 2000.0 && i0.is_finite() && j0.is_finite()) {
+        return;
+    }
+    let (x0, x1, y0, y1) = (i0 * minor, i1 * minor, j0 * minor, j1 * minor);
+    let seg = |a: Vec2, b: Vec2, col: Color32| Shape::line_segment([xf.to_screen(a), xf.to_screen(b)], Stroke::new(1.0, col));
+    let kind = |v: f64| if ((v / major) - (v / major).round()).abs() < 1e-6 { t.grid_major } else { t.grid_minor };
+    let mut lines = Vec::new();
+    if s.gridmode {
+        // Counted steps (at most 2000 each way, checked above): far from the origin, adding 1.0
+        // to a huge float no longer changes it, so a float loop would never end.
+        let (ni, nj) = ((i1 - i0).max(0.0) as usize, (j1 - j0).max(0.0) as usize);
+        for k in 0..=ni {
+            let x = (i0 + k as f64) * minor;
+            lines.push(seg(Vec2::new(x, y0), Vec2::new(x, y1), kind(x)));
+        }
+        for k in 0..=nj {
+            let y = (j0 + k as f64) * minor;
+            lines.push(seg(Vec2::new(x0, y), Vec2::new(x1, y), kind(y)));
+        }
+    }
+    if (y0..=y1).contains(&0.0) {
+        lines.push(seg(Vec2::new(x0, 0.0), Vec2::new(x1, 0.0), t.axis_x));
+    }
+    if (x0..=x1).contains(&0.0) {
+        lines.push(seg(Vec2::new(0.0, y0), Vec2::new(0.0, y1), t.axis_y));
+    }
+    p.extend(lines);
 }
 
 /// The isometric grid (SNAPSTYL 1): lines at 30°, 90° and 150° through the snap lattice, GRIDUNIT
@@ -1133,7 +1301,7 @@ fn draw_drag_gpu(
     // Positions are relative to the origin o: M(o + p) = L·p + (M(o) − o). The list is in the
     // view plane, so the world transform M acts there as P·M·P⁻¹ (exact on the XY plane; see
     // [`solid_drag_preview`] for what isn't on it).
-    let m = if xf.is_plan() { drag.matrix } else { xf.plane.then_before(drag.matrix).then_before(xf.unplane) };
+    let m = if xf.flat() { drag.matrix } else { xf.plane.then_before(drag.matrix).then_before(xf.unplane) };
     let o = c.drag_origin;
     let t = m.apply(o) - o;
     let center = xf.rect.center();
@@ -1158,22 +1326,28 @@ fn draw_drag_gpu(
 /// turns or mirrors (anything but a move or a positive uniform scale), and flattens it in a view
 /// that sees the XY plane edge-on. `None`: the GPU drag draws it.
 /// ponytail: rebuilds every dragged object each frame; split the solids out if mixed drags lag.
+/// With a construction plane other than World the drag's matrix is in CPlane coordinates: every
+/// object is rebuilt, moved by it in the world ([`in_world`]).
 fn solid_drag_preview(doc: &cadcraft_doc::Drawing, drag: &cadcraft_engine::Drag, clipboard: &[cadcraft_doc::Entity], xf: &Xf) -> Option<DisplayList> {
     let m = drag.matrix;
-    if xf.is_plan() || (m.b == 0.0 && m.c == 0.0 && m.a == m.d && m.a > 0.0 && xf.plane.det().abs() > 1e-6) {
+    // Plan view with a level CPlane sees every drag as the 2D transform the GPU drag draws.
+    let level = (xf.cplane.apply_vec(cadcraft_geom::Vec3::Z) - cadcraft_geom::Vec3::Z).len() < 1e-9;
+    if (xf.is_plan() && level) || (m.b == 0.0 && m.c == 0.0 && m.a == m.d && m.a > 0.0 && xf.plane.det().abs() > 1e-6) {
         return None;
     }
     let ents: Vec<&cadcraft_doc::Entity> =
         if drag.clipboard { clipboard.iter().collect() } else { drag.handles.iter().filter_map(|h| doc.entity(*h)).map(|e| e.as_ref()).collect() };
-    if !ents.iter().any(|e| matches!(e.kind, cadcraft_doc::EntityKind::Solid3d(_))) {
+    let world = xf.cplane == Mat4::IDENTITY;
+    if world && !ents.iter().any(|e| matches!(e.kind, cadcraft_doc::EntityKind::Solid3d(_))) {
         return None;
     }
+    let m3 = in_world(&xf.cplane, &m);
     let moved: Vec<cadcraft_doc::Entity> = ents
         .into_iter()
         .map(|e| {
             // One that can't take the transform (see `Entity::transform`) previews unmoved.
             let mut e = e.clone();
-            let _ = e.transform(&m);
+            let _ = if world { e.transform(&m) } else { e.transform3(&m3) };
             e
         })
         .collect();
@@ -1457,6 +1631,22 @@ fn effective_point(app: &mut CadApp, raw: Vec2, xf: &Xf, ctx: &egui::Context) ->
     }
     app.canvas.snap = r.snap;
     app.canvas.track = r.track;
+    // In a 3D view the engine snaps in the construction plane, where an object off it has only
+    // its shadow: its snap stands only where an object in the plane gives it too (snap3d snaps the
+    // others where they are drawn).
+    // ponytail: a shadow snap dropped here leaves the cursor raw for that frame (no tracking, grid
+    // or ortho) and may have acquired a tracking point; both go once the engine's snap can skip
+    // objects off the plane (see `snap3d::ground_doc`).
+    if r.snap.is_some()
+        && let Some(g) = snap3d::ground_doc(app, xf)
+        && let Ok(space) = app.session.state().map(|st| st.edit_space())
+    {
+        let s = &app.session.settings;
+        let osmode = s.osmode | snap::mode::NO_SOLIDS | if s.osnaphatch { snap::mode::HATCH } else { 0 };
+        let hit = snap::osnap(&g, &space, raw, q.aperture, osmode, base, deferred);
+        app.canvas.snap = hit;
+        return hit.map_or(raw, |h| h.point);
+    }
     r.point
 }
 
@@ -1494,7 +1684,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     let mut tiles = tile_rects(app, full);
     let resp = ui.interact(full, ui.id().with("canvas"), Sense::click_and_drag());
     // A click in another tile makes it current (or answers -VPORTS Join's prompts); in a 3D
-    // layout it goes on to pick there, below, as in Rhino. Its title takes its own clicks.
+    // tile it goes on to pick there, below, as in Rhino. Its title takes its own clicks.
     match tiles::click(app, ui, &resp, &tiles) {
         Some(true) => tiles = tile_rects(app, full),
         Some(false) => return,
@@ -1679,6 +1869,14 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         && app.session.pending_window.is_none()
         && !app.session.realtime_zoom_active();
     let pressed_primary = pressed_primary || (point_prompt && resp.drag_stopped_by(egui::PointerButton::Primary));
+    // As Rhino does, warn that a view seeing the construction plane edge-on puts points on its line.
+    let edge_on = point_prompt && inside && xf.edge_on();
+    if edge_on && !app.canvas.edge_warned {
+        app.set_status(crate::tl!(
+            "The construction plane is seen edge-on: points land on its line. Pick in another view or set a CPlane facing this one."
+        ));
+    }
+    app.canvas.edge_warned = edge_on;
     if point_prompt && inside && pressed_primary && !middle_down && app.cmd.options.is_none() && app.cmd.buffer.is_empty() {
         let releases: Vec<egui::Pos2> = ui.input(|i| {
             i.events
@@ -1692,7 +1890,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         // The last one is placed below, at the cursor, like any click.
         if let Some((_, earlier)) = releases.split_last() {
             for pos in earlier.iter().filter(|p| rect.contains(**p)) {
-                let w = effective_point(app, xf.to_world(*pos), &xf, ui.ctx());
+                let w = effective_point(app, point_at(app, &xf, *pos), &xf, ui.ctx());
                 snap3d::apply(app, &xf, *pos);
                 if let Err(e) = snap3d::send_point(app, w) {
                     app.session.echo(e.to_string());
@@ -1701,7 +1899,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         }
     }
 
-    let raw_world = hover_pos.filter(|_| inside).map(|p| xf.to_world(p));
+    let raw_world = hover_pos.filter(|_| inside).map(|p| point_at(app, &xf, p));
     let dyn_frame = crate::cmdline::dyn_frame(app);
     if let Some(w) = raw_world {
         let mut eff = effective_point(app, w, &xf, ui.ctx());
@@ -1748,6 +1946,8 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         app.session.cursor_deferred = None;
     }
 
+    // Rhino's gumball takes presses on its handles, and the drag and keys that follow.
+    let gumball = gumball::input(app, ui.ctx(), &xf, hover_pos, inside);
     // A click on the Dynamic Input options menu picks the keyword; elsewhere it closes the menu.
     let mut picked = false;
     if pressed_primary && app.cmd.options.is_some() {
@@ -1766,7 +1966,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         app.session.pending_window = None;
         app.canvas.drag_window = false;
     }
-    let pressed_primary = pressed_primary && !picked && !hatch_dialog && !idle_dbl;
+    let pressed_primary = pressed_primary && !picked && !hatch_dialog && !idle_dbl && !gumball;
     // Clicks.
     if inside
         && pressed_primary
@@ -1827,6 +2027,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     // and letting go closes it. Drags on grips and drags while drawing are left alone.
     if resp.drag_started_by(egui::PointerButton::Primary)
         && !middle_down
+        && !gumball
         && app.session.pending_window.is_none()
         && let Some(origin) = ui.input(|i| i.pointer.press_origin())
         && rect.contains(origin)
@@ -1884,8 +2085,9 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         {
             let filter = app.session.settings.previewfilter;
             let ap = app.session.settings.pickbox.max(1.0) * 1.5 / scale;
+            // Plan picks as the engine does, in the construction plane's coordinates.
             let picked = if xf.is_plan() {
-                cadcraft_engine::select::pick(&st.doc, &st.edit_space(), w, ap)
+                app.session.pick_doc().ok().and_then(|d| cadcraft_engine::select::pick(&d, &st.edit_space(), w, ap))
             } else {
                 hover_pos.zip(app.canvas.list.as_ref()).and_then(|(hp, l)| list_pick(l, xf.to_view(hp), ap))
             };
@@ -2039,7 +2241,8 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         }
     }
     app.canvas.draw_ms = crate::now_ms() - t0;
-    compare::paint(app, ui.ctx(), &painter, &xf_paper, rect);
+    // Both overlays draw world geometry: on the World plane whatever the construction plane.
+    compare::paint(app, ui.ctx(), &painter, &xf_paper.world(), rect);
     blockedit::paint(app, ui.ctx(), &painter, &xf_paper, rect);
     // Constraint bars and dynamic dimensional constraints (model space, or inside a viewport).
     if sheet.is_none() || active_vp.is_some() {
@@ -2052,7 +2255,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
             None => rect,
         };
         let p = painter.with_clip_rect(clip);
-        crate::parametric::draw_overlay(app, ui, &p, &xf);
+        crate::parametric::draw_overlay(app, ui, &p, &xf.world());
     }
     // Grips on selected objects (when idle or editing grips).
     let grip_edit = app.session.running.as_ref().is_some_and(|r| r.id == "grip");
@@ -2063,16 +2266,18 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         app.canvas.dyn_hot = None;
     }
     app.canvas.grip_editing = grip_edit;
+    if !grip_edit {
+        app.canvas.grip_plane = None;
+    }
     if (!app.session.prompting() || grip_edit)
         && app.session.shows_grips(sel.len())
-        && let Ok(st) = app.session.state()
+        && let Ok(doc) = app.session.pick_doc()
     {
         let gs = app.session.settings.gripsize as f32;
         for h in sel.iter().take(200) {
             // A solid's grips are on the XY plane, which a 3D view shows away from the solid.
-            if let Some(e) = st.doc.entity(*h).filter(|e| xf.is_plan() || !matches!(e.kind, cadcraft_doc::EntityKind::Solid3d(_))) {
-                for (gi, g) in e.grips().into_iter().enumerate() {
-                    let sp = xf.to_screen(g);
+            if let Some(e) = doc.entity(*h).filter(|e| xf.is_plan() || !matches!(e.kind, cadcraft_doc::EntityKind::Solid3d(_))) {
+                for (gi, sp) in grip_spots(e, &xf).into_iter().enumerate() {
                     if rect.contains(sp) {
                         let r = Rect::from_center_size(sp, vec2(gs * 2.0, gs * 2.0));
                         let hot = app.canvas.hot_grips.contains(&(*h, gi));
@@ -2095,6 +2300,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         }
         crate::dyngrips::draw(app, &painter, &xf, rect, hover_pos);
     }
+    gumball::paint(app, &painter, &xf, hover_pos.filter(|_| inside), bg);
     // Rubber band preview of the active command.
     // `xf` is the space being edited: paper space, or model space inside the active viewport.
     let drag = match (app.canvas.cursor, app.canvas.gpu.is_some()) {
@@ -2109,11 +2315,11 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
                 Some(list) => draw_list(&painter, &xf, &list, bg, false),
                 None => draw_drag_gpu(&mut app.canvas, &painter, &xf, &st.doc, &drag, (&app.session.clipboard, serial), bg, transparency, xf.dir),
             }
-            let list = rebuilt_preview(&st.doc, extra.iter(), scale, xf.dir);
+            let list = rebuilt_preview(&st.doc, placed(extra, &xf.cplane).iter(), scale, xf.dir);
             draw_list(&painter, &xf, &list, bg, false);
         }
     } else if let (Some(c), true) = (app.canvas.cursor, app.session.prompting()) {
-        let ents = app.session.preview(c);
+        let ents = placed(app.session.preview(c), &xf.cplane);
         if !ents.is_empty()
             && let Ok(st) = app.session.state()
         {
@@ -2142,14 +2348,14 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         draw_tracking(&painter, &xf, &app.session.tracking.acquired, app.canvas.track.as_ref(), view.height * 4.0);
     }
     if let (Some(hit), Some(_)) = (app.canvas.snap, app.canvas.cursor) {
-        let at = app.canvas.snap_z.map_or_else(|| xf.to_screen(hit.point), |z| snap3d::screen_of(&xf, hit.point.to3(z)));
+        let at = app.canvas.snap_z.map_or_else(|| xf.to_screen(hit.point), |z| xf.local_to_screen(hit.point.to3(z)));
         draw_snap_marker(&painter, at, &hit);
     }
     draw_tiles(app, ui, &tiles);
     // UCS icon, ViewCube and viewport label.
     if app.ui.show_ucs_icon {
-        draw_ucs_icon(&painter, rect);
-        crate::viewcube::ucs_icon(app, ui, rect);
+        draw_ucs_icon(&painter, rect, &xf);
+        crate::viewcube::ucs_icon(app, ui, rect, &xf);
     }
     if app.ui.show_viewcube && sheet.is_none() {
         draw_viewcube(app, ui, rect);
@@ -2220,12 +2426,12 @@ fn tile_rects(app: &CadApp, full: Rect) -> Vec<(Rect, cadcraft_engine::ModelTile
 /// The world ↔ screen transform of a model tile drawn in `r`, looking along `dir` (the
 /// direction of the list it draws).
 fn tile_xf(r: Rect, tile: &cadcraft_engine::ModelTile, dir: ViewDir) -> Xf {
-    Xf::new(r, tile.view.center, f64::from(r.height()) / tile.view.height.max(1e-12)).looking(dir)
+    Xf::new(r, tile.view.center, f64::from(r.height()) / tile.view.height.max(1e-12)).looking(dir).on(tile.cplane)
 }
 
-/// The tiles other than the current one (each with its own view and look, clipped to it, no
-/// grid in 3D), then the tile borders (thin, and heavy around the current tile) and the other
-/// tiles' titles.
+/// The tiles other than the current one (each with its own view, look and grid, the
+/// construction plane's in 3D, clipped to it), then the tile borders (thin, and heavy around the
+/// current tile) and the other tiles' titles.
 fn draw_tiles(app: &mut CadApp, ui: &egui::Ui, tiles: &[(Rect, cadcraft_engine::ModelTile)]) {
     let t = Tokens::get();
     let bg = Rgb(t.canvas.r(), t.canvas.g(), t.canvas.b());
@@ -2261,9 +2467,11 @@ fn tooltip(p: &egui::Painter, at: Pos2, text: &str) {
 /// pixels per unit), if any.
 fn hatch_at(app: &CadApp, w: Vec2, scale: f64) -> Option<Handle> {
     let st = app.session.state().ok()?;
+    // `w` is in the construction plane's coordinates: pick in the drawing as it sees it.
+    let d = app.session.pick_doc().ok()?;
     let aperture = app.session.settings.pickbox.max(1.0) * 1.5 / scale.max(1e-12);
-    let h = cadcraft_engine::select::pick(&st.doc, &st.edit_space(), w, aperture)?;
-    matches!(st.doc.entity(h)?.kind, cadcraft_doc::EntityKind::Hatch(_)).then_some(h)
+    let h = cadcraft_engine::select::pick(&d, &st.edit_space(), w, aperture)?;
+    matches!(d.entity(h)?.kind, cadcraft_doc::EntityKind::Hatch(_)).then_some(h)
 }
 
 /// Half the side of the pick box: the pick aperture (PICKBOX × 1.5 pixels, as `select::pick` is
@@ -2298,15 +2506,18 @@ fn override_cursor(app: &mut CadApp, raw: Vec2, xf: &Xf) {
     let deferred = prompt.as_ref().is_some_and(|p| p.deferred);
     let s = &app.session.settings;
     let osmode = over.unwrap_or(s.osmode) | if s.osnaphatch { snap::mode::HATCH } else { 0 };
-    // In a 3D view solids are snapped at their height (snap3d), never at their z = 0 shadow.
+    // In a 3D view solids and objects off the construction plane are snapped where they are
+    // drawn (snap3d), never at their shadow on it.
     let osmode = osmode | if xf.is_plan() { 0 } else { snap::mode::NO_SOLIDS };
-    let Ok(st) = app.session.state() else { return };
+    // `raw` is in the construction plane's coordinates: snap in the drawing as it sees it.
+    let Some(d) = snap3d::ground_doc(app, xf).or_else(|| app.session.pick_doc().ok()) else { return };
+    let Ok(space) = app.session.state().map(|st| st.edit_space()) else { return };
     let hit = match cycle {
         Some(i) => {
-            let cands = cadcraft_engine::pointmod::snap_candidates(&st.doc, &st.edit_space(), raw, ap, osmode, base, deferred);
+            let cands = cadcraft_engine::pointmod::snap_candidates(&d, &space, raw, ap, osmode, base, deferred);
             cands.get(i % cands.len().max(1)).copied()
         }
-        None => snap::osnap(&st.doc, &st.edit_space(), raw, ap, osmode, base, deferred),
+        None => snap::osnap(&d, &space, raw, ap, osmode, base, deferred),
     };
     let p = match (hit, app.canvas.snap) {
         (Some(h), _) => {
@@ -2579,16 +2790,57 @@ fn draw_lock(p: &egui::Painter, c: Pos2, color: Color32) {
     ));
 }
 
-fn draw_ucs_icon(p: &egui::Painter, rect: Rect) {
+/// The UCS icon in canvas `rect` for view `xf`: its origin and its arms (label, tip). In plan,
+/// AutoCAD's 2D icon: X and Y along the construction plane's axes as plan sees them (World:
+/// right and up); in a 3D view, with room all round, the plane's X, Y and Z axes as the view sees
+/// them (an axis seen end-on is a dot). [`crate::viewcube::ucs_icon`] makes it clickable there.
+pub(crate) fn ucs_icon_arms(rect: Rect, xf: &Xf) -> (Pos2, Vec<(&'static str, Pos2)>) {
+    use cadcraft_geom::Vec3;
+    let (o, len, n) = if xf.is_plan() {
+        (pos2(rect.left() + 36.0, rect.bottom() - 34.0), 60.0, 2)
+    } else {
+        (pos2(rect.left() + 70.0, rect.bottom() - 70.0), 50.0, 3)
+    };
+    let axes = [(crate::tl!("X"), Vec3::X), (crate::tl!("Y"), Vec3::Y), (crate::tl!("Z"), Vec3::Z)];
+    let arms = axes
+        .into_iter()
+        .take(n)
+        .map(|(label, axis)| {
+            let v = xf.dir.project(xf.cplane.apply_vec(axis).normalized());
+            (label, o + vec2(v.x as f32, -v.y as f32) * len)
+        })
+        .collect();
+    (o, arms)
+}
+
+fn draw_ucs_icon(p: &egui::Painter, rect: Rect, xf: &Xf) {
     let t = Tokens::get();
-    let o = pos2(rect.left() + 36.0, rect.bottom() - 34.0);
-    let st = Stroke::new(1.0, t.canvas_ink);
-    p.line_segment([o, o + vec2(60.0, 0.0)], st);
-    p.line_segment([o, o + vec2(0.0, -60.0)], st);
-    p.rect_stroke(Rect::from_center_size(o, vec2(9.0, 9.0)), 0.0, st, egui::StrokeKind::Middle);
+    let (o, arms) = ucs_icon_arms(rect, xf);
     let f = egui::FontId::proportional(13.0);
-    p.text(o + vec2(70.0, 0.0), egui::Align2::LEFT_CENTER, crate::tl!("X"), f.clone(), t.canvas_ink);
-    p.text(o + vec2(0.0, -70.0), egui::Align2::CENTER_BOTTOM, crate::tl!("Y"), f, t.canvas_ink);
+    if !xf.is_plan() {
+        // A 3D view: x red, y green and the plane's normal blue.
+        for ((label, tip), color) in arms.into_iter().zip(t.gumball) {
+            p.line_segment([o, tip], Stroke::new(1.5, color));
+            p.text(o + (tip - o) * 1.25, egui::Align2::CENTER_CENTER, label, f.clone(), color);
+        }
+        return;
+    }
+    let st = Stroke::new(1.0, t.canvas_ink);
+    let world = xf.cplane == Mat4::IDENTITY;
+    for (i, (label, tip)) in arms.into_iter().enumerate() {
+        p.line_segment([o, tip], st);
+        // World: the labels beside the arms' ends; a UCS turns them with the arms.
+        let (at, align) = match (world, i) {
+            (true, 0) => (o + vec2(70.0, 0.0), egui::Align2::LEFT_CENTER),
+            (true, _) => (o + vec2(0.0, -70.0), egui::Align2::CENTER_BOTTOM),
+            _ => (o + (tip - o) * 1.2, egui::Align2::CENTER_CENTER),
+        };
+        p.text(at, align, label, f.clone(), t.canvas_ink);
+    }
+    // The square marks the World Coordinate System, as AutoCAD's icon does.
+    if world {
+        p.rect_stroke(Rect::from_center_size(o, vec2(9.0, 9.0)), 0.0, st, egui::StrokeKind::Middle);
+    }
 }
 
 fn draw_viewcube(app: &mut CadApp, ui: &mut egui::Ui, rect: Rect) {
@@ -2621,16 +2873,19 @@ fn click_grip(app: &mut CadApp, g: (Handle, usize), shift: bool) {
     hot.retain(|x| *x != g);
     hot.insert(0, g);
     let hs = hot.clone();
-    if let Err(e) = app.session.start_grip_edit(&hs) {
-        app.canvas.hot_grips.clear();
-        app.session.echo(e.to_string());
+    match app.session.start_grip_edit(&hs) {
+        Ok(()) => app.canvas.grip_plane = app.canvas.xf.and_then(|xf| grip_plane(app, &xf, g)),
+        Err(e) => {
+            app.canvas.hot_grips.clear();
+            app.session.echo(e.to_string());
+        }
     }
 }
 
 /// The multifunctional options of grip `g` (Add Vertex, Lengthen…; empty: Stretch only).
 fn grip_options(app: &CadApp, (h, i): (Handle, usize)) -> Vec<cadcraft_engine::grips::GripAction> {
-    let Ok(st) = app.session.state() else { return Vec::new() };
-    st.doc.entity(h).map(|e| cadcraft_engine::grips::grip_actions(&e.kind, i)).unwrap_or_default()
+    let Ok(d) = app.session.pick_doc() else { return Vec::new() };
+    d.entity(h).map(|e| cadcraft_engine::grips::grip_actions(&e.kind, i)).unwrap_or_default()
 }
 
 /// The menu of a multifunctional grip: Stretch and its options. A choice makes the grip hot and
@@ -2659,33 +2914,93 @@ fn grip_menu(app: &mut CadApp, resp: &egui::Response) {
     }
     let Some(choice) = chosen else { return };
     app.canvas.hot_grips = vec![g];
+    app.canvas.grip_plane = app.canvas.xf.and_then(|xf| grip_plane(app, &xf, g));
     let r = app.session.start_grip_edit(&[g]).and_then(|()| match choice {
         Some(a) => app.session.input(Input::Keyword(a.keyword().to_string())),
         None => Ok(()),
     });
     if let Err(e) = r {
         app.canvas.hot_grips.clear();
+        app.canvas.grip_plane = None;
         app.session.echo(e.to_string());
     }
+}
+
+/// Where `xf` shows the grips of object `e`, as the construction plane sees it
+/// ([`cadcraft_engine::Session::pick_doc`]): the engine's grip points and indices
+/// ([`cadcraft_engine::Session::grips_of`], what grip edits start from), placed through the plane
+/// at their height above it, so a raised or tilted object's grips are where it is drawn (not on
+/// its shadow) and the grip under the cursor is the one the engine edits. Plan view with the
+/// World CPlane: AutoCAD's own, where plan draws them.
+fn grip_spots(e: &cadcraft_doc::Entity, xf: &Xf) -> Vec<Pos2> {
+    let g = e.grips();
+    if xf.flat() {
+        return g.into_iter().map(|p| xf.to_screen(p)).collect();
+    }
+    g.iter().zip(grip_heights(e, g.len())).map(|(p, z)| xf.local_to_screen(p.to3(z))).collect()
+}
+
+/// The heights above the construction plane of the `n` grips of object `e` (in the plane's
+/// coordinates): the z of its 3D grips ([`snap3d::grips3`], in the same order).
+fn grip_heights(e: &cadcraft_doc::Entity, n: usize) -> Vec<f64> {
+    let g3 = snap3d::grips3(e);
+    if g3.len() != n {
+        return vec![0.0; n];
+    }
+    g3.into_iter().map(|q| if q.z.is_finite() { q.z } else { 0.0 }).collect()
+}
+
+/// The plane a grip edit in 3D view `xf` moves grip `(h, i)` in when it is off the construction
+/// plane: through the grip, parallel to the plane (the engine edits grips in its x, y and keeps
+/// their height), as (world point, normal); `None` for a grip on the plane (points land on it).
+/// ponytail: a tilted object's grip stretches along its own plane, so it lands near the cursor,
+/// not under it; upgrade: the engine takes grip points with a height.
+fn grip_plane(app: &CadApp, xf: &Xf, (h, i): (Handle, usize)) -> Option<(cadcraft_geom::Vec3, cadcraft_geom::Vec3)> {
+    if xf.is_plan() {
+        return None;
+    }
+    let d = app.session.pick_doc().ok()?;
+    let e = d.entity(h)?;
+    let g = e.grips();
+    let z = grip_heights(e, g.len()).get(i).copied()?;
+    let p = g.get(i)?.to3(z);
+    (z.abs() > 1e-9 * (1.0 + p.len())).then(|| (xf.cplane.apply(p), xf.cplane.apply_vec(cadcraft_geom::Vec3::Z)))
+}
+
+/// The drawing point under screen point `at`: on the construction plane ([`Xf::to_world`]), or
+/// while a grip off the plane is dragged, on the plane it moves in ([`grip_plane`]), so the grip
+/// follows the cursor.
+fn point_at(app: &CadApp, xf: &Xf, at: Pos2) -> Vec2 {
+    if let Some((o, n)) = app.canvas.grip_plane
+        && let Some(w) = xf.ray_on(at, o, n)
+        && let Some(ci) = xf.cplane.inverse()
+    {
+        let p = ci.apply(w).xy();
+        if p.is_finite() {
+            return p;
+        }
+    }
+    xf.to_world(at)
 }
 
 /// The grip of a selected object under the cursor, if any: (object, grip index).
 fn grip_at(app: &CadApp, xf: &Xf, hover: Option<Pos2>) -> Option<(Handle, usize)> {
     let hp = hover?;
-    let st = app.session.state().ok()?;
+    let doc = app.session.pick_doc().ok()?;
     let gs = app.session.settings.gripsize as f32 + 3.0;
     let sel = app.session.selection();
     if !app.session.shows_grips(sel.len()) {
         return None;
     }
     for h in sel.iter().take(200) {
-        let e = st.doc.entity(*h)?;
+        // An object the construction plane can't hold has no grips there (the engine can't edit
+        // it in that plane).
+        let Some(e) = doc.entity(*h) else { continue };
         // No solid grips in a 3D view (see `show`).
-        if st.doc.layer(&e.common.layer).is_some_and(|l| l.locked) || (!xf.is_plan() && matches!(e.kind, cadcraft_doc::EntityKind::Solid3d(_))) {
+        if doc.layer(&e.common.layer).is_some_and(|l| l.locked) || (!xf.is_plan() && matches!(e.kind, cadcraft_doc::EntityKind::Solid3d(_))) {
             continue;
         }
-        for (i, g) in e.grips().into_iter().enumerate() {
-            let sp = xf.to_screen(g);
+        for (i, sp) in grip_spots(e, xf).into_iter().enumerate() {
             if (sp.x - hp.x).abs() <= gs && (sp.y - hp.y).abs() <= gs {
                 return Some((*h, i));
             }
@@ -3186,6 +3501,20 @@ pub(crate) mod tests {
         app
     }
 
+    /// A view far from the origin (a hostile drawing's extents) draws its CPlane grid and
+    /// finishes: stepping a huge float by 1.0 doesn't change it, so the grid counts its lines.
+    #[test]
+    fn a_cplane_grid_far_from_the_origin_finishes() {
+        let mut f = Frames::default();
+        let mut app = app_looking(&mut f, [-1.0, -1.0, 1.0]);
+        app.session.settings.gridmode = true;
+        for c in [1e17, 1e300, -3e18] {
+            let st = app.session.state_mut().unwrap();
+            st.set_view_quiet(cadcraft_engine::View { center: Vec2::new(c, c), height: 10.0 });
+            f.run(&mut app, Vec::new());
+        }
+    }
+
     /// Rebuild the list at once (edits made straight in the drawing don't bump the revision).
     fn rebuild_now(f: &mut Frames, app: &mut CadApp) {
         app.canvas.list = None;
@@ -3405,6 +3734,427 @@ pub(crate) mod tests {
         assert!(now.to_world(now.rect.center()).dist(target) < 1e-6);
     }
 
+    /// The Front construction plane: x along world X, y up world Z, its normal toward -Y.
+    fn front_cplane() -> Mat4 {
+        let g = cadcraft_geom::Vec3::new;
+        Mat4::from_cols(g(1.0, 0.0, 0.0), g(0.0, 0.0, 1.0), g(0.0, -1.0, 0.0), g(0.0, 0.0, 0.0))
+    }
+
+    /// The cursor finds its point where the view ray meets the construction plane, in the plane's
+    /// coordinates: from the front the Front CPlane gives world X and Z; from an isometric view a
+    /// lifted, turned plane gives the point on it under the cursor. The World CPlane seen from the
+    /// front is edge-on, and plan with the World CPlane is the plain 2D transform.
+    #[test]
+    fn points_land_on_the_construction_plane_in_its_coordinates() {
+        let g = cadcraft_geom::Vec3::new;
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0));
+        let front = Xf::new(rect, Vec2::new(2.0, 3.0), 10.0).looking(ViewDir::new(g(0.0, -1.0, 0.0)));
+        assert!(front.edge_on());
+        let on = front.on(front_cplane());
+        assert!(!on.edge_on() && !on.is_plan());
+        let at = on.world_to_screen(g(3.0, 9.0, 7.0));
+        assert!(on.to_world(at).dist(Vec2::new(3.0, 7.0)) < 1e-9, "{:?}", on.to_world(at));
+        assert!(on.to_screen(Vec2::new(3.0, 7.0)).distance(at) < 1e-3);
+        // A plane through (1, 2, 5) turned 30° about Z, seen from the south-west.
+        let c = Mat4::translate(g(1.0, 2.0, 5.0)).mul(&Mat4::rotation(g(0.0, 0.0, 1.0), 30f64.to_radians()));
+        let iso = Xf::new(rect, Vec2::ZERO, 10.0).looking(ViewDir::new(g(-1.0, -1.0, 1.0))).on(c);
+        let s = pos2(250.0, 120.0);
+        let l = iso.to_world(s);
+        assert!(iso.world_to_screen(c.apply(l.to3(0.0))).distance(s) < 1e-3);
+        assert!(iso.local_to_screen(l.to3(0.0)).distance(s) < 1e-3);
+        let plan = Xf::new(rect, Vec2::ZERO, 10.0).looking(ViewDir::PLAN);
+        assert!(plan.is_plan() && plan.on(Mat4::IDENTITY).is_plan());
+        // `world` takes world XY points again (the overlays of world geometry).
+        let w = iso.world();
+        assert!(w.to_screen(Vec2::new(3.0, 4.0)).distance(iso.world_to_screen(g(3.0, 4.0, 0.0))) < 1e-3);
+    }
+
+    /// The app looking along `dir` at a line from (0, 0, 0) to (10, 0, 0), selected: the gumball
+    /// shows at (5, 0, 0). Returns the line and where the gumball's centre is on screen.
+    fn gumball_on_a_line(f: &mut Frames, dir: [f64; 3]) -> (CadApp, Handle, Pos2) {
+        let mut app = app_looking(f, dir);
+        let o = cadcraft_geom::Vec3::new(5.0, 0.0, 0.0);
+        let st = app.session.state_mut().unwrap();
+        let center = st.view_dir.project(o);
+        st.set_view_quiet(cadcraft_engine::View { center, height: 60.0 });
+        let line = cadcraft_doc::Line { a: cadcraft_geom::Vec3::ZERO, b: cadcraft_geom::Vec3::new(10.0, 0.0, 0.0) };
+        let h = app
+            .session
+            .doc_mut()
+            .unwrap()
+            .add(&cadcraft_doc::Space::Model, cadcraft_doc::Common::default(), cadcraft_doc::EntityKind::Line(line))
+            .unwrap();
+        app.session.set_selection(vec![h]);
+        rebuild_now(f, &mut app);
+        let at = app.canvas.xf.unwrap().world_to_screen(o);
+        (app, h, at)
+    }
+
+    fn line_ends(app: &CadApp, h: Handle) -> (cadcraft_geom::Vec3, cadcraft_geom::Vec3) {
+        match &app.session.doc().unwrap().entity(h).unwrap().kind {
+            cadcraft_doc::EntityKind::Line(l) => (l.a, l.b),
+            k => panic!("{k:?}"),
+        }
+    }
+
+    /// Dragging the gumball's X arrow moves the selection along world X by the distance dragged
+    /// (3DMOVE, one undo step); a number typed during the drag sets the exact distance; Esc
+    /// cancels the drag and keeps the selection.
+    #[test]
+    fn dragging_a_gumball_arrow_moves_along_its_axis() {
+        let g = cadcraft_geom::Vec3::new;
+        let mut f = Frames::default();
+        let (mut app, h, o) = gumball_on_a_line(&mut f, [0.0, -1.0, 0.0]);
+        let scale = app.canvas.xf.unwrap().scale;
+        f.drag(&mut app, o + vec2(60.0, 0.0), o + vec2(110.0, 20.0));
+        let (a, b) = line_ends(&app, h);
+        let dx = 50.0 / scale;
+        assert!((a - g(dx, 0.0, 0.0)).len() < 1e-4 && (b - g(10.0 + dx, 0.0, 0.0)).len() < 1e-4, "{a:?} {b:?}");
+        assert_eq!(app.session.selection(), vec![h], "the selection stays, with the gumball on it");
+        app.session.execute("u", &serde_json::json!({})).unwrap();
+        assert_eq!(line_ends(&app, h), (g(0.0, 0.0, 0.0), g(10.0, 0.0, 0.0)), "one undo step");
+        // Typed: exactly 7 up world Z (the Z arrow points up the screen from the front).
+        app.session.set_selection(vec![h]);
+        f.run(&mut app, Vec::new());
+        let from = o + vec2(0.0, -60.0);
+        f.run(&mut app, vec![egui::Event::PointerMoved(from)]);
+        f.button(&mut app, from, true);
+        f.run(&mut app, vec![egui::Event::PointerMoved(from + vec2(0.0, -30.0))]);
+        f.run(&mut app, vec![egui::Event::Text("7".into())]);
+        f.button(&mut app, from + vec2(0.0, -30.0), false);
+        f.run(&mut app, Vec::new());
+        assert_eq!(line_ends(&app, h), (g(0.0, 0.0, 7.0), g(10.0, 0.0, 7.0)));
+        assert!(app.cmd.buffer.is_empty(), "the number went to the gumball, not the command line");
+        // Esc during a drag cancels it.
+        let o = app.canvas.xf.unwrap().world_to_screen(g(5.0, 0.0, 7.0));
+        f.run(&mut app, vec![egui::Event::PointerMoved(o + vec2(60.0, 0.0))]);
+        f.button(&mut app, o + vec2(60.0, 0.0), true);
+        f.run(&mut app, vec![egui::Event::PointerMoved(o + vec2(120.0, 0.0))]);
+        let esc = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        f.run(&mut app, vec![esc]);
+        f.button(&mut app, o + vec2(120.0, 0.0), false);
+        f.run(&mut app, Vec::new());
+        assert_eq!(line_ends(&app, h), (g(0.0, 0.0, 7.0), g(10.0, 0.0, 7.0)));
+        assert_eq!(app.session.selection(), vec![h]);
+    }
+
+    /// Dragging a gumball arc turns the selection about that world axis through the gumball's
+    /// centre (3DROTATE): 90° typed about Y from the front stands the line up, once.
+    #[test]
+    fn dragging_a_gumball_arc_turns_about_its_axis() {
+        let g = cadcraft_geom::Vec3::new;
+        let mut f = Frames::default();
+        let (mut app, h, o) = gumball_on_a_line(&mut f, [0.0, -1.0, 0.0]);
+        // The Y arc from the front: a quarter circle between +Z (up) and +X (right).
+        let at = o + vec2(1.0, -1.0) * (55.0 * std::f32::consts::FRAC_1_SQRT_2);
+        f.run(&mut app, vec![egui::Event::PointerMoved(at)]);
+        f.button(&mut app, at, true);
+        f.run(&mut app, vec![egui::Event::PointerMoved(at + vec2(30.0, 30.0))]);
+        f.run(&mut app, vec![egui::Event::Text("90".into())]);
+        // Enter runs it at once (it doesn't repeat the last command); letting go adds nothing.
+        app.session.last_command = Some("line".into());
+        let enter = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        f.run(&mut app, vec![enter]);
+        assert!(app.session.running.is_none());
+        f.button(&mut app, at + vec2(30.0, 30.0), false);
+        f.run(&mut app, Vec::new());
+        let (a, b) = line_ends(&app, h);
+        assert!((a - g(5.0, 0.0, 5.0)).len() < 1e-9 && (b - g(5.0, 0.0, -5.0)).len() < 1e-9, "{a:?} {b:?}");
+    }
+
+    /// Plan views show no gumball: a press where its arrow would be opens a selection window.
+    /// Turned off (`ui.gumball`), it doesn't show in 3D views either.
+    #[test]
+    fn plan_views_have_no_gumball() {
+        let mut f = Frames::default();
+        let (mut app, h, o) = gumball_on_a_line(&mut f, [0.0, 0.0, 1.0]);
+        f.drag(&mut app, o + vec2(60.0, 0.0), o + vec2(110.0, 20.0));
+        assert_eq!(line_ends(&app, h).0, cadcraft_geom::Vec3::ZERO);
+        let (mut app, h, o) = gumball_on_a_line(&mut f, [0.0, -1.0, 0.0]);
+        assert_eq!(app.run("ui.gumball", serde_json::json!({ "on": false })).unwrap(), serde_json::json!({ "on": false }));
+        f.drag(&mut app, o + vec2(60.0, 0.0), o + vec2(110.0, 20.0));
+        assert_eq!(line_ends(&app, h).0, cadcraft_geom::Vec3::ZERO);
+    }
+
+    /// In an isometric view a point prompt snaps to the centre of a raised circle where it is
+    /// drawn, giving its construction-plane coordinates with its height.
+    #[test]
+    fn a_3d_view_snaps_to_a_raised_circle_centre_with_its_height() {
+        let mut f = Frames::default();
+        let c = cadcraft_geom::Vec3::new(3.0, 4.0, 6.0);
+        let mut app = app_snapping(&mut f, [-1.0, -1.0, 1.0], c, snap::mode::CEN);
+        let circle = cadcraft_doc::Circle { center: c, radius: 2.0 };
+        app.session
+            .doc_mut()
+            .unwrap()
+            .add(&cadcraft_doc::Space::Model, cadcraft_doc::Common::default(), cadcraft_doc::EntityKind::Circle(circle))
+            .unwrap();
+        let xf = app.canvas.xf.unwrap();
+        let at = xf.world_to_screen(c) + vec2(2.0, -3.0);
+        f.run(&mut app, vec![egui::Event::PointerMoved(at)]);
+        let hit = app.canvas.snap.unwrap();
+        assert_eq!((hit.point, hit.mode, app.canvas.snap_z), (Vec2::new(3.0, 4.0), snap::mode::CEN, Some(6.0)));
+        f.click(&mut app, at);
+        assert_eq!((app.session.last_point, app.session.point_z), (Vec2::new(3.0, 4.0), Some(6.0)));
+    }
+
+    /// The 3D snap points of curves: a line's ends and middle, a 3D polyline's vertices and
+    /// segment middles, and a circle standing upright: its centre and quadrants in its own plane,
+    /// where it is in the world.
+    #[test]
+    fn curves_snap_where_they_are_in_the_world() {
+        use snap::mode::{CEN, END, MID, QUA};
+        let g = cadcraft_geom::Vec3::new;
+        let ent =
+            |kind, extrusion| cadcraft_doc::Entity { handle: Handle(1), common: cadcraft_doc::Common { extrusion, ..Default::default() }, kind };
+        let pts = |e: &cadcraft_doc::Entity, m| {
+            let mut out = Vec::new();
+            snap3d::snaps_of(e, m, &mut out);
+            out
+        };
+        let line = ent(cadcraft_doc::EntityKind::Line(cadcraft_doc::Line { a: g(0.0, 0.0, 1.0), b: g(4.0, 0.0, 3.0) }), cadcraft_geom::Vec3::Z);
+        assert_eq!(pts(&line, END | MID), vec![(g(0.0, 0.0, 1.0), END), (g(4.0, 0.0, 3.0), END), (g(2.0, 0.0, 2.0), MID)]);
+        let poly = cadcraft_doc::Polyline3d { points: vec![g(0.0, 0.0, 0.0), g(2.0, 0.0, 2.0), g(2.0, 2.0, 2.0)], closed: true };
+        let poly = ent(cadcraft_doc::EntityKind::Polyline3d(poly), cadcraft_geom::Vec3::Z);
+        assert_eq!(pts(&poly, MID).len(), 3, "a closed 3D polyline has its closing segment's middle too");
+        // Standing in world YZ (extrusion +X), 5 along X.
+        let circle = cadcraft_doc::Circle { center: g(0.0, 0.0, 5.0), radius: 2.0 };
+        let circle = ent(cadcraft_doc::EntityKind::Circle(circle), g(1.0, 0.0, 0.0));
+        let got = pts(&circle, CEN | QUA);
+        assert!(got.iter().any(|(p, m)| *m == CEN && (*p - g(5.0, 0.0, 0.0)).len() < 1e-9), "{got:?}");
+        let quadrant = |p: &cadcraft_geom::Vec3| (p.x - 5.0).abs() < 1e-9 && ((p.y.abs() - 2.0).abs() < 1e-9 || (p.z.abs() - 2.0).abs() < 1e-9);
+        assert_eq!(got.iter().filter(|(p, m)| *m == QUA && quadrant(p)).count(), 4, "{got:?}");
+    }
+
+    /// In Rhino's four views the Front tile draws on the Front construction plane: a point clicked
+    /// there arrives in its coordinates (world X and Z), with no height; the grid and the 3D UCS
+    /// icon follow the plane, and the status bar shows the CPlane coordinates.
+    #[test]
+    fn points_in_a_front_cplane_tile_arrive_in_its_coordinates() {
+        let g = cadcraft_geom::Vec3::new;
+        let mut f = Frames::default();
+        let mut app = CadApp::new(cadcraft_engine::Session::new(), crate::Services::default());
+        f.run(&mut app, Vec::new());
+        app.session.execute("viewports.rhino", &serde_json::json!({})).unwrap();
+        let front = app.session.model_tiles().iter().position(|t| t.look.dir.dir == g(0.0, -1.0, 0.0)).unwrap();
+        app.session.activate_tile(front).unwrap();
+        assert_eq!(app.session.cplane(), front_cplane());
+        let st = app.session.state_mut().unwrap();
+        let center = st.view_dir.project(g(3.0, 0.0, 7.0));
+        st.set_view_quiet(cadcraft_engine::View { center, height: 60.0 });
+        rebuild_now(&mut f, &mut app);
+        let xf = app.canvas.xf.unwrap();
+        assert!(!xf.is_plan() && !xf.edge_on() && xf.cplane() == front_cplane());
+        app.session.cmdline("line").unwrap();
+        let at = xf.world_to_screen(g(3.0, 0.0, 7.0));
+        f.click(&mut app, at);
+        assert!(app.session.last_point.dist(Vec2::new(3.0, 7.0)) < 1e-6, "{:?}", app.session.last_point);
+        assert_eq!(app.session.point_z, None);
+        assert!(app.canvas.cursor.is_some_and(|c| c.dist(Vec2::new(3.0, 7.0)) < 1e-6));
+    }
+
+    /// With the Front construction plane in an isometric view, a raised circle's centre snaps in
+    /// the plane's coordinates (world X, world Z) with its height along the plane's normal (-Y).
+    #[test]
+    fn a_3d_snap_is_given_in_the_construction_plane_coordinates() {
+        let mut f = Frames::default();
+        let c = cadcraft_geom::Vec3::new(3.0, 4.0, 6.0);
+        let mut app = app_snapping(&mut f, [-1.0, -1.0, 1.0], c, snap::mode::CEN);
+        app.session.cancel();
+        app.session.execute("cplane", &serde_json::json!({ "preset": "front" })).unwrap();
+        let circle = cadcraft_doc::Circle { center: c, radius: 2.0 };
+        app.session
+            .doc_mut()
+            .unwrap()
+            .add(&cadcraft_doc::Space::Model, cadcraft_doc::Common::default(), cadcraft_doc::EntityKind::Circle(circle))
+            .unwrap();
+        app.session.cmdline("line").unwrap();
+        rebuild_now(&mut f, &mut app);
+        let xf = app.canvas.xf.unwrap();
+        assert_eq!(xf.cplane(), front_cplane());
+        let at = xf.world_to_screen(c) + vec2(2.0, -3.0);
+        f.run(&mut app, vec![egui::Event::PointerMoved(at)]);
+        let hit = app.canvas.snap.unwrap();
+        assert!(
+            hit.point.dist(Vec2::new(3.0, 6.0)) < 1e-9 && app.canvas.snap_z.is_some_and(|z| (z + 4.0).abs() < 1e-9),
+            "{hit:?} {:?}",
+            app.canvas.snap_z
+        );
+        // The marker is drawn where the centre is.
+        assert!(xf.local_to_screen(hit.point.to3(-4.0)).distance(xf.world_to_screen(c)) < 1e-3);
+        f.click(&mut app, at);
+        assert!(app.session.last_point.dist(Vec2::new(3.0, 6.0)) < 1e-9);
+        assert!(app.session.point_z.is_some_and(|z| (z + 4.0).abs() < 1e-9));
+    }
+
+    fn add(app: &mut CadApp, kind: cadcraft_doc::EntityKind) -> Handle {
+        app.session.doc_mut().unwrap().add(&cadcraft_doc::Space::Model, cadcraft_doc::Common::default(), kind).unwrap()
+    }
+
+    /// A UCS moved and turned in plan view keeps AutoCAD's 2D canvas: no gumball, the 2D UCS icon
+    /// (turned with the UCS, without the WCS square), grips where the engine has them (in the
+    /// UCS's coordinates), the rollover pick there too; points still arrive in UCS coordinates.
+    #[test]
+    fn a_ucs_in_plan_keeps_autocad_ways() {
+        let g = cadcraft_geom::Vec3::new;
+        let mut f = Frames::default();
+        let mut app = app_looking(&mut f, [0.0, 0.0, 1.0]);
+        app.session.execute("view.set", &serde_json::json!({ "center": [5, 10], "height": 60 })).unwrap();
+        // Origin (5, 5), x up world Y: UCS (x, y) is world (5 - y, 5 + x).
+        app.session.execute("cplane", &serde_json::json!({ "origin": [5, 5, 0], "xaxis": [0, 1, 0] })).unwrap();
+        let h = add(&mut app, cadcraft_doc::EntityKind::Line(cadcraft_doc::Line { a: g(5.0, 5.0, 0.0), b: g(5.0, 15.0, 0.0) }));
+        app.session.set_selection(vec![h]);
+        rebuild_now(&mut f, &mut app);
+        let xf = app.canvas.xf.unwrap();
+        assert!(xf.is_plan() && xf.cplane() != Mat4::IDENTITY);
+        let grips = app.session.grips_of(h).unwrap();
+        assert!(grips[2].dist(Vec2::new(10.0, 0.0)) < 1e-9, "{grips:?}");
+        let end = xf.world_to_screen(g(5.0, 15.0, 0.0));
+        assert!(xf.to_screen(grips[2]).distance(end) < 1e-3);
+        assert_eq!(grip_at(&app, &xf, Some(end)), Some((h, 2)));
+        let (o, arms) = ucs_icon_arms(xf.rect, &xf);
+        assert_eq!(arms.len(), 2, "the 2D icon");
+        assert!(arms[0].1.distance(o + vec2(0.0, -60.0)) < 1e-3, "its X arm points up the screen with the UCS");
+        // No gumball: a drag from where its X arrow would be opens a window and moves nothing.
+        let mid = xf.world_to_screen(g(5.0, 10.0, 0.0));
+        f.drag(&mut app, mid + vec2(60.0, 0.0), mid + vec2(110.0, 20.0));
+        assert_eq!(line_ends(&app, h), (g(5.0, 5.0, 0.0), g(5.0, 15.0, 0.0)));
+        // The rollover finds the line where plan draws it.
+        app.session.set_selection(Vec::new());
+        f.run(&mut app, vec![egui::Event::PointerMoved(mid + vec2(0.0, -20.0))]);
+        assert_eq!(app.canvas.hover, Some(h));
+        // A typed snap override snaps in the UCS too: the line's end (10, 0).
+        app.session.cmdline("line").unwrap();
+        app.session.cmdline("end").unwrap();
+        f.run(&mut app, vec![egui::Event::PointerMoved(end + vec2(2.0, 1.0))]);
+        assert!(app.canvas.snap.is_some_and(|s| s.point.dist(Vec2::new(10.0, 0.0)) < 1e-9), "{:?}", app.canvas.snap);
+        app.session.cancel();
+        // A point clicked arrives in UCS coordinates.
+        app.session.cmdline("line").unwrap();
+        f.click(&mut app, xf.world_to_screen(g(1.0, 8.0, 0.0)));
+        assert!(app.session.last_point.dist(Vec2::new(3.0, 4.0)) < 1e-3, "{:?}", app.session.last_point);
+    }
+
+    /// A polyline 20 above the ground, seen from the south-west, selected.
+    fn raised_polyline(f: &mut Frames) -> (CadApp, Handle) {
+        let mut app = app_looking(f, [-1.0, -1.0, 1.0]);
+        let st = app.session.state_mut().unwrap();
+        let center = st.view_dir.project(cadcraft_geom::Vec3::new(5.0, 0.0, 10.0));
+        st.set_view_quiet(cadcraft_engine::View { center, height: 80.0 });
+        let vertices = vec![cadcraft_geom::PolyVertex::new(Vec2::ZERO), cadcraft_geom::PolyVertex::new(Vec2::new(10.0, 0.0))];
+        let p = cadcraft_doc::LwPolyline { vertices, closed: false, const_width: 0.0, elevation: 20.0, plinegen: false };
+        let h = add(&mut app, cadcraft_doc::EntityKind::LwPolyline(p));
+        rebuild_now(f, &mut app);
+        (app, h)
+    }
+
+    /// In a 3D view a raised object's grips are where it is drawn, not on its shadow at z = 0, and
+    /// a grip dragged there follows the cursor at the object's height.
+    #[test]
+    fn a_raised_objects_grips_are_where_it_is_drawn() {
+        let g = cadcraft_geom::Vec3::new;
+        let mut f = Frames::default();
+        let (mut app, h) = raised_polyline(&mut f);
+        app.session.settings.osmode = 0;
+        app.session.settings.polarmode = false;
+        app.session.set_selection(vec![h]);
+        f.run(&mut app, Vec::new());
+        let xf = app.canvas.xf.unwrap();
+        let corner = xf.world_to_screen(g(10.0, 0.0, 20.0));
+        assert_eq!(grip_at(&app, &xf, Some(corner)), Some((h, 2)));
+        assert_eq!(grip_at(&app, &xf, Some(xf.world_to_screen(g(10.0, 0.0, 0.0)))), None, "nothing on the shadow");
+        f.click(&mut app, corner);
+        assert_eq!(app.session.running.as_ref().map(|r| r.id.as_str()), Some("grip"));
+        let to = corner + vec2(30.0, -10.0);
+        let want = xf.ray_on(to, g(0.0, 0.0, 20.0), cadcraft_geom::Vec3::Z).unwrap();
+        f.click(&mut app, to);
+        let d = app.session.doc().unwrap();
+        let cadcraft_doc::EntityKind::LwPolyline(p) = &d.entity(h).unwrap().kind else { panic!() };
+        assert!(p.vertices[1].p.dist(want.xy()) < 1e-6 && p.elevation == 20.0, "{:?} {} want {want:?}", p.vertices[1].p, p.elevation);
+        assert!(p.vertices[0].p == Vec2::ZERO);
+    }
+
+    /// In a 3D view an object off the construction plane gives no object snap on its shadow (the
+    /// engine snaps in the plane): the snap is where it is drawn, with its height.
+    #[test]
+    fn a_raised_objects_shadow_gives_no_snap() {
+        let g = cadcraft_geom::Vec3::new;
+        let mut f = Frames::default();
+        let (mut app, _) = raised_polyline(&mut f);
+        app.session.settings.osmode = snap::mode::END;
+        app.session.cmdline("line").unwrap();
+        f.run(&mut app, Vec::new());
+        let xf = app.canvas.xf.unwrap();
+        f.run(&mut app, vec![egui::Event::PointerMoved(xf.world_to_screen(g(10.0, 0.0, 0.0)) + vec2(1.0, 1.0))]);
+        assert_eq!(app.canvas.snap, None, "{:?}", app.canvas.snap);
+        f.run(&mut app, vec![egui::Event::PointerMoved(xf.world_to_screen(g(10.0, 0.0, 20.0)) + vec2(1.0, 1.0))]);
+        assert!(app.canvas.snap.is_some_and(|s| s.point.dist(Vec2::new(10.0, 0.0)) < 1e-9), "{:?}", app.canvas.snap);
+        assert!(app.canvas.snap_z.is_some_and(|z| (z - 20.0).abs() < 1e-9));
+        // A Tab-cycled or typed snap override looks only in the plane too.
+        app.session.cmdline("end").unwrap();
+        f.run(&mut app, vec![egui::Event::PointerMoved(xf.world_to_screen(g(10.0, 0.0, 0.0)) + vec2(1.0, 1.0))]);
+        assert_eq!(app.canvas.snap, None);
+    }
+
+    /// A grip under a gumball handle stays AutoCAD's: a click on a line's end grip (on the X
+    /// arrow) starts stretching it, it doesn't move the line.
+    #[test]
+    fn grips_win_over_gumball_handles() {
+        let g = cadcraft_geom::Vec3::new;
+        let mut f = Frames::default();
+        let (mut app, h, _) = gumball_on_a_line(&mut f, [0.0, -1.0, 0.0]);
+        let st = app.session.state_mut().unwrap();
+        let center = st.view_dir.project(g(5.0, 0.0, 0.0));
+        st.set_view_quiet(cadcraft_engine::View { center, height: 100.0 });
+        f.run(&mut app, Vec::new());
+        let xf = app.canvas.xf.unwrap();
+        let (o, end) = (xf.world_to_screen(g(5.0, 0.0, 0.0)), xf.world_to_screen(g(10.0, 0.0, 0.0)));
+        assert!(end.x - o.x > 20.0 && end.x - o.x < 75.0, "the end grip is on the X arrow");
+        f.click(&mut app, end);
+        assert_eq!(app.session.running.as_ref().map(|r| r.id.as_str()), Some("grip"));
+        f.click(&mut app, end + vec2(30.0, 0.0));
+        let (a, b) = line_ends(&app, h);
+        assert_eq!(a, cadcraft_geom::Vec3::ZERO, "stretched, not moved");
+        assert!(b.x > 10.5, "{b:?}");
+    }
+
+    /// Every key during a gumball drag is the gumball's: Space doesn't repeat the last command and
+    /// letters don't reach the command line; letting go still moves the selection.
+    #[test]
+    fn keys_under_a_gumball_drag_are_its_own() {
+        let mut f = Frames::default();
+        let (mut app, h, o) = gumball_on_a_line(&mut f, [0.0, -1.0, 0.0]);
+        app.session.last_command = Some("line".into());
+        let from = o + vec2(60.0, 0.0);
+        f.run(&mut app, vec![egui::Event::PointerMoved(from)]);
+        f.button(&mut app, from, true);
+        f.run(&mut app, vec![egui::Event::PointerMoved(from + vec2(50.0, 0.0))]);
+        assert!(app.canvas.gumball.dragging());
+        let space = egui::Event::Key { key: egui::Key::Space, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        f.run(&mut app, vec![space, egui::Event::Text(" ".into()), egui::Event::Text("x".into())]);
+        assert!(app.session.running.is_none(), "Space didn't repeat LINE");
+        assert!(app.cmd.buffer.is_empty());
+        f.button(&mut app, from + vec2(50.0, 0.0), false);
+        f.run(&mut app, Vec::new());
+        assert!(line_ends(&app, h).0.x > 0.0, "the drag moved the line");
+    }
+
+    /// The UCS icon in a 3D view is the construction plane's three axes; in plan with the World
+    /// CPlane AutoCAD's 2D icon, right and up.
+    #[test]
+    fn the_ucs_icon_shows_the_construction_plane() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0));
+        let plan = Xf::new(rect, Vec2::ZERO, 10.0);
+        let (o, arms) = ucs_icon_arms(rect, &plan);
+        assert_eq!(arms.iter().map(|(_, t)| *t - o).collect::<Vec<_>>(), vec![vec2(60.0, 0.0), vec2(0.0, -60.0)]);
+        let front = plan.looking(ViewDir::new(cadcraft_geom::Vec3::new(0.0, -1.0, 0.0))).on(front_cplane());
+        let (o, arms) = ucs_icon_arms(rect, &front);
+        assert_eq!(arms.len(), 3);
+        // Front's x is right, its y up the screen and its normal (toward -Y) at the viewer: a dot.
+        assert!((arms[0].1 - o - vec2(50.0, 0.0)).length() < 1e-3 && (arms[1].1 - o - vec2(0.0, -50.0)).length() < 1e-3);
+        assert!((arms[2].1 - o).length() < 1e-3);
+    }
+
     /// The viewport label and the ViewCube name the view and the visual style shown (#60).
     #[test]
     fn the_viewport_label_names_the_view_and_style() {
@@ -3435,8 +4185,11 @@ mod compare;
 /// Background rebuilds of the display list for a new view.
 mod rebuild;
 
-/// Object snaps on solids in 3D views.
+/// Object snaps on solids and curves in 3D views.
 mod snap3d;
+
+/// Rhino's gumball in 3D views.
+mod gumball;
 
 /// Rhino-style model tiles: their own lists, titles and right-drag navigation.
 mod tiles;
@@ -3455,9 +4208,13 @@ mod hatch_pick_tests {
         app.session.execute("rectang", &json!({ "p1": [0, 0], "p2": [10, 10] })).unwrap();
         let hx = app.session.execute("hatch", &json!({ "points": [[5, 5]], "pattern": "SOLID" })).unwrap()["handle"].as_str().unwrap().to_string();
         app.session.execute("line", &json!({ "points": [[20, 0], [30, 0]] })).unwrap();
-        assert_eq!(super::hatch_at(&app, Vec2::new(5.0, 5.0), 10.0).map(|h| h.hex()), Some(hx));
+        assert_eq!(super::hatch_at(&app, Vec2::new(5.0, 5.0), 10.0).map(|h| h.hex()), Some(hx.clone()));
         assert_eq!(super::hatch_at(&app, Vec2::new(25.0, 0.0), 10.0), None, "a line is not a hatch");
         assert_eq!(super::hatch_at(&app, Vec2::new(60.0, 60.0), 10.0), None);
+        // With a UCS moved to (100, 100) the point is in its coordinates.
+        app.session.execute("cplane", &json!({ "origin": [100, 100, 0] })).unwrap();
+        assert_eq!(super::hatch_at(&app, Vec2::new(-95.0, -95.0), 10.0).map(|h| h.hex()), Some(hx));
+        assert_eq!(super::hatch_at(&app, Vec2::new(5.0, 5.0), 10.0), None);
     }
 
     #[test]

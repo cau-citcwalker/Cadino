@@ -239,22 +239,58 @@ impl Entity {
         }
     }
 
-    /// A 2D transform of the world XY plane (MOVE, ROTATE, SCALE, MIRROR in plan). Objects in
-    /// the XY plane's orientation change as [`EntityKind::transform`] changes them; one in a
-    /// tilted plane goes through [`Entity::transform3`] with z scaled like a solid's (by the
-    /// square root of the determinant). False when that can't be represented.
-    pub fn transform(&mut self, m: &Mat3) -> bool {
-        if self.plan_xf().is_none() {
-            self.kind.transform(m);
-            // A line's or point's thickness direction turns with it (the default one stays).
-            if matches!(self.kind, EntityKind::Line(_) | EntityKind::Point(_)) && self.common.extrusion != Vec3::Z {
-                thicken(&mut self.common, &Mat4::from_mat3(m));
-            }
-            return true;
+    /// The object in the coordinates of construction plane `cplane` (CPLANE, UCS: plane
+    /// coordinates → world), as picks, snaps and grips there see it through [`Entity::prims`]
+    /// and [`Entity::grips`]: the plan view generalised to any plane. The object itself for
+    /// World (the identity). `None` when the plane can't be inverted or the object can't be
+    /// expressed in it ([`Entity::transform3`]: dimensions, leaders, tables... stay level, so a
+    /// tilted plane can't hold them).
+    pub fn on(&self, cplane: &Mat4) -> Option<Entity> {
+        if *cplane == Mat4::IDENTITY {
+            return Some(self.clone());
         }
+        let mut e = self.clone();
+        e.transform3(&cplane.inverse()?).then_some(e)
+    }
+
+    /// [`Entity::prims`] seen in construction plane `cplane` ([`Entity::on`]): plan for World,
+    /// nothing when the object can't be expressed in the plane.
+    pub fn prims_on(&self, cplane: &Mat4) -> Vec<Prim> {
+        if *cplane == Mat4::IDENTITY {
+            return self.prims();
+        }
+        self.on(cplane).map(|e| e.prims()).unwrap_or_default()
+    }
+
+    /// [`Entity::grips`] seen in construction plane `cplane` (see [`Entity::prims_on`]).
+    pub fn grips_on(&self, cplane: &Mat4) -> Vec<Vec2> {
+        if *cplane == Mat4::IDENTITY {
+            return self.grips();
+        }
+        self.on(cplane).map(|e| e.grips()).unwrap_or_default()
+    }
+
+    /// A 2D transform of the world XY plane (MOVE, ROTATE, SCALE, MIRROR in plan), z scaled like
+    /// a solid's (by the square root of the determinant): a uniform SCALE scales heights,
+    /// elevations and thicknesses too, as AutoCAD's does, whatever an object's plane; MOVE,
+    /// ROTATE and MIRROR keep them. Objects in the XY plane's orientation change in plan as
+    /// [`EntityKind::transform`] changes them; one in a tilted plane goes through
+    /// [`Entity::transform3`]. False when that can't be represented.
+    pub fn transform(&mut self, m: &Mat3) -> bool {
         let mut t = Mat4::from_mat3(m);
         t.m[2][2] = m.det().abs().sqrt();
-        self.transform3(&t)
+        if self.plan_xf().is_some() {
+            return self.transform3(&t);
+        }
+        if (t.m[2][2] - 1.0).abs() > 1e-12 && m.is_similarity() && self.transform3(&t) {
+            return true;
+        }
+        self.kind.transform(m);
+        // A line's or point's thickness direction turns with it (the default one stays).
+        if matches!(self.kind, EntityKind::Line(_) | EntityKind::Point(_)) && self.common.extrusion != Vec3::Z {
+            thicken(&mut self.common, &t);
+        }
+        true
     }
 
     /// Apply a 3D affine transform. True 3D objects transform their points; a solid composes its
@@ -356,13 +392,16 @@ impl Entity {
 /// with it; one turned straight down becomes the default with the thickness negated, as files
 /// with extrusion (0,0,-1) are read.
 fn thicken(c: &mut super::Common, m: &Mat4) {
+    // A file's extrusion need not be a unit vector: the thickness scales by how much `m`
+    // stretches the direction, not by its length.
+    let was = c.extrusion.len();
     let v = m.apply_vec(c.extrusion);
     let len = v.len();
-    if !(len.is_finite() && len > 1e-300) {
+    if !(len.is_finite() && len > 1e-300 && was.is_finite() && was > 1e-300) {
         return;
     }
     let mut n = v * (1.0 / len);
-    let mut t = c.thickness * len;
+    let mut t = c.thickness * (len / was);
     if n.x.hypot(n.y) < 1e-9 {
         if n.z < 0.0 {
             t = -t;

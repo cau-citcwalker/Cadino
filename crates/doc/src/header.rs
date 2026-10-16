@@ -2,8 +2,12 @@
 
 use std::collections::BTreeMap;
 
-use cadcraft_geom::{Vec2, Vec3};
+use cadcraft_geom::{Mat4, Vec2, Vec3};
 use serde::{Deserialize, Serialize};
+
+/// Where [`Header::cplane`] keeps model space's construction plane (origin, x axis, y axis):
+/// session variables of Cadino's own, never read from a file's HEADER section.
+const CPLANE_VARS: [&str; 3] = ["CADCRAFT_CPLANEORG", "CADCRAFT_CPLANEXDIR", "CADCRAFT_CPLANEYDIR"];
 
 /// A header variable value.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -89,6 +93,38 @@ impl Header {
             .map(|p| p.xy())
             .filter(|p| p.is_finite() && if allow_zero { p.x >= 0.0 && p.y >= 0.0 } else { p.x > 0.0 && p.y > 0.0 })
             .unwrap_or(Vec2::new(0.5, 0.5))
+    }
+    /// Model space's construction plane while it shows one view (CPLANE, UCS): its coordinates →
+    /// world; World (the identity) when none is set, or its axes make no plane. Kept apart from
+    /// AutoCAD's `$UCSORG`/`$UCSXDIR`/`$UCSYDIR`, which stay as a file has them: a drawing from
+    /// another program opens in World, as its 2D work expects; Cadino's own files mark theirs.
+    pub fn cplane(&self) -> Mat4 {
+        let [o, x, y] = CPLANE_VARS.map(|n| self.point(n));
+        match (o, x, y) {
+            (Some(o), Some(x), Some(y)) => Mat4::frame(o, x, y).unwrap_or(Mat4::IDENTITY),
+            _ => Mat4::IDENTITY,
+        }
+    }
+    /// Store `m` (an orthonormal frame, see [`Header::cplane`]) as the construction plane; World
+    /// stores nothing.
+    pub fn set_cplane(&mut self, m: &Mat4) {
+        if *m == Mat4::IDENTITY {
+            for n in CPLANE_VARS {
+                self.vars.remove(n);
+            }
+            return;
+        }
+        for (n, p) in CPLANE_VARS.into_iter().zip([m.col(3), m.col(0), m.col(1)]) {
+            self.set(n, HVal::Point(p));
+        }
+    }
+    /// AutoCAD's model space UCS as a file stored it (`$UCSORG`, `$UCSXDIR`, `$UCSYDIR`), kept
+    /// for writing back; World when missing or unusable. Not a construction plane.
+    pub fn file_ucs(&self) -> Mat4 {
+        let o = self.point("UCSORG").unwrap_or(Vec3::ZERO);
+        let x = self.point("UCSXDIR").unwrap_or(Vec3::X);
+        let y = self.point("UCSYDIR").unwrap_or(Vec3::Y);
+        Mat4::frame(o, x, y).unwrap_or(Mat4::IDENTITY)
     }
     pub fn set_f64(&mut self, name: &str, v: f64) {
         self.set(name, HVal::Real(v));

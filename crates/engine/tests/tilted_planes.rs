@@ -302,3 +302,80 @@ fn fillet_chamfer_join_and_pedit_refuse_tilted_objects_and_leave_them_alone() {
     let e = entity(&s, p);
     assert!(matches!(&e.kind, EntityKind::LwPolyline(q) if q.closed) && e.common.extrusion == Vec3::new(0.0, -0.6, 0.8));
 }
+
+/// An arc standing in the XZ plane facing -Y at elevation 3 (world y = -3): OCS (x, y) is
+/// world (x, -3, y), so plan view sees a segment on y = -3.
+const STANDING_ARC: &str = "0\nARC\n8\n0\n10\n0\n20\n0\n30\n3\n40\n1\n50\n0\n51\n180\n210\n0\n220\n-1\n230\n0\n";
+
+#[test]
+fn grip_stretch_keeps_an_arc_or_fit_spline_at_its_elevation() {
+    let mut s = session("", STANDING_ARC);
+    let h = only(&s).handle;
+    // The end grip (-1, -3) in plan dragged to (-2, -3): the arc stays in its plane.
+    s.execute("grip.move", &json!({ "handle": h.hex(), "index": 2, "to": [-2.0, -3.0] })).unwrap();
+    let e = only(&s);
+    let EntityKind::Arc(a) = &e.kind else { panic!("{e:?}") };
+    assert_eq!(a.center.z, 3.0, "{a:?}");
+    assert!(e.grips().iter().all(|g| (g.y + 3.0).abs() < 1e-9), "{:?}", e.grips());
+    // A raised fit spline keeps its elevation when a fit point is dragged.
+    let sp = s.execute("spline", &json!({ "fit": [[0, 0], [5, 3], [10, 0]] })).unwrap()["handle"].clone();
+    let sp = Handle::parse_hex(sp.as_str().unwrap()).unwrap();
+    s.doc_mut().unwrap().modify_entity(sp, |e| e.kind.set_elevation(5.0)).unwrap();
+    s.execute("grip.move", &json!({ "handle": sp.hex(), "index": 1, "to": [5.0, 4.0] })).unwrap();
+    assert_eq!(entity(&s, sp).kind.elevation(), 5.0);
+}
+
+#[test]
+fn splinedit_keeps_the_elevation_and_refuses_plan_points_on_a_tilted_spline() {
+    let mut s = Session::new();
+    let h = s.execute("spline", &json!({ "fit": [[0, 0], [5, 3], [10, 0]] })).unwrap()["handle"].clone();
+    let h = Handle::parse_hex(h.as_str().unwrap()).unwrap();
+    s.doc_mut().unwrap().modify_entity(h, |e| e.kind.set_elevation(5.0)).unwrap();
+    for opt in [json!({ "option": "close" }), json!({ "option": "open" }), json!({ "option": "fitmove", "index": 1, "to": [5, 4] })] {
+        let mut p = opt.clone();
+        p["handle"] = json!(h.hex());
+        s.execute("splinedit", &p).unwrap();
+        assert_eq!(entity(&s, h).kind.elevation(), 5.0, "{opt}");
+    }
+    s.execute("splinedit", &json!({ "handle": h.hex(), "option": "polyline" })).unwrap();
+    assert_eq!(entity(&s, h).kind.elevation(), 5.0);
+    // Standing up (facing +X), its points are not plan's: point options are refused.
+    let k = s.execute("spline", &json!({ "fit": [[0, 0], [5, 3], [10, 0]] })).unwrap()["handle"].clone();
+    let k = Handle::parse_hex(k.as_str().unwrap()).unwrap();
+    s.doc_mut().unwrap().modify_entity(k, |e| e.common.extrusion = Vec3::X).unwrap();
+    let before = all(&s);
+    for opt in ["fitmove", "move", "fitadd", "vertexmove"] {
+        let r = s.execute("splinedit", &json!({ "handle": k.hex(), "option": opt, "index": 1, "to": [5, 4] }));
+        assert!(r.as_ref().is_err_and(|e| e.to_string().contains("tilted plane")), "{opt}: {r:?}");
+        assert_eq!(all(&s), before, "{opt}");
+    }
+}
+
+/// A closed panel outline standing in the YZ plane (facing +X) at elevation 600: plan view sees
+/// the segment x = 600, y = 0..500.
+const STANDING_PANEL: &str =
+    "0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n38\n600\n10\n0\n20\n0\n10\n500\n20\n0\n10\n500\n20\n700\n10\n0\n20\n700\n210\n1\n220\n0\n230\n0\n";
+
+#[test]
+fn region_and_hatch_leave_a_standing_outline_alone() {
+    let mut s = session("", STANDING_PANEL);
+    let h = only(&s).handle;
+    let before = all(&s);
+    for (cmd, p) in [("region", json!({ "handles": [h.hex()] })), ("hatch", json!({ "handles": [h.hex()] }))] {
+        let r = s.execute(cmd, &p);
+        assert!(r.as_ref().is_err_and(|e| e.to_string().contains("tilted plane")), "{cmd}: {r:?}");
+        assert_eq!(all(&s), before, "{cmd}");
+    }
+}
+
+#[test]
+fn a_window_round_what_plan_shows_selects_an_oblique_circle() {
+    // Radius 1 at the origin facing (1, 1, 1): an ellipse within ±0.817 in plan.
+    let circle = "0\nCIRCLE\n8\n0\n10\n0\n20\n0\n30\n0\n40\n1\n210\n1\n220\n1\n230\n1\n";
+    let s = session("", circle);
+    let h = only(&s).handle;
+    let w = cadcraft_engine::geom::Bounds2::new(Vec2::new(-0.9, -0.9), Vec2::new(0.9, 0.9));
+    assert_eq!(cadcraft_engine::select::select_window(s.doc().unwrap(), &Space::Model, w, false), vec![h]);
+    let b = cadcraft_engine::doc::entity_bounds(s.doc().unwrap(), &only(&s), 0);
+    assert!(b.max.x < 0.82 && b.max.y < 0.82 && b.min.x > -0.82, "{b:?}");
+}

@@ -19,7 +19,7 @@ use opencascade::mesh::Mesher;
 use opencascade::primitives::{Compound, Edge, Face, Shape, ShapeType, Shell, Solid, Wire};
 
 use crate::curve::{Cut, Run, closed, unit};
-use crate::{BoolOp, Built, Curve, Imported, KernelError, Placed, Primitive, Result, Seg, similarity};
+use crate::{BoolOp, Built, Curve, Imported, KernelError, Outline, Placed, Primitive, Result, Seg, similarity};
 
 fn dv(p: Vec3) -> DVec3 {
     dvec3(p.x, p.y, p.z)
@@ -327,11 +327,18 @@ pub fn import_iges(path: &Path) -> Result<Imported> {
     imported(&shape)
 }
 
+/// Largest step of the grid IGES import matches points on (a micron in millimetres, which
+/// OpenCASCADE reads files in): far above the copies' differences, far below any feature.
+const MAX_MATCH: f64 = 1e-3;
+
 /// [`import_iges`] of the shape read.
 fn imported(shape: &Shape) -> Result<Imported> {
-    // Points this close are one (a hundred-thousandth of the model's size): faces written as
-    // trimmed surfaces each have their own copy of a shared edge.
-    let q = deflection(shape) * 0.02;
+    // Points this close are one (a hundred-thousandth of the model's size, at most a micron, so an
+    // object far from the rest can't coarsen everything else's): faces written as trimmed
+    // surfaces each have their own copy of a shared edge.
+    // ponytail: one grid for the whole file; each edge's own tolerance (BRep_Tool::Tolerance)
+    // when the bindings expose it.
+    let q = (deflection(shape) * 0.02).min(MAX_MATCH);
     let key = |p: Vec3| ((p.x / q).round() as i64, (p.y / q).round() as i64, (p.z / q).round() as i64);
     let ends = |e: &Edge| {
         let (a, b) = (key(v3(e.start_point())), key(v3(e.end_point())));
@@ -383,7 +390,7 @@ fn imported(shape: &Shape) -> Result<Imported> {
             g.push(Shape::from(f));
         }
     }
-    let shapes = groups.into_iter().map(|g| built(Compound::from_shapes(&g).into())).collect::<Result<Vec<_>>>()?;
+    let shapes = enclose(groups.into_iter().map(|g| built(Compound::from_shapes(&g).into())).collect::<Result<Vec<_>>>()?)?;
     // The free edges: every edge, less one per face's edge with the same ends; where a free edge
     // has the ends of a face's edge (an arc drawn corner to corner over a panel), by its points.
     let points = |e: &Edge| -> Vec<Vec3> { e.approximation_segments().map(v3).collect() };
@@ -438,6 +445,66 @@ fn imported(shape: &Shape) -> Result<Imported> {
         return Err(KernelError::Invalid("the file has no surfaces or curves".into()));
     }
     Ok(Imported { shapes, curves })
+}
+
+/// Most void-against-lump checks [`enclose`] makes (hostile files).
+const MAX_ENCLOSE: usize = 100_000_000;
+
+/// The signed volume a closed mesh encloses: negative when its faces point inward.
+fn volume(m: &Mesh3) -> f64 {
+    m.tris.iter().filter_map(|t| m.tri(t)).map(|[a, b, c]| a.dot(b.cross(c))).sum::<f64>() / 6.0
+}
+
+/// The box of a mesh's vertices; `None` without finite ones.
+fn mesh_box(m: &Mesh3) -> Option<(Vec3, Vec3)> {
+    let mut pts = m.verts.iter().filter(|p| p.is_finite());
+    let first = *pts.next()?;
+    Some(pts.fold((first, first), |(lo, hi), p| {
+        (Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z)), Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z)))
+    }))
+}
+
+/// The lumps with each void (a closed lump facing inward: a hollow solid's inner shell, which an
+/// IGES file written in faces mode keeps apart from its outer one) put back into the smallest
+/// closed lump around it, so a hollow solid comes back as one solid, facing outward.
+/// ponytail: "around" by bounding boxes, every void against every lump (capped); a void inside no
+/// lump stays apart, inside-out (reversing faces needs TopoDS_Shape::Reverse in the bindings).
+fn enclose(mut lumps: Vec<Built>) -> Result<Vec<Built>> {
+    let info: Vec<(f64, Option<(Vec3, Vec3)>)> = lumps.iter().map(|b| (if b.mesh.open { 0.0 } else { volume(&b.mesh) }, mesh_box(&b.mesh))).collect();
+    let voids: Vec<usize> = info.iter().enumerate().filter(|(_, (v, _))| *v < 0.0).map(|(i, _)| i).collect();
+    if voids.is_empty() || voids.len().saturating_mul(lumps.len()) > MAX_ENCLOSE {
+        return Ok(lumps);
+    }
+    let within =
+        |a: (Vec3, Vec3), b: (Vec3, Vec3)| a.0.x >= b.0.x && a.0.y >= b.0.y && a.0.z >= b.0.z && a.1.x <= b.1.x && a.1.y <= b.1.y && a.1.z <= b.1.z;
+    let mut into: HashMap<usize, Vec<usize>> = HashMap::new();
+    for v in voids {
+        let Some(vb) = info.get(v).and_then(|i| i.1) else { continue };
+        let holder = info
+            .iter()
+            .enumerate()
+            .filter(|(_, (vol, b))| *vol > 0.0 && b.is_some_and(|b| within(vb, b)))
+            .min_by(|a, b| a.1.0.total_cmp(&b.1.0))
+            .map(|(i, _)| i);
+        if let Some(h) = holder {
+            into.entry(h).or_default().push(v);
+        }
+    }
+    // Each holder made again with its voids' faces, read from their B-rep text (written before
+    // meshing, so it carries no triangulation).
+    for (h, vs) in &into {
+        let mut faces: Vec<Shape> = Vec::new();
+        for i in std::iter::once(h).chain(vs) {
+            let Some(b) = lumps.get(*i) else { continue };
+            faces.extend(read_brep(&b.brep)?.faces().map(|f| Shape::from(&f)));
+        }
+        let whole = built(Compound::from_shapes(&faces).into())?;
+        if let Some(l) = lumps.get_mut(*h) {
+            *l = whole;
+        }
+    }
+    let gone: HashSet<usize> = into.values().flatten().copied().collect();
+    Ok(lumps.into_iter().enumerate().filter(|(i, _)| !gone.contains(i)).map(|(_, b)| b).collect())
 }
 
 /// `owner` (see [`objects`]) keeping only the groups of two or more faces that join along shared
@@ -672,19 +739,53 @@ fn deflection(s: &Shape) -> f64 {
     if d.is_finite() && d > 0.0 { (d * 5e-4).max(1e-7) } else { 1e-3 }
 }
 
+/// [`crate::Outline`] of stored B-rep text.
+pub fn outline(brep: &str) -> Result<Outline> {
+    let (mesh, smooth) = meshed(&read_brep(brep)?, true)?;
+    Ok(Outline { mesh, smooth })
+}
+
+/// The box of the placed shape's geometry (see [`crate::boxes`]), without the tolerance
+/// OpenCASCADE pads a box with.
+pub fn bounding(s: Placed) -> Result<(Vec3, Vec3)> {
+    let bb = bounding_box::aabb(&placed(s)?);
+    if bb.is_void() {
+        return Err(KernelError::Invalid("the solid is empty".into()));
+    }
+    let (lo, hi) = (bb.min(), bb.max());
+    // Never more than half the box off (a tiny shape keeps a box).
+    let pad = bb.gap_vec().min((hi - lo) * 0.5).max(DVec3::ZERO);
+    let (lo, hi) = (v3(lo + pad), v3(hi - pad));
+    if lo.is_finite() && hi.is_finite() { Ok((lo, hi)) } else { Err(KernelError::Failed("the solid's box is not finite".into())) }
+}
+
+/// Two faces whose surface normals at a point of their edge are closer than this (half a degree)
+/// meet tangentially: a smooth edge.
+const TANGENT_COS: f64 = 0.999_96;
+
 /// Triangles face by face, and the edges as the boundaries of each face's triangles (shared
 /// edges once). The whole shape is triangulated first so neighbouring faces agree on edges.
 /// It is open (a surface) unless it is a solid or every face boundary is shared: a closed
 /// shell's boundaries pair up (a seam with itself), a surface's own edges don't.
 fn mesh(shape: &Shape) -> Result<Mesh3> {
+    meshed(shape, false).map(|(m, _)| m)
+}
+
+/// [`mesh`], and with `smooth` which of its edges are smooth (parallel to them, see
+/// [`crate::Outline`]): a seam (one face on both sides), or faces whose surface normals agree at
+/// a point inside the edge.
+fn meshed(shape: &Shape, smooth: bool) -> Result<(Mesh3, Vec<bool>)> {
     let tol = deflection(shape);
     Mesher::try_new(shape, tol).map_err(failed("meshing"))?;
     let q = tol * 1e-3;
     let key = |p: Vec3| ((p.x / q).round() as i64, (p.y / q).round() as i64, (p.z / q).round() as i64);
     let mut out = Mesh3::default();
     let mut shared: HashMap<_, u32> = HashMap::new();
+    // The faces on each boundary piece, when judging smoothness.
+    let mut sides: HashMap<_, Vec<usize>> = HashMap::new();
+    let faces: Vec<Face> = shape.faces().collect();
     let mut segs = Vec::new();
-    for f in shape.faces() {
+    for (fi, f) in faces.iter().enumerate() {
         let m = Mesher::try_new(&Shape::from(f), tol).map_err(failed("meshing"))?.mesh().map_err(failed("meshing"))?;
         let base = out.verts.len();
         out.verts.extend(m.vertices.iter().map(|p| v3(*p)));
@@ -701,11 +802,15 @@ fn mesh(shape: &Shape) -> Result<Mesh3> {
             let (a, b) = (v3(*a), v3(*b));
             let (ka, kb) = (key(a), key(b));
             if n == 1 && ka != kb {
-                let uses = shared.entry((ka.min(kb), ka.max(kb))).or_default();
+                let k = (ka.min(kb), ka.max(kb));
+                let uses = shared.entry(k).or_default();
                 if *uses == 0 {
                     segs.push((a, b));
                 }
                 *uses += 1;
+                if smooth {
+                    sides.entry(k).or_default().push(fi);
+                }
             }
         }
     }
@@ -713,7 +818,25 @@ fn mesh(shape: &Shape) -> Result<Mesh3> {
     let corners: HashSet<_> = shape.edges().flat_map(|e| [key(v3(e.start_point())), key(v3(e.end_point()))]).collect();
     out.edges = chain(&segs, key, &corners);
     out.open = !matches!(shape.shape_type(), ShapeType::Solid | ShapeType::CompoundSolid) && shared.values().any(|n| n % 2 == 1);
-    Ok(out)
+    if !smooth {
+        return Ok((out, Vec::new()));
+    }
+    // Judged at a point inside each edge: an inner vertex of a curved one (on the true edge), the
+    // middle of a straight one.
+    let tangent = |e: &Vec<Vec3>| {
+        let i = e.len() / 2;
+        let (Some(a), Some(b)) = (i.checked_sub(1).and_then(|j| e.get(j)), e.get(i)) else { return false };
+        let (ka, kb) = (key(*a), key(*b));
+        let at = if e.len() > 2 { *b } else { (*a + *b) * 0.5 };
+        let normal = |f: usize| faces.get(f).and_then(|f| unit(v3(f.normal_at(dv(at)))));
+        match sides.get(&(ka.min(kb), ka.max(kb))).map(Vec::as_slice) {
+            Some([f, g]) if f == g => true,
+            Some([f, g]) => normal(*f).zip(normal(*g)).is_some_and(|(n, m)| n.dot(m) > TANGENT_COS),
+            _ => false,
+        }
+    };
+    let flags = out.edges.iter().map(tangent).collect();
+    Ok((out, flags))
 }
 
 /// Join segments that share end points into polylines, one per B-rep edge: a chain runs on only
@@ -1140,6 +1263,52 @@ mod modelling_tests {
         assert!(matches!(crate::shell(placed(&s), 0.5, true), Err(KernelError::Invalid(m)) if m.contains("top")));
     }
 
+    /// A cylinder's seam is smooth and its circles are edges; a filleted box's flat faces run
+    /// into the fillets smoothly; a leg tapering 1.4° has every edge a real one.
+    #[test]
+    fn outlines_tell_smooth_edges_from_shallow_creases() {
+        let c = crate::primitive(&Primitive::Cylinder { base: Vec3::ZERO, radius: 20.0, height: 700.0 }).unwrap();
+        let o = crate::outlines(&[c.brep.as_str()]).unwrap().remove(0).unwrap();
+        assert_eq!(o.smooth.len(), o.mesh.edges.len());
+        for (e, smooth) in o.mesh.edges.iter().zip(&o.smooth) {
+            let seam = e.len() == 2;
+            assert_eq!(*smooth, seam, "{e:?}");
+        }
+        let b = crate::primitive(&Primitive::Box { a: Vec3::ZERO, b: v(100.0, 60.0, 20.0) }).unwrap();
+        let f = crate::fillet(placed(&b), 2.0).unwrap();
+        let o = crate::outlines(&[f.brep.as_str()]).unwrap().remove(0).unwrap();
+        assert!(o.smooth.iter().filter(|s| **s).count() >= 24, "{:?}", o.smooth);
+        let leg = [v(0.0, 0.0, 0.0), v(30.0, 0.0, 0.0), v(45.0, 0.0, 600.0), v(45.0, 0.0, 700.0), v(0.0, 0.0, 700.0)];
+        let t = crate::extrude(&polygon(&leg), v(0.0, 18.0, 0.0)).unwrap();
+        let o = crate::outlines(&[t.brep.as_str(), "not a B-rep"]).unwrap();
+        let first = o.first().cloned().flatten().unwrap();
+        assert!(first.smooth.iter().all(|s| !s) && first.smooth.len() == 15, "{:?}", first.smooth);
+        assert!(o.get(1).is_some_and(Option::is_none), "a bad one is none, the rest still come");
+    }
+
+    /// Boxes come from the geometry: a slender round leg measures its full diameter (its mesh's
+    /// points don't reach it), and a board turned in the world measures its turned box.
+    #[test]
+    fn boxes_measure_geometry_not_facets() {
+        let c = crate::primitive(&Primitive::Cylinder { base: Vec3::ZERO, radius: 20.0, height: 700.0 }).unwrap();
+        let id = Mat4::IDENTITY;
+        let got = crate::boxes(&[Placed { brep: &c.brep, xform: &id }]).unwrap();
+        let (lo, hi) = got[0].unwrap();
+        assert!(near(lo, v(-20.0, -20.0, 0.0), 1e-6) && near(hi, v(20.0, 20.0, 700.0), 1e-6), "{lo:?} {hi:?}");
+        let (mlo, mhi) = bounds(&c.mesh);
+        assert!(mhi.y - mlo.y < 40.0 - 1e-3 || mhi.x - mlo.x < 40.0 - 1e-3, "the mesh falls short: {mlo:?} {mhi:?}");
+        let b = crate::primitive(&Primitive::Box { a: Vec3::ZERO, b: v(600.0, 400.0, 18.0) }).unwrap();
+        let turn = crate::tests::xform(Vec3::Z, 30f64.to_radians(), 1.0, false, Vec3::ZERO);
+        let mut shear = Mat4::IDENTITY;
+        shear.m[0][1] = 0.5;
+        let got = crate::boxes(&[Placed { brep: &b.brep, xform: &turn }, Placed { brep: &b.brep, xform: &shear }, Placed { brep: "x", xform: &id }])
+            .unwrap();
+        let (lo, hi) = got[0].unwrap();
+        let (c30, s30) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
+        assert!(near(hi - lo, v(600.0 * c30 + 400.0 * s30, 600.0 * s30 + 400.0 * c30, 18.0), 1e-6), "{lo:?} {hi:?}");
+        assert!(got[1].is_none() && got[2].is_none(), "{got:?}");
+    }
+
     #[test]
     fn slice_cuts_in_two() {
         let b = crate::primitive(&Primitive::Box { a: Vec3::ZERO, b: v(10.0, 4.0, 4.0) }).unwrap();
@@ -1348,6 +1517,50 @@ mod exchange_tests {
             assert_eq!(got.shapes[0].mesh.tris.len(), 12);
             assert!(!got.shapes[0].mesh.open);
         }
+    }
+
+    /// The signed volume a closed mesh encloses.
+    fn signed_volume(m: &cadcraft_geom::Mesh3) -> f64 {
+        m.tris.iter().filter_map(|t| m.tri(t)).map(|[a, b, c]| a.dot(b.cross(c)) / 6.0).sum()
+    }
+
+    /// A hollow box (closed shell: an outer and an inner void shell, which faces-mode IGES writes
+    /// apart) comes back as one solid facing outward, alone or beside another box.
+    #[test]
+    fn iges_hollow_solids_come_back_whole() {
+        let b = crate::primitive(&Primitive::Box { a: Vec3::ZERO, b: v(10.0, 10.0, 10.0) }).unwrap();
+        let hollow = crate::shell(Placed { brep: &b.brep, xform: &Mat4::IDENTITY }, 1.0, false).unwrap();
+        let other = crate::primitive(&Primitive::Box { a: v(20.0, 0.0, 0.0), b: v(25.0, 5.0, 5.0) }).unwrap();
+        for with_other in [false, true] {
+            let path = temp(&format!("hollow-{with_other}.igs"));
+            let mut solids = vec![Placed { brep: &hollow.brep, xform: &Mat4::IDENTITY }];
+            if with_other {
+                solids.push(Placed { brep: &other.brep, xform: &Mat4::IDENTITY });
+            }
+            crate::export_iges(&solids, &[], &path).unwrap();
+            let got = crate::import_iges(&path).unwrap();
+            let _ = std::fs::remove_file(&path);
+            assert_eq!(got.shapes.len(), solids.len(), "{with_other}");
+            let h = got.shapes.iter().find(|s| s.mesh.tris.len() == 24).expect("the hollow box, whole");
+            assert!(!h.mesh.open);
+            assert!((signed_volume(&h.mesh) - (1000.0 - 512.0)).abs() < 1e-6, "{}", signed_volume(&h.mesh));
+            assert!(got.shapes.iter().all(|s| signed_volume(&s.mesh) > 0.0));
+        }
+    }
+
+    /// A stray object a kilometre away doesn't wipe out a shelf-pin hole's 5 mm circle.
+    #[test]
+    fn iges_far_away_objects_keep_small_curves() {
+        let cabinet = crate::primitive(&Primitive::Box { a: Vec3::ZERO, b: v(600.0, 560.0, 720.0) }).unwrap();
+        let pin = Curve::Segs(vec![Seg::Circle { center: v(50.2, 50.2, 0.0), radius: 2.5, normal: Vec3::Z }]);
+        let stray = Curve::Segs(vec![Seg::Line { a: v(1e6, 0.0, 0.0), b: v(1e6 + 10.0, 0.0, 0.0) }]);
+        let path = temp("far.igs");
+        crate::export_iges(&[Placed { brep: &cabinet.brep, xform: &Mat4::IDENTITY }], &[pin, stray], &path).unwrap();
+        let got = crate::import_iges(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let circle = got.curves.iter().find(|c| c.len() > 8 && c.first() == c.last()).expect("the pin hole");
+        assert!(circle.iter().all(|p| ((*p - v(50.2, 50.2, 0.0)).len() - 2.5).abs() < 1e-6), "{circle:?}");
+        assert_eq!(got.curves.len(), 2, "{:?}", got.curves.len());
     }
 
     #[test]

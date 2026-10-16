@@ -3,6 +3,8 @@
 //! position (drag it to move it) and a down-pointing triangle for a list (click it for the
 //! visibility states or lookup values). Dragging runs the engine's dynamic grip edit
 //! ([`cadcraft_engine::Session::start_dyn_grip`]); a list choice runs `blocks.reference.set`.
+//! Grips sit where they are in the world (at the reference's height), whatever the construction
+//! plane.
 
 use std::sync::Arc;
 
@@ -14,6 +16,7 @@ use crate::canvas::Xf;
 use crate::theme::Tokens;
 use cadcraft_engine::doc::Handle;
 use cadcraft_engine::doc::dynblock::{DynGrip, GripShape};
+use cadcraft_engine::geom::Vec2;
 
 /// Most selected references whose grips are shown.
 const MAX_REFERENCES: usize = 200;
@@ -22,34 +25,44 @@ const MAX_REFERENCES: usize = 200;
 #[derive(Clone, Default)]
 pub struct Cache {
     key: (u64, u64, Vec<Handle>),
-    grips: Arc<Vec<(Handle, DynGrip)>>,
+    grips: Arc<Vec<(Handle, DynGrip, f64)>>,
 }
 
-/// The selected references' dynamic grips (cached).
-pub(crate) fn of_selection(app: &mut CadApp) -> Arc<Vec<(Handle, DynGrip)>> {
+/// The selected references' dynamic grips, each with its reference's height (cached).
+pub(crate) fn of_selection(app: &mut CadApp) -> Arc<Vec<(Handle, DynGrip, f64)>> {
     let sel = app.session.selection();
     let Ok(st) = app.session.state() else { return Arc::default() };
     let key = (st.uid, st.revision, sel.clone());
     if app.canvas.dyn_grips.key != key {
-        let grips: Vec<(Handle, DynGrip)> = sel
+        let grips: Vec<(Handle, DynGrip, f64)> = sel
             .iter()
             .filter(|h| matches!(st.doc.entity(**h).map(|e| &e.kind), Some(cadcraft_engine::doc::EntityKind::Insert(_))))
             .filter(|h| st.doc.entity(**h).is_some_and(|e| !st.doc.layer(&e.common.layer).is_some_and(|l| l.locked)))
             .take(MAX_REFERENCES)
-            .flat_map(|h| cadcraft_engine::doc::dynblock::grips(&st.doc, *h).into_iter().map(move |g| (*h, g)))
+            .flat_map(|h| {
+                // A tilted reference's grips are where plan shows them (`dynblock::grips`).
+                let z = st.doc.entity(*h).filter(|e| e.plan_xf().is_none()).map_or(0.0, |e| e.kind.elevation());
+                cadcraft_engine::doc::dynblock::grips(&st.doc, *h).into_iter().map(move |g| (*h, g, z))
+            })
             .collect();
         app.canvas.dyn_grips = Cache { key, grips: Arc::new(grips) };
     }
     app.canvas.dyn_grips.grips.clone()
 }
 
-/// The screen outline of grip `g` (size `gs`, half the side of a square grip).
-fn outline(xf: &Xf, g: &DynGrip, gs: f32) -> Vec<Pos2> {
-    let c = xf.to_screen(g.at);
+/// Where world plan point `p` at height `z` (a grip's, in drawing coordinates) is on screen,
+/// through any construction plane.
+fn spot(xf: &Xf, p: Vec2, z: f64) -> Pos2 {
+    xf.world_to_screen(p.to3(z))
+}
+
+/// The screen outline of grip `g` at height `z` (size `gs`, half the side of a square grip).
+fn outline(xf: &Xf, g: &DynGrip, z: f64, gs: f32) -> Vec<Pos2> {
+    let c = spot(xf, g.at, z);
     match g.shape {
         GripShape::Linear => {
             // The arrow points the way the distance grows, on screen.
-            let ahead = xf.to_screen(g.at + g.dir) - c;
+            let ahead = spot(xf, g.at + g.dir, z) - c;
             let u = if ahead.length() > 1e-6 { ahead / ahead.length() } else { vec2(1.0, 0.0) };
             let n = vec2(-u.y, u.x);
             let (len, half) = (gs * 1.6, gs * 1.1);
@@ -65,9 +78,9 @@ fn outline(xf: &Xf, g: &DynGrip, gs: f32) -> Vec<Pos2> {
     }
 }
 
-/// Whether `p` is on grip `g` (its box, a little larger, as for other grips).
-fn hit(xf: &Xf, g: &DynGrip, gs: f32, p: Pos2) -> bool {
-    let r = Rect::from_points(&outline(xf, g, gs)).expand(3.0);
+/// Whether `p` is on grip `g` at height `z` (its box, a little larger, as for other grips).
+fn hit(xf: &Xf, g: &DynGrip, z: f64, gs: f32, p: Pos2) -> bool {
+    let r = Rect::from_points(&outline(xf, g, z, gs)).expand(3.0);
     r.contains(p)
 }
 
@@ -77,13 +90,13 @@ pub(crate) fn draw(app: &mut CadApp, painter: &Painter, xf: &Xf, rect: Rect, hov
     let t = Tokens::get();
     let gs = app.session.settings.gripsize as f32;
     let hot = app.canvas.dyn_hot;
-    for (h, g) in of_selection(app).iter() {
-        if !rect.contains(xf.to_screen(g.at)) {
+    for (h, g, z) in of_selection(app).iter() {
+        if !rect.contains(spot(xf, g.at, *z)) {
             continue;
         }
-        let pts = outline(xf, g, gs);
+        let pts = outline(xf, g, *z, gs);
         let is_hot = hot.as_ref().is_some_and(|(hh, n, p)| hh == h && *n == g.node && *p == g.part);
-        let warm = !is_hot && hover.is_some_and(|p| hit(xf, g, gs, p));
+        let warm = !is_hot && hover.is_some_and(|p| hit(xf, g, *z, gs, p));
         let fill = if is_hot {
             t.grip_hot
         } else if warm {
@@ -99,7 +112,7 @@ pub(crate) fn draw(app: &mut CadApp, painter: &Painter, xf: &Xf, rect: Rect, hov
 pub(crate) fn at(app: &mut CadApp, xf: &Xf, hover: Option<Pos2>) -> Option<(Handle, DynGrip)> {
     let p = hover?;
     let gs = app.session.settings.gripsize as f32;
-    of_selection(app).iter().find(|(_, g)| hit(xf, g, gs, p)).cloned()
+    of_selection(app).iter().find(|(_, g, z)| hit(xf, g, *z, gs, p)).map(|(h, g, _)| (*h, g.clone()))
 }
 
 /// A click on dynamic grip `g` of reference `h`: drag it, or open its list.
@@ -107,6 +120,12 @@ pub(crate) fn click(app: &mut CadApp, (h, g): (Handle, DynGrip)) {
     if g.shape == GripShape::List {
         app.canvas.dyn_menu = Some((h, g));
         app.canvas.dyn_menu_fresh = true;
+        return;
+    }
+    // ponytail: the engine's dynamic grip drag takes world XY points, not the construction plane's
+    // the canvas gives; refused (the drawing unchanged) outside World until it takes CPlane points.
+    if app.session.cplane() != cadcraft_engine::geom::Mat4::IDENTITY {
+        app.session.echo("Dynamic grips are dragged in the World construction plane only for now (CPLANE World); lists still work.");
         return;
     }
     app.canvas.hot_grips.clear();
@@ -129,7 +148,8 @@ pub(crate) fn menu(app: &mut CadApp, ctx: &egui::Context, xf: &Xf) {
         .map(|p| p.value)
         .unwrap_or_default();
     let gs = app.session.settings.gripsize as f32;
-    let at = xf.to_screen(g.at) + vec2(-gs, gs * 1.5);
+    let z = of_selection(app).iter().find(|(r, k, _)| *r == h && k.node == g.node && k.part == g.part).map_or(0.0, |(.., z)| *z);
+    let at = spot(xf, g.at, z) + vec2(-gs, gs * 1.5);
     let mut chosen: Option<String> = None;
     let area = egui::Area::new(egui::Id::new(("dyn-grip-list", h, g.node))).order(egui::Order::Foreground).fixed_pos(at).show(ctx, |ui| {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
@@ -150,5 +170,33 @@ pub(crate) fn menu(app: &mut CadApp, ctx: &egui::Context, xf: &Xf) {
         }
     } else if clicked_elsewhere || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         app.canvas.dyn_menu = None;
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use cadcraft_engine::doc::dynblock::GripPart;
+    use cadcraft_engine::geom::{Mat4, Vec3};
+
+    /// Dynamic grips sit where they are in the world through any construction plane (a UCS moved
+    /// in plan doesn't carry them along); outside World a drag isn't started, as the engine's
+    /// takes world points, and the drawing stays as it was.
+    #[test]
+    fn dynamic_grips_are_placed_through_the_construction_plane() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0));
+        let plan = Xf::new(rect, Vec2::ZERO, 10.0);
+        let ucs = plan.on(Mat4::translate(Vec3::new(5.0, 5.0, 0.0)));
+        let p = Vec2::new(1.0, 2.0);
+        assert!(spot(&ucs, p, 0.0).distance(plan.to_screen(p)) < 1e-3, "world (1, 2), not the UCS's");
+        assert!(spot(&ucs, p, 0.0).distance(ucs.to_screen(p)) > 10.0);
+        let mut app = CadApp::new(cadcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("cplane", &json!({ "origin": [5, 5, 0] })).unwrap();
+        let g =
+            DynGrip { node: 1, part: GripPart::End, shape: GripShape::Linear, at: p, dir: Vec2::X, property: "Width".into(), choices: Vec::new() };
+        click(&mut app, (Handle(1), g));
+        assert!(app.session.running.is_none() && app.canvas.dyn_hot.is_none());
+        assert!(app.session.log.last().is_some_and(|m| m.contains("World construction plane")), "{:?}", app.session.log.last());
     }
 }

@@ -540,14 +540,16 @@ fn run_select(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let space = s.space();
     let add = bool_or(p, "add", false);
+    // Points are in the current construction plane's coordinates, as it sees the drawing.
+    let seen = s.pick_doc()?;
     let picked: Vec<Handle> = if let Some(w) = points_param(p, "window") {
         let (Some(a), Some(b)) = (w.first(), w.get(1)) else { return Err(bad("select", "window needs 2 corners")) };
-        crate::select::select_window(s.doc()?, &space, Bounds2::new(*a, *b), bool_or(p, "crossing", false))
+        crate::select::select_window(&seen, &space, Bounds2::new(*a, *b), bool_or(p, "crossing", false))
     } else if let Some(at) = point_param(p, "at") {
         let ap = f64_or(p, "aperture", s.pixel_size() * s.settings.pickbox * 1.5);
-        crate::select::pick(s.doc()?, &space, at, ap).into_iter().collect()
+        crate::select::pick(&seen, &space, at, ap).into_iter().collect()
     } else if let Some(f) = points_param(p, "fence") {
-        crate::select::select_fence(s.doc()?, &space, &f)
+        crate::select::select_fence(&seen, &space, &f)
     } else {
         targets(s, p)?
     };

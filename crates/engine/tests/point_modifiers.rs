@@ -131,3 +131,16 @@ fn enter_drops_the_modifiers_and_text_is_not_a_point() {
     s.cmdline(&format!("line{}", " from".repeat(100))).unwrap();
     assert!(s.point_mods.len() <= 32);
 }
+
+/// A relative point typed after FROM, M2P or tracking is measured from that point's height.
+#[test]
+fn modifier_points_keep_their_height_for_relative_points() {
+    let mut s = Session::new();
+    s.cmdline("line from 0,0,500").unwrap();
+    assert_eq!(s.last_point_z, Some(500.0));
+    s.cmdline("@18,18").unwrap();
+    assert_eq!((s.last_point, s.last_point_z), (Vec2::new(18.0, 18.0), Some(500.0)));
+    s.cmdline("m2p 0,0,40").unwrap();
+    assert_eq!(s.last_point_z, Some(40.0));
+    s.cancel();
+}

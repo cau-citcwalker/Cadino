@@ -39,6 +39,7 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("ui.toggle.cmdline", "Command Line", &["Window", "Command Line"], Some("Cmd+9")),
     ("ui.toggle.viewcube", "ViewCube", &["View", "ViewCube", "On"], None),
     ("ui.toggle.ucsicon", "UCS Icon", &["View", "UCS Icon", "On"], None),
+    ("ui.gumball", "Gumball", &["View", "Gumball"], None),
     ("ui.theme.system", "Use System Setting", &["View", "Interface Theme", "Use System Setting"], None),
     ("ui.theme.light", "Light", &["View", "Interface Theme", "Light"], None),
     ("ui.theme.dark", "Dark", &["View", "Interface Theme", "Dark"], None),
@@ -241,6 +242,11 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
         "ui.toggle.ucsicon" => {
             toggle(&mut app.ui.show_ucs_icon, params);
             Ok(Value::Null)
+        }
+        // `{"on": bool}` sets it; without, toggles. Reports the state.
+        "ui.gumball" => {
+            toggle(&mut app.ui.gumball, params);
+            Ok(json!({ "on": app.ui.gumball }))
         }
         "ui.toggle.menubar" => {
             toggle(&mut app.ui.in_window_menu, params);
@@ -628,7 +634,8 @@ pub fn shortcuts(app: &mut CadApp, ctx: &egui::Context) {
         (sc(Modifiers::NONE, Key::F12), "dynmode"),
     ];
     crate::clipboard::mirror(app, ctx);
-    if ctx.egui_wants_keyboard_input() || app.closing.is_some() {
+    // A gumball drag holds the keyboard until it is let go (Ctrl+Z under it would undo mid-drag).
+    if ctx.egui_wants_keyboard_input() || app.closing.is_some() || app.canvas.gumball.dragging() {
         return;
     }
     // Cmd/Ctrl+C, X and V arrive as clipboard events, not key presses.

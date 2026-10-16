@@ -14,6 +14,7 @@ use egui::{Color32, CursorIcon, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use serde_json::json;
 
 use crate::CadApp;
+use crate::canvas::Xf;
 use crate::theme::Tokens;
 
 /// Where the ViewCube's parts are on the canvas.
@@ -210,43 +211,79 @@ fn paint_home(p: &egui::Painter, r: Rect, hot: bool) {
     p.line_segment([c + vec2(-1.2, 2.5), c + vec2(1.2, 2.5)], st);
 }
 
-/// The UCS icon's arms (as drawn by the canvas at the lower-left corner): the X arm and the Y arm.
-pub fn ucs_arms(canvas: Rect) -> [Rect; 2] {
-    let o = pos2(canvas.left() + 36.0, canvas.bottom() - 34.0);
-    [Rect::from_min_max(o + vec2(-8.0, -8.0), o + vec2(80.0, 8.0)), Rect::from_min_max(o + vec2(-8.0, -82.0), o + vec2(8.0, 8.0))]
+/// The UCS icon's arms as the canvas draws them in view `xf` ([`crate::canvas::ucs_icon_arms`]):
+/// a box round each arm and its label.
+pub fn ucs_arms(canvas: Rect, xf: &Xf) -> Vec<Rect> {
+    let (o, arms) = crate::canvas::ucs_icon_arms(canvas, xf);
+    arms.into_iter().map(|(_, tip)| Rect::from_two_pos(o, o + (tip - o) * 1.3).expand(8.0)).collect()
 }
 
-/// Make the UCS icon clickable: hovering highlights it, a click (either button) opens the
-/// coordinate-system menu.
-pub fn ucs_icon(app: &mut CadApp, ui: &mut egui::Ui, canvas: Rect) {
+/// Make the UCS icon clickable where the canvas draws it in view `xf`: hovering highlights it, a
+/// click (either button) opens the coordinate-system menu.
+pub fn ucs_icon(app: &mut CadApp, ui: &mut egui::Ui, canvas: Rect, xf: &Xf) {
     let t = Tokens::get();
-    let [x, y] = ucs_arms(canvas);
-    let rx = ui.interact(x, ui.id().with("ucs_x"), Sense::click_and_drag());
-    let ry = ui.interact(y, ui.id().with("ucs_y"), Sense::click_and_drag());
-    let resp = (rx | ry).on_hover_cursor(CursorIcon::PointingHand).on_hover_text("UCS icon: World Coordinate System");
+    let mut resp: Option<egui::Response> = None;
+    for (i, r) in ucs_arms(canvas, xf).into_iter().enumerate() {
+        let arm = ui.interact(r, ui.id().with(("ucs_arm", i)), Sense::click_and_drag());
+        resp = Some(match resp {
+            Some(r) => r | arm,
+            None => arm,
+        });
+    }
+    let Some(resp) = resp else { return };
+    let text = if xf.cplane() == cadcraft_geom::Mat4::IDENTITY {
+        crate::tl!("UCS icon: World Coordinate System")
+    } else {
+        crate::tl!("UCS icon: a user coordinate system (construction plane)")
+    };
+    let resp = resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(text);
     if resp.hovered() {
-        let o = pos2(x.left() + 8.0, x.center().y);
+        let (o, arms) = crate::canvas::ucs_icon_arms(canvas, xf);
         let st = Stroke::new(2.0, t.hover);
         let p = ui.painter_at(canvas);
-        p.line_segment([o, o + vec2(60.0, 0.0)], st);
-        p.line_segment([o, o + vec2(0.0, -60.0)], st);
+        for (_, tip) in arms {
+            p.line_segment([o, tip], st);
+        }
     }
     // Opened with `Bool(true)`: a pointer-anchored popup records its position only then.
     let open = (resp.clicked() || resp.secondary_clicked()).then_some(egui::SetOpenCommand::Bool(true));
     ucs_menu(app, egui::Popup::menu(&resp).open_memory(open).at_pointer_fixed());
 }
 
-/// The coordinate-system menu: the WCS (the only coordinate system so far) and the icon switch.
+/// The coordinate-system menu: the current view's construction plane (World, or one of the
+/// preset planes, set with CPLANE) and the icon switch.
 fn ucs_menu(app: &mut CadApp, popup: egui::Popup<'_>) {
     let mut hide = false;
+    let mut preset = None;
+    let world = app.session.cplane() == cadcraft_geom::Mat4::IDENTITY;
     popup.show(|ui| {
-        ui.radio(true, "World (WCS)").on_hover_text("Cadino draws in the World Coordinate System; user coordinate systems aren't available yet.");
+        if ui.radio(world, crate::tl!("World (WCS)")).on_hover_text(crate::tl!("Draw on the world XY plane")).clicked() {
+            preset = Some("world");
+        }
+        let presets = [
+            (crate::tl!("CPlane Front"), "front"),
+            (crate::tl!("CPlane Right"), "right"),
+            (crate::tl!("CPlane Back"), "back"),
+            (crate::tl!("CPlane Left"), "left"),
+            (crate::tl!("CPlane Bottom"), "bottom"),
+        ];
+        for (label, p) in presets {
+            if ui.button(label).clicked() {
+                preset = Some(p);
+            }
+        }
         ui.separator();
-        if ui.button("Hide UCS Icon").clicked() {
+        if ui.button(crate::tl!("Hide UCS Icon")).clicked() {
             hide = true;
+        }
+        if hide || preset.is_some() {
             ui.close();
         }
     });
+    if let Some(p) = preset {
+        // A construction plane is an undo step: a running command ends first.
+        app.run_after_cancel("cplane", json!({ "preset": p }));
+    }
     if hide {
         let _ = app.run("ui.toggle.ucsicon", json!({"on": false}));
     }
@@ -375,13 +412,37 @@ mod tests {
     #[test]
     fn ucs_icon_and_wcs_pill_open_the_coordinate_system_menu() {
         let (mut app, ctx) = app_and_ctx();
-        let [x, _] = ucs_arms(canvas(&app));
+        let x = ucs_arms(canvas(&app), &app.canvas.xf.unwrap())[0];
         click(&mut app, &ctx, x.center(), egui::PointerButton::Primary);
         assert!(menu_shown(&ctx), "UCS icon menu");
         assert!(app.session.pending_window.is_none(), "the click stayed on the icon");
         let l = Layout::new(canvas(&app));
         click(&mut app, &ctx, l.pill.center(), egui::PointerButton::Primary);
         assert!(menu_shown(&ctx), "WCS menu");
+        assert!(app.session.pending_window.is_none());
+    }
+
+    /// In a 3D view the UCS icon is the construction plane's three axes, further in from the
+    /// corner: a click on its Z arm (up the screen there) opens the menu, not a selection window.
+    #[test]
+    fn the_3d_ucs_icon_is_clickable_where_it_is_drawn() {
+        let (mut app, ctx) = app_and_ctx();
+        let _ = app.run("view.swiso", json!({}));
+        for _ in 0..500 {
+            frame(&mut app, &ctx, Vec::new());
+            if !app.canvas.building() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        frame(&mut app, &ctx, Vec::new());
+        let xf = app.canvas.xf.unwrap();
+        assert!(!xf.is_plan());
+        let (o, arms) = crate::canvas::ucs_icon_arms(canvas(&app), &xf);
+        let z = arms[2].1;
+        assert!(z.y < o.y - 30.0, "Z points up the screen");
+        click(&mut app, &ctx, o + (z - o) * 0.6, egui::PointerButton::Primary);
+        assert!(menu_shown(&ctx), "UCS icon menu");
         assert!(app.session.pending_window.is_none());
     }
 }

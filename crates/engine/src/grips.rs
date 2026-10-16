@@ -9,7 +9,7 @@ use cadcraft_geom::{Arc, EPS, Mat3, Polyline, Vec2, Vec3, norm_angle};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::{EngineError, Result, Session};
+use crate::{Result, Session};
 
 /// What dragging a hot grip does (AutoCAD's grip modes, cycled with Space/Enter).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,7 +128,10 @@ pub fn stretch_grip(kind: &EntityKind, index: usize, to: Vec2) -> Option<EntityK
                 _ => return Some(translated(kind, delta)),
             }
             let na = Arc::from_3_points(s, m, e)?;
-            return Some(crate::cmd::helpers::arc(&na));
+            // At its elevation: the height (or, tilted, the place along its normal) stays.
+            let mut k = crate::cmd::helpers::arc(&na);
+            k.set_elevation(a.center.z);
+            return Some(k);
         }
         EntityKind::Ellipse(e) => {
             let c = e.center.xy();
@@ -195,7 +198,9 @@ pub fn stretch_grip(kind: &EntityKind, index: usize, to: Vec2) -> Option<EntityK
             } else {
                 let mut fit = sp.fit.clone();
                 *fit.get_mut(index)? = to;
+                let z = sp.elevation;
                 *sp = sp.refit(&fit, sp.closed);
+                sp.elevation = z;
             }
         }
         // Centre, base radius (and start angle), top radius.
@@ -545,9 +550,10 @@ impl Session {
         r.map(|_| ())
     }
 
-    /// Grip points of an object in plan (the indices `grip_edit` takes).
+    /// Grip points of an object in plan, or as the current construction plane sees it
+    /// ([`Session::pick_doc`]): the indices and points `grip_edit` takes.
     pub fn grips_of(&self, handle: Handle) -> Result<Vec<Vec2>> {
-        self.doc()?.entity(handle).map(|e| e.grips()).ok_or_else(|| EngineError::Other("no such object".into()))
+        self.local_entity(handle).map(|e| e.grips())
     }
 }
 

@@ -227,3 +227,40 @@ fn hostile_vport_records_are_skipped() {
     assert_eq!(active.tiles.iter().map(|t| t.height).collect::<Vec<_>>(), [4.0, 8.0]);
     assert_eq!(round_trip(&d).vports, d.vports);
 }
+
+/// Another program's UCS on a VPORT record (110/111/112) is kept and written back, never used as
+/// a construction plane; Cadino's own (marked with `CADCRAFT` xdata) is. The view centre (12) is
+/// measured from the target (17).
+#[test]
+fn vport_ucs_from_other_programs_is_kept_and_the_target_moves_the_centre() {
+    use cadcraft_doc::geom::{Mat4, Vec3, ViewDir};
+    let file = |extra: &str| {
+        format!(
+            "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nVPORT\n0\nVPORT\n2\n*ACTIVE\n10\n0\n20\n0\n11\n0.5\n21\n1\n12\n0\n22\n0\n40\n4\n41\n1\n16\n-1\n26\n-1\n36\n1\n17\n5000\n27\n3000\n37\n0\n{extra}0\nVPORT\n2\n*ACTIVE\n10\n0.5\n20\n0\n11\n1\n21\n1\n12\n1\n22\n1\n40\n4\n41\n1\n0\nENDTAB\n0\nENDSEC\n0\nEOF\n"
+        )
+    };
+    let ucs = "65\n1\n110\n1\n120\n2\n130\n0\n111\n0\n121\n1\n131\n0\n112\n-1\n122\n0\n132\n0\n";
+    let frame = Mat4::from_cols(Vec3::Y, -Vec3::X, Vec3::Z, Vec3::new(1.0, 2.0, 0.0));
+    let d = read_dxf(file(ucs).as_bytes()).expect("read");
+    let t = d.vports.first().and_then(|c| c.tiles.first()).copied().expect("tile");
+    let want = ViewDir::new(Vec3::new(-1.0, -1.0, 1.0)).project(Vec3::new(5000.0, 3000.0, 0.0));
+    assert!(t.center.near(want, 1e-9), "{:?} {want:?}", t.center);
+    assert_eq!((t.cplane, d.header.cplane()), (Mat4::IDENTITY, Mat4::IDENTITY));
+    assert!(t.ucs.m.iter().flatten().zip(frame.m.iter().flatten()).all(|(a, b)| (a - b).abs() < 1e-12), "{:?}", t.ucs);
+    // Written back as it was: unmarked, the centre from the world origin (target 0).
+    let text = write_dxf(&d);
+    assert!(!text.contains("CPLANE"));
+    let r = read_dxf(text.as_bytes()).expect("reopen");
+    let back = r.vports.first().and_then(|c| c.tiles.first()).copied().expect("tile");
+    assert_eq!((back.ucs, back.cplane), (t.ucs, Mat4::IDENTITY));
+    assert!(back.center.near(t.center, 1e-9));
+    // Cadino's mark makes it the tile's construction plane (and the one view's).
+    let d = read_dxf(file(&format!("{ucs}1001\nCADCRAFT\n1000\nCPLANE\n")).as_bytes()).expect("read");
+    let t = d.vports.first().and_then(|c| c.tiles.first()).copied().expect("tile");
+    assert_eq!((t.ucs, t.cplane), (Mat4::IDENTITY, t.cplane));
+    assert!(t.cplane.m.iter().flatten().zip(frame.m.iter().flatten()).all(|(a, b)| (a - b).abs() < 1e-12));
+    assert_eq!(d.header.cplane(), t.cplane);
+    // A target too far to add leaves the centre as stored.
+    let d = read_dxf(file("").replace("17\n5000\n27\n3000\n", "17\n1.7e308\n27\n-1.7e308\n").as_bytes()).expect("read");
+    assert!(d.vports.first().and_then(|c| c.tiles.first()).is_some_and(|t| t.center == Vec2::ZERO));
+}

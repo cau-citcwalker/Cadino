@@ -1388,3 +1388,18 @@
 	Panel	Панель
 	Part	Деталь
 	Rhino (IGES + STEP)	Rhino (IGES + STEP)
+	Gumball	Гумбол
+	The construction plane is seen edge-on: points land on its line. Pick in another view or set a CPlane facing this one.	Площину побудови видно з ребра: точки лягають на її лінію. Вкажіть точку в іншому виді або задайте площину побудови, звернену до цього виду.
+	Z	Z
+	Construction Plane	Площина побудови
+	UCS	СКК
+	Hide UCS Icon	Сховати значок СКК
+	World (WCS)	Світова (ССК)
+	UCS icon: World Coordinate System	Значок СКК: світова система координат
+	UCS icon: a user coordinate system (construction plane)	Значок СКК: система координат користувача (площина побудови)
+	Draw on the world XY plane	Креслити на світовій площині XY
+	CPlane Front	Площина побудови: спереду
+	CPlane Right	Площина побудови: праворуч
+	CPlane Back	Площина побудови: ззаду
+	CPlane Left	Площина побудови: ліворуч
+	CPlane Bottom	Площина побудови: знизу

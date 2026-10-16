@@ -778,14 +778,15 @@ pub struct CursorQuery {
 impl crate::Session {
     /// The cursor at a point prompt, snapped: running object snaps first (resting on a snap point
     /// acquires it for tracking), then grid snap, then tracking paths (polar, object snap
-    /// tracking, Extension, Parallel, Apparent Intersection), then ortho. In a model view that
-    /// is not plan, 3D solids are left out (the UI snaps to them in 3D).
+    /// tracking, Extension, Parallel, Apparent Intersection), then ortho. `raw` and the result are
+    /// in the current construction plane's coordinates ([`crate::Session::pick_doc`]). In a model
+    /// view that is not plan, 3D solids are left out (the UI snaps to them in 3D).
     pub fn snap_cursor(&mut self, raw: Vec2, q: &CursorQuery) -> CursorSnap {
         // Snap and grid spacing are the drawing's (SNAPUNIT/GRIDUNIT live in its header).
         let s = self.drafting_settings();
         let angbase = self.angle_settings().angbase;
-        let Ok(st) = self.state() else { return CursorSnap { point: raw, ..Default::default() } };
-        let (doc, space) = (st.doc.clone(), st.edit_space());
+        let (Ok(st), Ok(doc)) = (self.state(), self.pick_doc()) else { return CursorSnap { point: raw, ..Default::default() } };
+        let space = st.edit_space();
         let no_solids = if st.screen_dir().is_plan() { 0 } else { mode::NO_SOLIDS };
         if !raw.is_finite() {
             return CursorSnap { point: raw, ..Default::default() };

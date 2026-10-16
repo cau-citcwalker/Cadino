@@ -234,13 +234,69 @@ fn plan_transform_of_a_standing_object_moves_it_in_3d() {
     // It now faces +X, centred at (5, 0, 0).
     assert!(near(c.common.extrusion, Vec3::X), "{:?}", c.common.extrusion);
     assert!(near(c.plane().unwrap().apply(Vec3::ZERO), Vec3::new(5.0, 0.0, 0.0)));
-    // Objects in the XY plane change exactly as before.
+    // Objects in the XY plane change in plan exactly as before; a uniform scale scales their
+    // height too (SCALE is a 3D scale, as AutoCAD's is), a move or turn keeps it.
     let mut flat = circle(Vec3::new(1.0, 1.0, 2.0), 1.0);
     let mut kind = flat.kind.clone();
     let m = Mat3::rotate(0.3).then(Mat3::scale(2.0, 2.0));
     kind.transform(&m);
+    kind.set_elevation(4.0);
     assert!(flat.transform(&m));
     assert_eq!(flat.kind, kind);
+    let mut kind = flat.kind.clone();
+    let m = Mat3::rotate(0.3).then(Mat3::translate(Vec2::new(3.0, -1.0)));
+    kind.transform(&m);
+    assert!(flat.transform(&m));
+    assert_eq!(flat.kind, kind);
+}
+
+/// One plan SCALE scales every object's heights alike: standing panels, a raised shelf, a 3D
+/// line and a thickness along a tilted direction (which keeps its angle).
+#[test]
+fn plan_scale_scales_heights_of_every_kind_alike() {
+    let m = Mat3::scale_about(Vec2::ZERO, 0.5);
+    // A side panel standing in the YZ plane, 700 tall.
+    let mut side = ent(EntityKind::LwPolyline(LwPolyline {
+        vertices: [(0.0, 0.0), (500.0, 0.0), (500.0, 700.0), (0.0, 700.0)].into_iter().map(|(x, y)| PolyVertex::new(Vec2::new(x, y))).collect(),
+        closed: true,
+        const_width: 0.0,
+        elevation: 0.0,
+        plinegen: false,
+    }));
+    side.common.extrusion = Vec3::X;
+    assert!(side.transform(&m));
+    let top = side.kind.grips().iter().map(|p| side.plane().unwrap().apply(p.to3(0.0)).z).fold(0.0, f64::max);
+    assert!((top - 350.0).abs() < 1e-9, "{top}");
+    // A shelf at elevation 400 comes down to 200, still level with the panels' middle.
+    let mut shelf = circle(Vec3::new(0.0, 0.0, 400.0), 10.0);
+    shelf.common.thickness = 18.0;
+    assert!(shelf.transform(&m));
+    assert_eq!(shelf.kind.elevation(), 200.0);
+    assert_eq!((shelf.common.thickness, shelf.common.extrusion), (9.0, Vec3::Z));
+    // A 3D line.
+    let mut l = ent(EntityKind::Line(Line { a: Vec3::new(0.0, 0.0, 100.0), b: Vec3::new(10.0, 0.0, 300.0) }));
+    assert!(l.transform(&m));
+    let EntityKind::Line(k) = &l.kind else { panic!() };
+    assert!(near(k.a, Vec3::new(0.0, 0.0, 50.0)) && near(k.b, Vec3::new(5.0, 0.0, 150.0)), "{k:?}");
+    // A thickness along (0.6, 0, 0.8) scaled by 2 keeps its direction and doubles.
+    let mut t = ent(EntityKind::Line(Line { a: Vec3::ZERO, b: Vec3::X }));
+    (t.common.extrusion, t.common.thickness) = (Vec3::new(0.6, 0.0, 0.8), 10.0);
+    assert!(t.transform(&Mat3::scale(2.0, 2.0)));
+    assert!(near(t.common.extrusion, Vec3::new(0.6, 0.0, 0.8)) && (t.common.thickness - 20.0).abs() < 1e-9, "{:?}", t.common);
+}
+
+/// A file's extrusion of other than unit length is a direction: moving the object keeps its
+/// thickness.
+#[test]
+fn a_non_unit_extrusion_keeps_its_thickness() {
+    let mut l = ent(EntityKind::Line(Line { a: Vec3::ZERO, b: Vec3::X }));
+    (l.common.extrusion, l.common.thickness) = (Vec3::new(0.0, -2.0, 0.0), 10.0);
+    assert!(l.transform(&Mat3::translate(Vec2::new(5.0, 0.0))));
+    assert!(near(l.common.extrusion, -Vec3::Y) && (l.common.thickness - 10.0).abs() < 1e-12, "{:?}", l.common);
+    let mut p = ent(EntityKind::Point(Point { p: Vec3::ZERO, angle: 0.0 }));
+    (p.common.extrusion, p.common.thickness) = (Vec3::new(0.0, 0.0, 3.0), 4.0);
+    assert!(p.transform3(&Mat4::translate(Vec3::X)));
+    assert_eq!((p.common.extrusion, p.common.thickness), (Vec3::Z, 4.0));
 }
 
 #[test]
@@ -473,4 +529,38 @@ fn a_block_reference_in_3d_scales_z_about_the_base_point() {
     // A hostile z scale or base point counts as 1 at height 0.
     let bad = Insert { scale: Vec3::new(1.0, 1.0, f64::NAN), ..ins };
     assert!(bad.transform3(Vec3::new(0.0, 0.0, f64::INFINITY)).is_affine());
+}
+
+/// The Front construction plane: x = world X, y = world Z (normal -Y).
+fn front() -> Mat4 {
+    Mat4::from_cols(Vec3::X, Vec3::Z, -Vec3::Y, Vec3::ZERO)
+}
+
+#[test]
+fn objects_seen_in_a_construction_plane() {
+    // A circle standing in the XZ plane (as drawn in Front) is a circle in Front's coordinates,
+    // a segment in plan.
+    let mut c = circle(Vec3::new(1.0, 2.0, 0.0), 2.0);
+    assert!(c.transform3(&front()));
+    assert!(near(c.common.extrusion, -Vec3::Y));
+    let on = c.on(&front()).unwrap();
+    assert_eq!(on.common.extrusion, Vec3::Z);
+    let EntityKind::Circle(k) = &on.kind else { panic!("{on:?}") };
+    assert!(near(k.center, Vec3::new(1.0, 2.0, 0.0)) && (k.radius - 2.0).abs() < 1e-12);
+    assert!(matches!(c.prims_on(&front()).as_slice(), [Prim::Circle(_)]));
+    assert!(matches!(c.prims().as_slice(), [Prim::Seg(_)]));
+    let g = c.grips_on(&front());
+    assert!(g.first().is_some_and(|p| (*p - Vec2::new(1.0, 2.0)).len() < 1e-9), "{g:?}");
+    // World: plan exactly as before.
+    assert_eq!(c.on(&Mat4::IDENTITY).as_ref(), Some(&c));
+    assert_eq!(c.prims_on(&Mat4::IDENTITY), c.prims());
+    assert_eq!(c.grips_on(&Mat4::IDENTITY), c.grips());
+    // A 3D line: its points in the plane's coordinates (z along the normal).
+    let l = ent(EntityKind::Line(Line { a: Vec3::new(0.0, -4.0, 0.0), b: Vec3::new(3.0, -4.0, 5.0) }));
+    let EntityKind::Line(ll) = l.on(&front()).unwrap().kind else { panic!() };
+    assert!(near(ll.a, Vec3::new(0.0, 0.0, 4.0)) && near(ll.b, Vec3::new(3.0, 5.0, 4.0)));
+    // What stays level can't stand in Front; a singular plane holds nothing.
+    let lead = ent(EntityKind::Leader(Leader { vertices: vec![Vec3::ZERO, Vec3::X], arrow: true, spline: false, style: "Standard".into() }));
+    assert!(lead.on(&front()).is_none() && lead.prims_on(&front()).is_empty() && lead.grips_on(&front()).is_empty());
+    assert!(c.on(&Mat4::scale(Vec3::new(1.0, 0.0, 1.0))).is_none());
 }

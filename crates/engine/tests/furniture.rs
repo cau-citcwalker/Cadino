@@ -391,3 +391,262 @@ fn rotated_boxes_still_combine() {
     assert!(near3(lo, [0.0, -20.0, 0.0]) && near3(hi, [100.0, 0.0, 60.0]), "{lo:?} {hi:?}");
     assert!(x.mesh.tris.len() > 12, "the hole adds faces");
 }
+
+fn rows(r: &Value) -> Vec<(f64, f64, f64, u64)> {
+    r["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["length"].as_f64().unwrap(), r["width"].as_f64().unwrap(), r["thickness"].as_f64().unwrap(), r["quantity"].as_u64().unwrap()))
+        .collect()
+}
+
+/// Boards drawn at an angle: a shelf at 30° in plan, a door profile standing at 45° in plan, a
+/// board tilted 30°; and a slender round leg, measured from its B-rep (its mesh falls short).
+#[test]
+fn cut_lists_measure_angled_boards_and_round_legs_truly() {
+    let mut s = session();
+    let (c, sn) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
+    let turned: Vec<[f64; 2]> =
+        [[0.0, 0.0], [600.0, 0.0], [600.0, 400.0], [0.0, 400.0]].iter().map(|p| [p[0] * c - p[1] * sn, p[0] * sn + p[1] * c]).collect();
+    let pl = s.execute("pline", &json!({ "points": turned, "closed": true })).unwrap();
+    s.execute("panel", &json!({ "handle": pl["handle"], "name": "Shelf" })).unwrap();
+    // Standing: a 3D polyline in the vertical plane at 45° in plan, 600 wide and 400 tall.
+    let d = Vec3::new(std::f64::consts::FRAC_1_SQRT_2, std::f64::consts::FRAC_1_SQRT_2, 0.0);
+    let up = |w: f64, h: f64| d * w + Vec3::new(0.0, 0.0, h);
+    let door = s
+        .add_entity(EntityKind::Polyline3d(Polyline3d { points: vec![up(0.0, 0.0), up(600.0, 0.0), up(600.0, 400.0), up(0.0, 400.0)], closed: true }))
+        .unwrap();
+    s.execute("panel", &json!({ "handle": door.hex(), "name": "Shelf" })).unwrap();
+    // Tilted 30° about X.
+    let tilt = |x: f64, y: f64| Vec3::new(x, y * c, y * sn + 1000.0);
+    let t = s
+        .add_entity(EntityKind::Polyline3d(Polyline3d {
+            points: vec![tilt(0.0, 0.0), tilt(600.0, 0.0), tilt(600.0, 400.0), tilt(0.0, 400.0)],
+            closed: true,
+        }))
+        .unwrap();
+    s.execute("panel", &json!({ "handle": t.hex(), "name": "Shelf" })).unwrap();
+    let leg = s.execute("cylinder", &json!({ "center": [2000, 0, 0], "radius": 20, "height": 700 })).unwrap();
+    s.execute("part", &json!({ "handles": [leg["handle"]], "name": "Leg" })).unwrap();
+    let r = s.execute("cutlist", &json!({})).unwrap();
+    assert_eq!(rows(&r), vec![(700.0, 40.0, 40.0, 1), (600.0, 400.0, 18.0, 3)], "{r}");
+}
+
+/// A tapered leg (a front profile, the taper 1.4° off straight) seen from the right: the line
+/// where the taper starts is drawn; the view and its dimensions measure a round leg's B-rep.
+#[test]
+fn viewbase_keeps_shallow_creases_and_measures_round_parts_exactly() {
+    let mut s = session();
+    let pl = s.execute("pline", &json!({ "points": [[0, 0], [30, 0], [45, 600], [45, 700], [0, 700]], "closed": true })).unwrap();
+    s.execute("panel", &json!({ "handle": pl["handle"], "orientation": "front" })).unwrap();
+    s.execute("erase", &json!({ "handles": [pl["handle"]] })).unwrap();
+    s.execute("viewbase", &json!({ "views": ["right"], "at": [1000, 0], "gap": 10, "dims": false, "space": "model" })).unwrap();
+    let vis = group_lines(&s, "VIEW right", "VISIBLE");
+    let b = bounds(&vis);
+    let crease = vis.iter().any(|(a, c)| (a.y - b.min.y - 600.0).abs() < 1e-6 && (c.y - b.min.y - 600.0).abs() < 1e-6 && (a.x - c.x).abs() > 17.0);
+    assert!(crease, "the line at 600 up: {vis:?}");
+    // A slender round leg: its front view is 40 wide, dimensioned 40.
+    let mut s = session();
+    s.execute("cylinder", &json!({ "center": [0, 0, 0], "radius": 20, "height": 700 })).unwrap();
+    let r = s.execute("viewbase", &json!({ "views": ["front", "top"], "at": [1000, 0], "gap": 10, "space": "model" })).unwrap();
+    let v = &r["views"][0];
+    assert!((v["max"][0].as_f64().unwrap() - v["min"][0].as_f64().unwrap() - 40.0).abs() < 1e-6, "{r}");
+    let d = s.doc().unwrap();
+    let dims: Vec<f64> = d
+        .model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EntityKind::Dimension(dm) => Some((dm.p14 - dm.p13).len()),
+            _ => None,
+        })
+        .collect();
+    assert!(dims.iter().any(|v| (v - 40.0).abs() < 1e-6) && dims.iter().any(|v| (v - 700.0).abs() < 1e-6), "{dims:?}");
+}
+
+/// World box of the solid `h`.
+fn world_box(s: &Session, h: &Value) -> (Vec3, Vec3) {
+    box3(&solid(s, handle(h)))
+}
+
+fn near_box(b: (Vec3, Vec3), lo: [f64; 3], hi: [f64; 3]) -> bool {
+    // Within a mesh's round-off of a circle.
+    (b.0 - Vec3::new(lo[0], lo[1], lo[2])).len() < 0.01 && (b.1 - Vec3::new(hi[0], hi[1], hi[2])).len() < 0.01
+}
+
+/// In the Front construction plane (x along X, y along Z, its normal -Y): what is built from
+/// points given there (BOX, PANEL by corners) stands in it; what is built from objects (EXTRUDE,
+/// LOFT, PANEL from a profile, booleans, CHAMFEREDGE) is made where they are and stays there.
+#[test]
+fn front_construction_plane_primitives_and_results_from_objects() {
+    let mut s = session();
+    s.execute("cplane", &json!({ "preset": "front" })).unwrap();
+    let b = s.execute("box", &json!({ "corner1": [0, 0, 0], "corner2": [10, 20], "height": 5 })).unwrap();
+    assert!(near_box(world_box(&s, &b["handle"]), [0.0, -5.0, 0.0], [10.0, 0.0, 20.0]), "{:?}", world_box(&s, &b["handle"]));
+    let p = s.execute("panel", &json!({ "corner1": [100, 0], "corner2": [700, 400] })).unwrap();
+    // Its lower-left corner goes to the plane's origin (`at` left out).
+    assert!(near_box(world_box(&s, &p["handle"]), [0.0, -18.0, 0.0], [600.0, 0.0, 400.0]), "{:?}", world_box(&s, &p["handle"]));
+    // A circle drawn in the plane (centre 5, 5: world x 5, z 5) extruded 10 along its normal.
+    let c = s.execute("circle", &json!({ "center": [5, 5], "radius": 2 })).unwrap();
+    let e = s.execute("extrude", &json!({ "handles": [c["handle"]], "height": 10 })).unwrap();
+    assert!(near_box(world_box(&s, &e["handles"][0]), [3.0, -10.0, 3.0], [7.0, 0.0, 7.0]), "{:?}", world_box(&s, &e["handles"][0]));
+    // Two circles 10 apart along the plane's normal, lofted.
+    let a = s.add_entity(EntityKind::Circle(cadcraft_engine::doc::Circle { center: Vec3::new(50.0, 0.0, 0.0), radius: 5.0 })).unwrap();
+    let z = s.add_entity(EntityKind::Circle(cadcraft_engine::doc::Circle { center: Vec3::new(50.0, 0.0, 10.0), radius: 5.0 })).unwrap();
+    let l = s.execute("loft", &json!({ "handles": [a.hex(), z.hex()] })).unwrap();
+    let lb = world_box(&s, &l["handle"]);
+    assert!((lb.0.y + 10.0).abs() < 1e-3 && lb.1.y.abs() < 1e-3 && (lb.0.x - 45.0).abs() < 0.1 && lb.0.z.abs() < 5.1, "{lb:?}");
+    // A profile drawn in the plane makes a panel where it stands.
+    let pl = s.execute("pline", &json!({ "points": [[0, 500], [600, 500], [600, 900], [0, 900]], "closed": true })).unwrap();
+    let q = s.execute("panel", &json!({ "handle": pl["handle"] })).unwrap();
+    assert!(near_box(world_box(&s, &q["handle"]), [0.0, -18.0, 500.0], [600.0, 0.0, 900.0]), "{:?}", world_box(&s, &q["handle"]));
+    // A boolean and an edge bevel leave the box where it is.
+    let cut = s.execute("box", &json!({ "corner1": [2, 2, -1], "corner2": [4, 4], "height": 7 })).unwrap();
+    s.execute("subtract", &json!({ "from": [b["handle"]], "remove": [cut["handle"]] })).unwrap();
+    assert!(near_box(world_box(&s, &b["handle"]), [0.0, -5.0, 0.0], [10.0, 0.0, 20.0]), "{:?}", world_box(&s, &b["handle"]));
+    s.execute("chamferedge", &json!({ "handles": [b["handle"]], "distance": 0.5 })).unwrap();
+    assert!(near_box(world_box(&s, &b["handle"]), [0.0, -5.0, 0.0], [10.0, 0.0, 20.0]), "{:?}", world_box(&s, &b["handle"]));
+}
+
+/// 3DMOVE, MIRROR3D, 3DROTATE and 3DSCALE at the prompts in the Front plane: points, the Z axis
+/// and the XY plane are the plane's.
+#[test]
+fn front_construction_plane_3d_transforms_at_the_prompts() {
+    let mut s = session();
+    let b = s.execute("box", &json!({ "corner1": [0, 0, 0], "corner2": [10, 10], "height": 10 })).unwrap();
+    let h = handle(&b["handle"]);
+    s.execute("cplane", &json!({ "preset": "front" })).unwrap();
+    // Up 5 in the plane is up 5 in the world.
+    s.set_selection(vec![h]);
+    s.start("3dmove").unwrap();
+    s.input(Input::Point(Vec2::ZERO)).unwrap();
+    s.input(Input::Point(Vec2::new(0.0, 5.0))).unwrap();
+    assert!(near_box(box3(&solid(&s, h)), [0.0, 0.0, 5.0], [10.0, 10.0, 15.0]), "{:?}", box3(&solid(&s, h)));
+    // The plane's XY plane is the world's XZ plane: mirrored across y = 0, the source erased.
+    s.set_selection(vec![h]);
+    s.start("mirror3d").unwrap();
+    s.input(Input::Text("xy".into())).unwrap();
+    s.input(Input::Enter).unwrap();
+    s.input(Input::Text("y".into())).unwrap();
+    assert!(s.current_prompt().is_none(), "{}", s.prompt_text());
+    let m = s.doc().unwrap().model.iter().find_map(|e| matches!(e.kind, EntityKind::Solid3d(_)).then_some(e.handle)).unwrap();
+    assert!(near_box(box3(&solid(&s, m)), [0.0, -10.0, 5.0], [10.0, 0.0, 15.0]), "{:?}", box3(&solid(&s, m)));
+    // A quarter turn about the plane's Z axis (world -Y) through its origin: it stays between
+    // y -10 and 0 and turns in the XZ plane.
+    s.set_selection(vec![m]);
+    s.start("3drotate").unwrap();
+    s.input(Input::Text("z".into())).unwrap();
+    s.input(Input::Enter).unwrap();
+    s.input(Input::Text("90".into())).unwrap();
+    let (lo, hi) = box3(&solid(&s, m));
+    assert!((lo.y + 10.0).abs() < 1e-6 && hi.y.abs() < 1e-6, "{lo:?} {hi:?}");
+    assert!(((hi.x - lo.x) - 10.0).abs() < 1e-6 && ((hi.z - lo.z) - 10.0).abs() < 1e-6 && lo.x < -4.0, "{lo:?} {hi:?}");
+    // Twice the size about the plane's origin (the world origin).
+    s.set_selection(vec![m]);
+    s.start("3dscale").unwrap();
+    s.input(Input::Point(Vec2::ZERO)).unwrap();
+    s.input(Input::Text("2".into())).unwrap();
+    let (lo2, hi2) = box3(&solid(&s, m));
+    assert!((lo2 - lo * 2.0).len() < 1e-6 && (hi2 - hi * 2.0).len() < 1e-6, "{lo2:?} {hi2:?}");
+}
+
+/// VIEWBASE in model space and a cut list table at the prompts, in the Front plane: the views
+/// and their dimensions lie in the world's XY plane; the table lies level where it was picked.
+#[test]
+fn views_and_tables_in_a_construction_plane() {
+    let mut s = session();
+    s.execute("box", &json!({ "corner1": [0, 0, 0], "corner2": [100, 60], "height": 20 })).unwrap();
+    s.execute("cplane", &json!({ "preset": "front" })).unwrap();
+    let before = s.cplane();
+    s.execute("viewbase", &json!({ "views": ["front"], "at": [200, 0], "gap": 10, "space": "model" })).unwrap();
+    assert_eq!(s.cplane(), before, "the plane is put back");
+    let d = s.doc().unwrap();
+    let dims: Vec<(f64, f64)> = d
+        .model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EntityKind::Dimension(dm) => {
+                Some(((dm.p14 - dm.p13).len(), dm.p13.z.abs() + dm.p14.z.abs() + e.common.extrusion.x.abs() + e.common.extrusion.y.abs()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(dims.len(), 2, "{dims:?}");
+    assert!(dims.iter().all(|(_, off)| *off < 1e-9), "level, at z 0: {dims:?}");
+    assert!(dims.iter().any(|(v, _)| (v - 100.0).abs() < 1e-6) && dims.iter().any(|(v, _)| (v - 20.0).abs() < 1e-6), "{dims:?}");
+    let vis = bounds(&group_lines(&s, "VIEW front", "VISIBLE"));
+    assert!(vis.min.near(Vec2::new(200.0, 0.0), 1e-6), "{vis:?}");
+    // A table picked at (300, 50) in the plane: world (300, 0, 50), level.
+    s.start("cutlist").unwrap();
+    s.input(Input::Keyword("Entire model".into())).unwrap();
+    s.input(Input::Point(Vec2::new(300.0, 50.0))).unwrap();
+    let t = s
+        .doc()
+        .unwrap()
+        .model
+        .iter()
+        .find_map(|e| match &e.kind {
+            EntityKind::Table(t) => Some((t.insert, e.common.extrusion)),
+            _ => None,
+        })
+        .expect("a table");
+    assert!((t.0 - Vec3::new(300.0, 0.0, 50.0)).len() < 1e-9 && t.1 == Vec3::Z, "{t:?}");
+}
+
+/// At the prompts in the Front plane: PANEL's insertion point for a profile drawn in plan, the
+/// REVOLVE axis and the SLICE points are picked in the plane and taken to the world.
+#[test]
+fn front_construction_plane_points_at_the_profile_prompts() {
+    let mut s = session();
+    let pl = s.execute("pline", &json!({ "points": [[0, 0], [600, 0], [600, 400], [0, 400]], "closed": true })).unwrap();
+    let ph = handle(&pl["handle"]);
+    let b = s.execute("box", &json!({ "corner1": [2000, 0, 0], "corner2": [2010, 10], "height": 10 })).unwrap();
+    let bh = handle(&b["handle"]);
+    s.execute("cplane", &json!({ "preset": "front" })).unwrap();
+    s.set_selection(Vec::new());
+    s.start("panel").unwrap();
+    s.input(Input::Enter).unwrap();
+    s.input(Input::Pick(vec![ph])).unwrap();
+    for _ in 0..3 {
+        s.input(Input::Enter).unwrap();
+    }
+    s.input(Input::Point(Vec2::new(100.0, 50.0))).unwrap();
+    assert!(s.current_prompt().is_none(), "{}", s.prompt_text());
+    let x = s
+        .doc()
+        .unwrap()
+        .model
+        .iter()
+        .find_map(|e| matches!(&e.kind, EntityKind::Solid3d(x) if x.mesh.tris.len() == 12 && e.handle != bh).then_some(e.handle))
+        .unwrap();
+    assert!(near_box(box3(&solid(&s, x)), [100.0, 0.0, 50.0], [700.0, 400.0, 68.0]), "{:?}", box3(&solid(&s, x)));
+    // The plane moved 100 along X. A rectangle drawn in it, 2 to 4 out and 3 up, revolved about
+    // its y axis (the world Z axis through x 100): a ring round that.
+    s.execute("cplane", &json!({ "origin": [100, 0, 0] })).unwrap();
+    let r = s.execute("pline", &json!({ "points": [[2, 0], [4, 0], [4, 3], [2, 3]], "closed": true })).unwrap();
+    s.set_selection(vec![handle(&r["handle"])]);
+    s.start("revolve").unwrap();
+    s.input(Input::Point(Vec2::ZERO)).unwrap();
+    s.input(Input::Point(Vec2::new(0.0, 1.0))).unwrap();
+    s.input(Input::Enter).unwrap();
+    let ring = s.doc().unwrap().model.iter().last().map(|e| e.handle).unwrap();
+    assert!(near_box(box3(&solid(&s, ring)), [96.0, -4.0, 0.0], [104.0, 4.0, 3.0]), "{:?}", box3(&solid(&s, ring)));
+    // Two points across the plane at height 5: the box is cut at z = 5, square to the plane.
+    s.set_selection(vec![bh]);
+    s.start("slice").unwrap();
+    s.input(Input::Point(Vec2::new(1900.0, 5.0))).unwrap();
+    s.input(Input::Point(Vec2::new(1901.0, 5.0))).unwrap();
+    s.input(Input::Enter).unwrap();
+    let mut zs: Vec<(f64, f64)> = s
+        .doc()
+        .unwrap()
+        .model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EntityKind::Solid3d(x) if box3(x).0.x >= 1999.0 => Some((box3(x).0.z, box3(x).1.z)),
+            _ => None,
+        })
+        .collect();
+    zs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert!(zs.len() == 2 && (zs[0].1 - 5.0).abs() < 1e-6 && (zs[1].0 - 5.0).abs() < 1e-6, "{zs:?}");
+}

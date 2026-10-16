@@ -13,6 +13,7 @@ pub mod audit;
 pub mod autosave;
 pub mod blockedit;
 pub mod cmd;
+pub mod cplane;
 mod finite;
 pub mod grip_dims;
 pub mod grips;
@@ -87,7 +88,7 @@ fn usable_view(v: &View) -> bool {
 }
 
 /// Tiled model viewports (VPORTS): the session side of the drawing's `*Active` configuration.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct ModelTiles {
     /// The drawing's `*Active` tiles these views belong to (when the drawing's tiles change, by
     /// VPORTS, undo or redo, they take over).
@@ -99,11 +100,13 @@ pub struct ModelTiles {
     pub looks: Vec<TileLook>,
     /// The current tile.
     pub active: usize,
-    /// How the session left the tiles it showed (by VPORTS, undo or redo): the drawing's
-    /// `*Active` tiles then (empty: one view), the tiles as they were on show (views and looks
-    /// stored in them) and the current one. Undo and redo bring them back exactly; tiles never
-    /// left in this session show as the drawing stores them (the last [`Self::LEFT`]).
-    pub left: Vec<(Vec<cadcraft_doc::VportTile>, Vec<cadcraft_doc::VportTile>, usize)>,
+    /// How the session left the tiles it showed (by VPORTS, undo or redo), the last
+    /// [`Self::LEFT`]. Undo and redo bring them back exactly; tiles never left in this session
+    /// show as the drawing stores them.
+    pub left: Vec<LeftTiles>,
+    /// Each tile's ZOOM Previous views but the current one's, which are
+    /// [`DocState::view_history`] itself (as in AutoCAD, each viewport has its own).
+    pub histories: Vec<Vec<(View, ViewDir)>>,
     /// The tiles `viewports.single` replaced, with their looks and the current one, for
     /// `viewports.maximize` to bring back.
     pub maximized: Option<(Vec<cadcraft_doc::VportTile>, Vec<TileLook>, usize)>,
@@ -112,6 +115,20 @@ pub struct ModelTiles {
 impl ModelTiles {
     /// How many configurations [`Self::left`] remembers.
     pub const LEFT: usize = 32;
+}
+
+/// Tiles the session left ([`ModelTiles::left`]).
+#[derive(Clone, Debug, Default)]
+pub struct LeftTiles {
+    /// The drawing they were on show with: undo and redo find the tiles of the drawing they
+    /// bring back by it (the same `*Active` tiles can belong to several).
+    pub doc: std::sync::Weak<Drawing>,
+    /// The drawing's `*Active` tiles then (empty: one view).
+    pub config: Vec<cadcraft_doc::VportTile>,
+    /// The tiles as they were on show (views and looks stored in them)...
+    pub tiles: Vec<cadcraft_doc::VportTile>,
+    /// ...and the current one.
+    pub active: usize,
 }
 
 /// How a model tile shows the model: its view direction and visual style (VSCURRENT).
@@ -124,8 +141,8 @@ pub struct TileLook {
 }
 
 /// One tile of the model space drawing area, for the UI ([`Session::model_tiles`]): its corners
-/// as fractions of the drawing area (0,0 lower left), its view (centre in its own view plane)
-/// and look.
+/// as fractions of the drawing area (0,0 lower left), its view (centre in its own view plane),
+/// look and construction plane.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModelTile {
     pub min: Vec2,
@@ -133,6 +150,8 @@ pub struct ModelTile {
     pub view: View,
     pub look: TileLook,
     pub active: bool,
+    /// The tile's construction plane (CPLANE): its coordinates → world; identity = World.
+    pub cplane: cadcraft_geom::Mat4,
 }
 
 #[derive(Clone, Debug)]
@@ -702,7 +721,8 @@ pub struct Session {
     pub last_polar: Option<(f64, f64)>,
     /// Point modifiers pending at the current point prompt (`FROM`, `M2P`, `.x`, `<a`…).
     pub point_mods: Vec<pointmod::Frame>,
-    /// Cursor position in world coordinates (from the UI; used for direct distance entry).
+    /// Cursor position in the construction plane's coordinates (world XY in World; from the UI;
+    /// used for direct distance entry).
     pub cursor: Vec2,
     /// The deferred tangent/perpendicular snap under the cursor, if any (from the UI; lets the
     /// rubber band show the line it resolves to).
@@ -738,13 +758,17 @@ pub struct Session {
     lisp_last: Option<std::result::Result<lisp::value::Value, String>>,
     /// What the last HATCHPICK kept (the Hatch and Gradient dialog's picks).
     pub hatch_picks: Option<cmd::hatch::HatchPicks>,
-    /// The height of the point being given: one the UI gave on a 3D object (a 3D object snap in a
-    /// 3D view) or one typed as `x,y,z` / `@dx,dy,dz`. Commands that build in 3D (BOX, CYLINDER …)
-    /// start there; `None` = on the XY plane. The UI sets it with each point it sends.
+    /// The height of the point being given, along the construction plane's normal
+    /// ([`Session::cplane`]; world z in World): one the UI gave on a 3D object (a 3D object snap
+    /// in a 3D view) or one typed as `x,y,z` / `@dx,dy,dz`. Commands that build in 3D (BOX,
+    /// CYLINDER …) start there; `None` = on the plane. The UI sets it with each point it sends.
     pub point_z: Option<f64>,
     /// The height of the last point given ([`Self::point_z`] when it was given): what typed
     /// relative points (`@dx,dy,dz`) are measured from.
     pub last_point_z: Option<f64>,
+    /// A plan-only command is running in a level construction plane: it works in World
+    /// ([`Session::cplane`] is World while it runs; see [`cplane::PLAN_ONLY`]).
+    pub(crate) plan_world: std::sync::atomic::AtomicBool,
 }
 
 impl Default for Session {
@@ -795,6 +819,7 @@ impl Session {
             hatch_picks: None,
             point_z: None,
             last_point_z: None,
+            plan_world: std::sync::atomic::AtomicBool::new(false),
         }
     }
     pub fn new_drawing(&mut self, metric: bool) -> usize {
@@ -909,12 +934,38 @@ impl Session {
         }
     }
 
-    /// Add an entity to the current space with current properties.
+    /// Add an entity to the current space with current properties. `kind` is in the coordinates
+    /// of the current construction plane ([`Session::cplane`]), as points given to commands are:
+    /// in a plane other than World it is placed there ([`Entity::transform3`]), or refused when
+    /// it can't be (a dimension, leader or table stays level).
     pub fn add_entity(&mut self, kind: EntityKind) -> Result<Handle> {
+        let c = self.cplane();
+        if c == cadcraft_geom::Mat4::IDENTITY {
+            return self.add_entity_world(kind);
+        }
+        let mut e = Entity { handle: Handle(0), common: Common::default(), kind };
+        if !e.transform3(&c) {
+            return Err(EngineError::Other(format!(
+                "A {} can't be placed in this construction plane (it stays level); use CPLANE World or a level plane.",
+                e.kind.type_name().to_ascii_lowercase()
+            )));
+        }
+        self.add_placed(e.kind, e.common.extrusion)
+    }
+
+    /// Add an entity in world coordinates to the current space with current properties, whatever
+    /// the construction plane: for objects derived from existing (world) geometry.
+    pub fn add_entity_world(&mut self, kind: EntityKind) -> Result<Handle> {
+        self.add_placed(kind, cadcraft_geom::Vec3::Z)
+    }
+
+    /// Add `kind` with current properties and extrusion (thickness direction) `extrusion`.
+    fn add_placed(&mut self, kind: EntityKind, extrusion: cadcraft_geom::Vec3) -> Result<Handle> {
         let common = self.current_common();
         let space = self.space();
         let true_color = self.doc()?.header.get("CECOLOR_RGB").and_then(|v| v.as_i64());
         let mut common = common;
+        common.extrusion = extrusion;
         if let Some(rgb) = true_color {
             common.color = cadcraft_color::Color::True(cadcraft_color::Rgb::from_u32(rgb as u32));
         }
@@ -940,13 +991,18 @@ impl Session {
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         (spec.enabled)(self).map_err(|m| EngineError::Disabled(spec.id.into(), m))?;
-        if let Some(why) = cmd::blocks::bedit::refused_in_editor(self, spec.id) {
+        if let Some(why) = cmd::blocks::bedit::refused_in_editor(self, spec.id).or_else(|| cplane::refused(self, spec.id)) {
             return Err(EngineError::Disabled(spec.id.into(), why));
         }
         let before = self.state().ok().map(|s| (s.doc.clone(), s.selection.clone(), s.uid));
         let editing = self.state().is_ok_and(|s| s.block_edit.is_some());
         let run = spec.run;
+        // A plan-only command in a level construction plane works in World.
+        let world = cplane::in_world(self, spec.id).then(|| self.plan_world.swap(true, std::sync::atomic::Ordering::Relaxed));
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(self, params)));
+        if let Some(w) = world {
+            self.plan_world.store(w, std::sync::atomic::Ordering::Relaxed);
+        }
         let result = match result {
             Ok(r) => r,
             Err(p) => {
@@ -1051,7 +1107,7 @@ impl Session {
             self.cancel();
         }
         (spec.enabled)(self).map_err(|m| EngineError::Disabled(spec.id.into(), m))?;
-        if let Some(why) = cmd::blocks::bedit::refused_in_editor(self, spec.id) {
+        if let Some(why) = cmd::blocks::bedit::refused_in_editor(self, spec.id).or_else(|| cplane::refused(self, spec.id)) {
             return Err(EngineError::Disabled(spec.id.into(), why));
         }
         if nested {
@@ -1187,10 +1243,10 @@ impl Session {
                 let ap = self.pixel_size() * self.settings.pickbox.max(1.0) * 1.5;
                 if let Some(pw) = self.pending_window.take() {
                     let crossing = p.x < pw.corner.x;
-                    let hs = select::select_window(self.doc()?, &space, Bounds2::new(pw.corner, p), crossing);
+                    let hs = select::select_window(&*self.pick_doc()?, &space, Bounds2::new(pw.corner, p), crossing);
                     return Ok(Some(Input::Pick(cmd::groups::expand(self, hs))));
                 }
-                match select::pick(self.doc()?, &space, p, ap) {
+                match select::pick(&*self.pick_doc()?, &space, p, ap) {
                     Some(h) => Ok(Some(Input::Pick(cmd::groups::expand(self, vec![h])))),
                     None => {
                         self.pending_window = Some(PendingWindow { corner: p, during_command: true });
@@ -1247,14 +1303,14 @@ impl Session {
         match input {
             Input::Point(p) => {
                 if mode.push(p) {
-                    return Ok(mode.select(self.doc()?, &self.space()).map(Input::Pick));
+                    return Ok(mode.select(&*self.pick_doc()?, &self.space()).map(Input::Pick));
                 }
             }
             Input::Keyword(k) if k == "Undo" => {
                 mode.pts.pop();
             }
             // Enter ends a fence or polygon; with too few points the mode is dropped.
-            Input::Enter => return Ok(mode.select(self.doc()?, &self.space()).map(Input::Pick)),
+            Input::Enter => return Ok(mode.select(&*self.pick_doc()?, &self.space()).map(Input::Pick)),
             Input::Cancel | Input::Pick(_) => return Ok(Some(input)),
             _ => self.echo("Invalid point."),
         }
@@ -1731,7 +1787,7 @@ impl Session {
         let pickadd = self.settings.pickadd;
         if let Some(pw) = self.pending_window.take() {
             let crossing = p.x < pw.corner.x;
-            let hs = select::select_window(self.doc()?, &space, Bounds2::new(pw.corner, p), crossing);
+            let hs = select::select_window(&*self.pick_doc()?, &space, Bounds2::new(pw.corner, p), crossing);
             let hs = cmd::groups::expand(self, hs);
             let mut sel = if pickadd || shift { self.selection() } else { Vec::new() };
             if shift && pickadd {
@@ -1743,7 +1799,7 @@ impl Session {
             return Ok(());
         }
         let ap = self.pixel_size() * self.settings.pickbox.max(1.0) * 1.5;
-        match select::pick(self.doc()?, &space, p, ap) {
+        match select::pick(&*self.pick_doc()?, &space, p, ap) {
             Some(h) => self.idle_pick(h, shift),
             None => self.pending_window = Some(PendingWindow { corner: p, during_command: false }),
         }

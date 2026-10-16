@@ -59,6 +59,15 @@ fn modelling_operations_round_trip_through_the_worker() {
     assert!(a.is_some() && b.is_some());
     let pyramid = Primitive::Pyramid { base: Vec3::ZERO, sides: 5, radius: 3.0, top_radius: 0.0, height: 4.0 };
     assert_eq!(cadcraft_kernel::primitive(&pyramid).unwrap().mesh.tris.len(), 3 + 5);
+    // Drawings' outlines and exact boxes, a bad B-rep among them coming back as none.
+    let cyl = cadcraft_kernel::primitive(&Primitive::Cylinder { base: Vec3::ZERO, radius: 2.0, height: 5.0 }).unwrap();
+    let o = cadcraft_kernel::outlines(&[&cyl.brep, "nope"]).unwrap();
+    assert!(o.len() == 2 && o[1].is_none() && o[0].as_ref().is_some_and(|o| o.smooth.len() == o.mesh.edges.len() && o.smooth.contains(&true)));
+    let id = cadcraft_geom::Mat4::IDENTITY;
+    let b = cadcraft_kernel::boxes(&[cadcraft_kernel::Placed { brep: &cyl.brep, xform: &id }, cadcraft_kernel::Placed { brep: "nope", xform: &id }])
+        .unwrap();
+    let (lo, hi) = b[0].unwrap();
+    assert!((lo - v(-2.0, -2.0, 0.0)).len() < 1e-6 && (hi - v(2.0, 2.0, 5.0)).len() < 1e-6 && b[1].is_none(), "{b:?}");
 }
 
 /// Mirror (y → -y) when asked, scale, turn by `angle` about the unit `k` (Rodrigues), then move.

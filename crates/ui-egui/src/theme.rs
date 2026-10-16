@@ -80,6 +80,10 @@ pub struct Tokens {
     pub grid_major: Color32,
     pub axis_x: Color32,
     pub axis_y: Color32,
+    /// The world X, Y and Z axes of the gumball and the 3D UCS icon, and a gumball handle under
+    /// the cursor.
+    pub gumball: [Color32; 3],
+    pub gumball_hot: Color32,
     pub text: Color32,
     pub text_dim: Color32,
     pub text_faint: Color32,
@@ -140,6 +144,8 @@ impl Tokens {
         grid_major: Color32::from_rgb(0x31, 0x39, 0x45),
         axis_x: Color32::from_rgb(0x56, 0x28, 0x29),
         axis_y: Color32::from_rgb(0x28, 0x4a, 0x2e),
+        gumball: [Color32::from_rgb(0xe8, 0x3a, 0x3a), Color32::from_rgb(0x3a, 0xc8, 0x4a), Color32::from_rgb(0x3a, 0x6c, 0xf0)],
+        gumball_hot: Color32::from_rgb(0xff, 0xe0, 0x40),
         text: Color32::from_rgb(0xd7, 0xdb, 0xe0),
         text_dim: Color32::from_rgb(0xa3, 0xaa, 0xb4),
         text_faint: Color32::from_rgb(0x87, 0x8d, 0x96),

@@ -59,7 +59,10 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("slice", "Slice", run_slice)
             .menu(&["Modify", "3D Operations", "Slice"])
             .alias(&["sl"])
-            .params("{handles?, point1: [x,y], point2: [x,y] (a vertical cutting plane), keep?: \"both\" | \"side\", side?: [x,y] (on the side to keep)}")
+            .params(
+                "{handles?, point1: [x,y,z?], point2: [x,y,z?], up?: [x,y,z] (the cutting plane holds the line between the points and this direction; default Z: a vertical plane), \
+                 keep?: \"both\" | \"side\", side?: [x,y,z?] (on the side to keep)}",
+            )
             .interactive(|_| Ok(Box::new(SliceM::default()))),
         CommandSpec::new("3dmove", "3D Move", run_3dmove)
             .menu(&["Modify", "3D Operations", "3D Move"])
@@ -152,8 +155,9 @@ fn run_loft(s: &mut Session, p: &Value) -> Result<Value> {
     let b = cadcraft_kernel::loft(&sections, ruled).map_err(kernel)?;
     let surface = b.mesh.open;
     let (locked, free): (Vec<Handle>, Vec<Handle>) = used.iter().partition(|u| is_locked(s, **u));
-    // On the current layer, as AutoCAD's LOFT: the sections' layers may be locked.
-    let h = s.add_entity(solid(b))?;
+    // On the current layer, as AutoCAD's LOFT: the sections' layers may be locked. Made where
+    // the sections are in the world, not placed in the construction plane again.
+    let h = s.add_entity_world(solid(b))?;
     if !surface {
         let d = s.doc_mut()?;
         for u in &free {
@@ -290,17 +294,26 @@ fn run_planesurf(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "handles": made, "skipped": skipped, "locked": locked }))
 }
 
-/// ponytail: a vertical plane through two points only; AutoCAD's 3-point, Object, Surface, Zaxis,
-/// View and XY/YZ/ZX planes when slicing needs other planes (the kernel takes any plane already).
+/// ponytail: a plane through two points and a direction only (vertical by default, square to the
+/// construction plane at the prompts); AutoCAD's 3-point, Object, Surface, Zaxis, View and
+/// XY/YZ/ZX planes when slicing needs other planes (the kernel takes any plane already).
 fn run_slice(s: &mut Session, p: &Value) -> Result<Value> {
     let hs = targets(s, p)?;
-    let (a, b) = (point_req("slice", p, "point1")?, point_req("slice", p, "point2")?);
-    if a.near(b, EPS) {
+    let (a, b) = (p3_req("slice", p, "point1")?, p3_req("slice", p, "point2")?);
+    if (b - a).len() <= EPS * (1.0 + a.len()) {
         return Err(bad("slice", "`point1` and `point2` must be different points"));
     }
-    // The plane stands on the line through the two points; its normal points left of it.
-    let d = (b - a).normalized();
-    let normal = Vec3::new(-d.y, d.x, 0.0);
+    let up = match p.get("up").filter(|v| !v.is_null()) {
+        Some(v) => p3_value(v).ok_or_else(|| bad("slice", "`up` must be a direction [x, y, z]"))?,
+        None => Vec3::Z,
+    };
+    // The plane holds the line through the two points and `up`; its normal points left of the
+    // line seen from `up`'s end.
+    let normal = up.normalized().cross((b - a).normalized());
+    if !normal.is_finite() || normal.len() <= 1e-9 {
+        return Err(bad("slice", "`up` must not run along the line between the points"));
+    }
+    let normal = normal.normalized();
     let keep = match p.get("keep") {
         None | Some(Value::Null) => "both".to_string(),
         Some(Value::String(k)) => k.to_ascii_lowercase(),
@@ -309,8 +322,8 @@ fn run_slice(s: &mut Session, p: &Value) -> Result<Value> {
     let keep_side = match keep.as_str() {
         "both" => None,
         "side" => {
-            let side = point_req("slice", p, "side")?;
-            let off = normal.xy().dot(side - a);
+            let side = p3_req("slice", p, "side")?;
+            let off = normal.dot(side - a);
             if off.abs() <= EPS * (1.0 + (side - a).len()) {
                 return Err(bad("slice", "the `side` point is on the cutting plane"));
             }
@@ -327,7 +340,7 @@ fn run_slice(s: &mut Session, p: &Value) -> Result<Value> {
     // Every solid first; one the plane misses stays as it is.
     let mut cut = Vec::new();
     for (h, x) in &xs {
-        if let [Some(plus), Some(minus)] = cadcraft_kernel::slice(placed(x), a.to3(0.0), normal).map_err(kernel)? {
+        if let [Some(plus), Some(minus)] = cadcraft_kernel::slice(placed(x), a, normal).map_err(kernel)? {
             cut.push((*h, plus, minus));
         }
     }
@@ -537,9 +550,12 @@ struct SliceM {
 }
 
 impl SliceM {
+    /// The points picked are in the construction plane: the cutting plane stands square to it.
     fn run(&self, s: &mut Session, keep: Value) -> Result<Step> {
         let (Some(a), Some(b)) = (self.pts.first(), self.pts.get(1)) else { return Ok(Step::Continue) };
-        let mut p = json!({ "handles": hexes(&self.hs), "point1": [a.x, a.y], "point2": [b.x, b.y], "keep": "both" });
+        let c = s.cplane();
+        let (a, b, up) = (c.apply(a.to3(0.0)), c.apply(b.to3(0.0)), c.apply_vec(Vec3::Z));
+        let mut p = json!({ "handles": hexes(&self.hs), "point1": json3(a), "point2": json3(b), "up": json3(up), "keep": "both" });
         if let (Some(o), Some(k)) = (p.as_object_mut(), keep.as_object()) {
             o.extend(k.clone());
         }
@@ -583,7 +599,10 @@ impl Interactive for SliceM {
                 self.pts.push(p);
                 Ok(Step::Continue)
             }
-            (_, Input::Point(p)) => self.run(s, json!({ "keep": "side", "side": [p.x, p.y] })),
+            (_, Input::Point(p)) => {
+                let side = s.cplane().apply(p.to3(0.0));
+                self.run(s, json!({ "keep": "side", "side": json3(side) }))
+            }
             (2, Input::Enter) => self.run(s, json!({})),
             (2, Input::Text(t) | Input::Keyword(t)) if is_kw(&t, "both") || is_kw(&t, "keep both sides") => self.run(s, json!({})),
             _ => Ok(Step::Continue),
@@ -711,13 +730,14 @@ enum Op3 {
     Scale,
 }
 
-/// 3DMOVE, 3DROTATE, MIRROR3D and 3DSCALE at the command line. Picked points take the height of
-/// the 3D object they snap to (`point_z`). A bad value is asked for again at its prompt; when the
-/// command fails at the end (an object can't take the transform), it starts again from the
-/// selection.
-/// ponytail: typed points are on the XY plane (the command line reads `x,y,z` as `x,y`); 3DMOVE's
-/// Displacement option takes `dx,dy,dz`, and the axis and plane keywords cover the rest until
-/// typed points carry z.
+/// 3DMOVE, 3DROTATE, MIRROR3D and 3DSCALE at the command line. Points, typed displacements and
+/// the X/Y/Z axes and XY/YZ/ZX planes are in the construction plane (as AutoCAD's are in the
+/// UCS); picked points take the height of the 3D object they snap to (`point_z`). The JSON form
+/// they run is in the world. A bad value is asked for again at its prompt; when the command fails
+/// at the end (an object can't take the transform), it starts again from the selection.
+/// ponytail: typed points are on the construction plane (the command line reads `x,y,z` as
+/// `x,y`); 3DMOVE's Displacement option takes `dx,dy,dz`, and the axis and plane keywords cover
+/// the rest until typed points carry z.
 struct Xform3M {
     op: Op3,
     sel: SelectPhase,
@@ -817,6 +837,8 @@ impl Interactive for Xform3M {
             return feed(&mut self.sel, &mut self.hs, s, &i);
         }
         let z = s.point_z.filter(|z| z.is_finite()).unwrap_or(0.0);
+        // Construction plane → world, for what the JSON form takes.
+        let c = s.cplane();
         let word = match &i {
             Input::Text(t) | Input::Keyword(t) => t.trim().to_ascii_lowercase(),
             _ => String::new(),
@@ -827,7 +849,7 @@ impl Interactive for Xform3M {
                 Input::Enter => Ok(Step::Done),
                 Input::Text(t) => {
                     let d = parse3(&t).ok_or_else(|| EngineError::Other("Requires dx,dy or dx,dy,dz.".into()))?;
-                    self.run(s, "3dmove", json!({ "delta": json3(d) }))
+                    self.run(s, "3dmove", json!({ "delta": json3(c.apply_vec(d)) }))
                 }
                 _ => Ok(Step::Continue),
             },
@@ -842,7 +864,7 @@ impl Interactive for Xform3M {
             (Op3::Move, Input::Point(p)) => {
                 let p = p.to3(z);
                 match self.pts.first() {
-                    Some(a) => self.run(s, "3dmove", json!({ "delta": json3(p - *a) })),
+                    Some(a) => self.run(s, "3dmove", json!({ "delta": json3(c.apply_vec(p - *a)) })),
                     None => {
                         self.pts.push(p);
                         Ok(Step::Continue)
@@ -853,7 +875,7 @@ impl Interactive for Xform3M {
                 let Input::Text(t) = i else { return Ok(Step::Continue) };
                 let angle = super::machines::number(&t).ok_or_else(|| EngineError::Other("Requires an angle.".into()))?;
                 let (a, b) = self.axis().unwrap_or_default();
-                self.run(s, "3drotate", json!({ "axis": [json3(a), json3(b)], "angle": angle }))
+                self.run(s, "3drotate", json!({ "axis": [json3(c.apply(a)), json3(c.apply(b))], "angle": angle }))
             }
             (Op3::Rotate | Op3::Mirror, Input::Enter) if self.pts.is_empty() && self.named.is_some() => {
                 self.pts.push(Vec3::ZERO);
@@ -876,10 +898,16 @@ impl Interactive for Xform3M {
                     _ => return Ok(Step::Continue),
                 };
                 let p = match self.named {
-                    Some((n, _)) => {
+                    Some((n, _)) if c == Mat4::IDENTITY => {
                         json!({ "plane": n.to_ascii_lowercase(), "point": json3(self.pts.first().copied().unwrap_or_default()), "erase": erase })
                     }
-                    None => json!({ "points": self.pts.iter().map(|p| json3(*p)).collect::<Vec<_>>(), "erase": erase }),
+                    // The construction plane's XY, YZ or ZX plane, by three of its points.
+                    Some((_, d)) => {
+                        let o = self.pts.first().copied().unwrap_or_default();
+                        let pts = [o, o + Vec3::new(d.y, d.z, d.x), o + Vec3::new(d.z, d.x, d.y)];
+                        json!({ "points": pts.iter().map(|p| json3(c.apply(*p))).collect::<Vec<_>>(), "erase": erase })
+                    }
+                    None => json!({ "points": self.pts.iter().map(|p| json3(c.apply(*p))).collect::<Vec<_>>(), "erase": erase }),
                 };
                 self.run(s, "mirror3d", p)
             }
@@ -897,7 +925,7 @@ impl Interactive for Xform3M {
                     .filter(|f| f.is_finite() && *f > 0.0)
                     .ok_or_else(|| EngineError::Other("Requires a positive number.".into()))?;
                 let base = self.pts.first().copied().unwrap_or_default();
-                self.run(s, "3dscale", json!({ "base": json3(base), "factor": f }))
+                self.run(s, "3dscale", json!({ "base": json3(c.apply(base)), "factor": f }))
             }
             (Op3::Scale, Input::Point(_)) if !self.pts.is_empty() => Ok(Step::Continue),
             (_, Input::Point(p)) => {

@@ -1,5 +1,6 @@
 //! Rhino-style model viewports on the canvas: every tile draws along its own direction (its own
-//! display list, no plan grid in 3D), the right button navigates 3D views as in Rhino while a
+//! display list, and in 3D the grid of its construction plane), the right button navigates 3D
+//! views as in Rhino while a
 //! plain right click stays AutoCAD's Enter, and the viewport title's menu acts on its tile.
 
 use std::time::Duration;
@@ -82,19 +83,23 @@ fn rect_looking(h: &Harness<'_, CadApp>, d: ViewDir) -> Rect {
     tile_rects(h).into_iter().find(|(_, t)| t.look.dir == d).unwrap().0
 }
 
-/// The line work painted clipped to `r`: each line's or path's points.
-fn lines_in(shapes: &[ClippedShape], r: Rect) -> Vec<Vec<Pos2>> {
-    fn collect(s: &Shape, out: &mut Vec<Vec<Pos2>>) {
+/// The line work painted clipped to `r`: each line's or path's points, apart from the grid's
+/// lines (drawn in the grid and axis colours), which are counted.
+fn lines_in(shapes: &[ClippedShape], r: Rect) -> (Vec<Vec<Pos2>>, usize) {
+    let t = cadcraft_ui_egui::theme::Tokens::get();
+    let grid = [t.grid_minor, t.grid_major, t.axis_x, t.axis_y];
+    fn collect(s: &Shape, grid: &[egui::Color32], out: &mut (Vec<Vec<Pos2>>, usize)) {
         match s {
-            Shape::LineSegment { points, .. } => out.push(points.to_vec()),
-            Shape::Path(p) => out.push(p.points.clone()),
-            Shape::Vec(v) => v.iter().for_each(|s| collect(s, out)),
+            Shape::LineSegment { stroke, .. } if grid.contains(&stroke.color) => out.1 += 1,
+            Shape::LineSegment { points, .. } => out.0.push(points.to_vec()),
+            Shape::Path(p) => out.0.push(p.points.clone()),
+            Shape::Vec(v) => v.iter().for_each(|s| collect(s, grid, out)),
             _ => {}
         }
     }
-    let mut out = Vec::new();
+    let mut out = (Vec::new(), 0);
     for s in shapes.iter().filter(|s| (s.clip_rect.min - r.min).length() < 0.5 && (s.clip_rect.max - r.max).length() < 0.5) {
-        collect(&s.shape, &mut out);
+        collect(&s.shape, &grid, &mut out);
     }
     out
 }
@@ -157,19 +162,21 @@ fn four_tiles_draw_along_their_own_directions() {
             assert!(b.height() > 1.0 && b.width() > 1.0, "{b:?}");
         }
     }
-    // On screen: the front and right tiles draw the rectangle as one flat line and no grid; the
-    // plan tile draws its grid; the perspective draws it at an angle.
+    // On screen: the front and right tiles draw the rectangle as one flat line over the grid of
+    // their construction plane (Front, Right); the plan tile draws its grid; the perspective draws
+    // the rectangle at an angle over the World plane's grid.
     let shapes = &h.output().shapes;
     for d in [front, right] {
-        let lines = lines_in(shapes, rect_looking(&h, d));
+        let (lines, grid) = lines_in(shapes, rect_looking(&h, d));
         assert!(!lines.is_empty() && lines.len() < 10, "{d:?}: {} lines", lines.len());
+        assert!(grid > 20, "{d:?}: a grid of {grid} lines");
         let ys: Vec<f32> = lines.iter().flatten().map(|p| p.y).collect();
         assert!(ys.iter().all(|y| (y - ys[0]).abs() < 0.5), "{d:?} is edge-on: {ys:?}");
     }
-    let iso = lines_in(shapes, rect_looking(&h, persp));
-    assert!(iso.iter().flatten().any(|p| (p.y - iso[0][0].y).abs() > 5.0), "the perspective sees the rectangle at an angle");
-    let plan = lines_in(shapes, h.state().canvas.rect.unwrap());
-    assert!(plan.len() > 20, "the plan tile has its grid: {} lines", plan.len());
+    let (iso, grid) = lines_in(shapes, rect_looking(&h, persp));
+    assert!(grid > 20 && iso.iter().flatten().any(|p| (p.y - iso[0][0].y).abs() > 5.0), "the perspective sees the rectangle at an angle");
+    let (_, plan) = lines_in(shapes, h.state().canvas.rect.unwrap());
+    assert!(plan > 20, "the plan tile has its grid: {plan} lines");
 }
 
 #[test]
@@ -390,4 +397,67 @@ fn the_title_menu_restores_and_lays_out_four_views() {
     let tiles = h.state().session.model_tiles();
     assert_eq!(tiles.len(), 4);
     assert!(tiles.iter().all(|t| !t.look.shaded), "Four Views starts over in the current tile's style (Top's wireframe)");
+}
+
+fn model_count(h: &Harness<'_, CadApp>) -> usize {
+    h.state().session.doc().unwrap().model.len()
+}
+
+/// In a 3D layout a click in a plan tile only makes it current, as AutoCAD's click in another
+/// viewport does: it places no point for the running command and, with none, picks nothing and
+/// opens no window. 3D tiles keep Rhino's pick (see above).
+#[test]
+fn a_click_in_a_plan_tile_of_a_3d_layout_only_makes_it_current() {
+    let mut h = harness();
+    run(&mut h, "viewports.rhino");
+    let persp = dir(-1.0, -1.0, 1.0);
+    let i = h.state().session.model_tiles().iter().position(|t| t.look.dir == persp).unwrap();
+    h.state_mut().session.activate_tile(i).unwrap();
+    settle(&mut h);
+    let top = tile_rects(&h).into_iter().find(|(_, t)| t.look.dir.is_plan()).unwrap().0;
+    // LINE at its second point: the click in Top doesn't give it one.
+    let before = model_count(&h);
+    h.state_mut().session.cmdline("line").unwrap();
+    h.state_mut().session.input(cadcraft_engine::Input::Point(cadcraft_engine::geom::Vec2::new(30.0, 30.0))).unwrap();
+    click(&mut h, top.center(), PointerButton::Primary);
+    assert!(view_dir(&h).is_plan(), "Top is current");
+    assert_eq!(model_count(&h), before, "no segment drawn");
+    assert_eq!(h.state().session.running.as_ref().map(|r| r.id.as_str()), Some("line"), "LINE still waits");
+    h.state_mut().session.cancel();
+    // Idle: back to Perspective, then a click in Top neither picks nor opens a window.
+    let i = h.state().session.model_tiles().iter().position(|t| t.look.dir == persp).unwrap();
+    h.state_mut().session.activate_tile(i).unwrap();
+    settle(&mut h);
+    let top = tile_rects(&h).into_iter().find(|(_, t)| t.look.dir.is_plan()).unwrap().0;
+    click(&mut h, top.center(), PointerButton::Primary);
+    assert!(view_dir(&h).is_plan());
+    assert!(h.state().session.selection().is_empty() && h.state().session.pending_window.is_none(), "nothing else happened");
+}
+
+/// The title's tile commands end a running command first, as a menu pick does: a double-click
+/// on the title in the middle of LINE keeps undo in order (the first U takes back the four views,
+/// the second the line drawn before them).
+#[test]
+fn the_title_ends_a_running_command_before_its_tile_commands() {
+    let mut h = harness();
+    let before = model_count(&h);
+    h.state_mut().session.cmdline("line").unwrap();
+    for p in [[30.0, 0.0], [40.0, 0.0]] {
+        h.state_mut().session.input(cadcraft_engine::Input::Point(cadcraft_engine::geom::Vec2::new(p[0], p[1]))).unwrap();
+    }
+    assert_eq!(model_count(&h), before + 1);
+    let at = title(h.state().canvas.rect.unwrap());
+    move_to(&mut h, at);
+    for _ in 0..2 {
+        press(&mut h, at, PointerButton::Primary, true, Modifiers::NONE);
+        press(&mut h, at, PointerButton::Primary, false, Modifiers::NONE);
+    }
+    settle(&mut h);
+    assert_eq!(h.state().session.model_tiles().len(), 4, "the double-click laid out four views");
+    assert!(h.state().session.running.is_none(), "LINE ended first");
+    h.state_mut().session.execute("u", &json!({})).unwrap();
+    assert!(h.state().session.model_tiles().is_empty(), "the first U takes back the views");
+    assert_eq!(model_count(&h), before + 1, "and keeps the line");
+    h.state_mut().session.execute("u", &json!({})).unwrap();
+    assert_eq!(model_count(&h), before, "the second takes back the line");
 }

@@ -1,4 +1,7 @@
 //! `grip.*` commands: the undoable, scriptable form of grip editing (see `crate::grips`).
+//!
+//! Grips are where the current construction plane sees them ([`Session::pick_doc`]): the edits
+//! are made there and placed back in the world ([`commit`]); in World that is plan itself.
 
 use cadcraft_doc::{Entity, EntityKind, Handle};
 use cadcraft_geom::{Mat3, Vec2};
@@ -44,7 +47,7 @@ fn stretch(s: &mut Session, cmd: &str, p: &Value) -> Result<Value> {
     if curves::is_locked(s, h) {
         return Err(EngineError::Other("The object is on a locked layer.".into()));
     }
-    let e = curves::entity(s, h)?;
+    let e = s.local_entity(h)?;
     let k = stretch_grip_plan(&e, &e.kind, i, to).ok_or_else(|| bad(cmd, "no such grip, or the result would be degenerate"))?;
     let mut edits = vec![(h, k)];
     // The other `handles` with a grip on the same point stretch with it (connected objects stay
@@ -55,26 +58,55 @@ fn stretch(s: &mut Session, cmd: &str, p: &Value) -> Result<Value> {
         if o == h || edits.iter().any(|(x, _)| *x == o) || curves::is_locked(s, o) {
             continue;
         }
-        let Ok(oe) = curves::entity(s, o) else { continue };
+        let Ok(oe) = s.local_entity(o) else { continue };
         if let Some(j) = oe.grips().iter().position(|g| g.near(from, tol))
             && let Some(k) = stretch_grip_plan(&oe, &oe.kind, j, to)
         {
             edits.push((o, k));
         }
     }
-    let d = s.doc_mut()?;
+    let (seen, d) = (s.pick_doc()?, s.doc()?);
     for (o, k) in &mut edits {
         // A dimension's text moved by its grip: with DIMTMOVE 0 the dimension line follows.
         if let cadcraft_doc::EntityKind::Dimension(dm) = k
-            && let Some(cadcraft_doc::EntityKind::Dimension(old)) = d.entity(*o).map(|e| &e.kind)
+            && let Some(cadcraft_doc::EntityKind::Dimension(old)) = seen.entity(*o).map(|e| &e.kind)
             && dm.text_mid != old.text_mid
         {
             let st = d.dim_style(&dm.style).cloned().unwrap_or_default().with_overrides(&dm.overrides);
             st.follow_text(dm, d.header.f64("DIMSCALE", 1.0));
         }
-        d.modify_entity(*o, |e| e.kind = k.clone())?;
     }
+    commit(s, &edits, false)?;
     Ok(json!({ "handle": h.hex(), "handles": edits.iter().map(|(o, _)| o.hex()).collect::<Vec<_>>() }))
+}
+
+/// Give objects their new shapes `edits` (kinds in the current construction plane's
+/// coordinates, as [`Session::pick_doc`] shows them), or with `copy` add them as copies. In a
+/// plane other than World each is placed back in the world first: one that can't be refuses
+/// the edit before anything changes. Returns the edited (or new) objects.
+pub(super) fn commit(s: &mut Session, edits: &[(Handle, EntityKind)], copy: bool) -> Result<Vec<Handle>> {
+    let mut placed = Vec::with_capacity(edits.len());
+    for (h, k) in edits {
+        let Ok(e) = s.local_entity(*h) else { continue };
+        placed.push(s.place_local(&Entity { kind: k.clone(), ..e })?);
+    }
+    let d = s.doc_mut()?;
+    let mut out = Vec::with_capacity(placed.len());
+    for ne in placed {
+        let h = ne.handle;
+        if copy {
+            let Some(sp) = d.space_of(h) else { continue };
+            let nh = d.new_handle();
+            if let Some(st) = d.space_mut(&sp) {
+                st.push(Entity { handle: nh, ..ne });
+                out.push(nh);
+            }
+        } else {
+            d.modify_entity(h, |e| *e = ne)?;
+            out.push(h);
+        }
+    }
+    Ok(out)
 }
 
 /// Base point: `base`, or grip `index` of `baseHandle` (default: the first target).
@@ -86,7 +118,7 @@ fn base_point(s: &Session, cmd: &str, p: &Value, hs: &[Handle]) -> Result<Vec2> 
         .or_else(|| hs.first().copied())
         .ok_or_else(|| bad(cmd, "`base` or `baseHandle` + `index` is required"))?;
     let i = index_param(cmd, p)?;
-    let g = curves::entity(s, h)?.grips();
+    let g = s.local_entity(h)?.grips();
     g.get(i).copied().ok_or_else(|| bad(cmd, "no such grip"))
 }
 
@@ -115,7 +147,7 @@ fn run_grip_stretch(s: &mut Session, p: &Value) -> Result<Value> {
         None => {
             let base = match point_param(p, "base") {
                 Some(b) => b,
-                None => curves::entity(s, h0)?.grips().get(i0).copied().ok_or_else(|| bad(cmd, "no such grip"))?,
+                None => s.local_entity(h0)?.grips().get(i0).copied().ok_or_else(|| bad(cmd, "no such grip"))?,
             };
             point_req(cmd, p, "to")? - base
         }
@@ -141,11 +173,11 @@ fn run_grip_option(s: &mut Session, p: &Value) -> Result<Value> {
     if curves::is_locked(s, h) {
         return Err(EngineError::Other("The object is on a locked layer.".into()));
     }
-    let e = curves::entity(s, h)?;
+    let e = s.local_entity(h)?;
     let value = p.get("value").and_then(Value::as_f64);
     let k = grip_action_plan(&e, i, action, point_param(p, "to"), value)
         .ok_or_else(|| bad(cmd, "that option doesn't apply to this grip, or the result would be degenerate"))?;
-    s.doc_mut()?.modify_entity(h, |e| e.kind = k)?;
+    commit(s, &[(h, k)], false)?;
     Ok(json!({ "handle": h.hex() }))
 }
 
@@ -160,7 +192,7 @@ const MAX_GRIPS: usize = 1000;
 /// that sit on a hot grip's point (connected objects stay connected). Locked objects and edits
 /// that would be degenerate are left out; several hot grips of one object move together.
 pub(super) fn stretched(s: &Session, hot: &[(Handle, usize)], others: &[Handle], delta: Vec2) -> Vec<(Handle, EntityKind)> {
-    let Ok(d) = s.doc() else { return Vec::new() };
+    let Ok(d) = s.pick_doc() else { return Vec::new() };
     // Every grip to move, per object, with its target point.
     let mut moves: Vec<(Handle, Vec<(usize, Vec2)>)> = Vec::new();
     let mut add = |h: Handle, i: usize, to: Vec2| match moves.iter_mut().find(|(x, _)| *x == h) {
@@ -209,22 +241,7 @@ pub(super) fn stretched(s: &Session, hot: &[(Handle, usize)], others: &[Handle],
 /// added as copies and the originals stay. Returns the edited (or new) objects.
 pub(super) fn stretch_grips(s: &mut Session, hot: &[(Handle, usize)], others: &[Handle], delta: Vec2, copy: bool) -> Result<Vec<Handle>> {
     let edits = stretched(s, hot, others, delta);
-    let d = s.doc_mut()?;
-    let mut out = Vec::new();
-    for (h, k) in edits {
-        if copy {
-            let (Some(sp), Some(e)) = (d.space_of(h), d.entity(h).map(|e| (**e).clone())) else { continue };
-            let nh = d.new_handle();
-            if let Some(st) = d.space_mut(&sp) {
-                st.push(Entity { handle: nh, kind: k, ..e });
-                out.push(nh);
-            }
-        } else {
-            d.modify_entity(h, |e| e.kind = k)?;
-            out.push(h);
-        }
-    }
-    Ok(out)
+    commit(s, &edits, copy)
 }
 
 fn run_grip_move(s: &mut Session, p: &Value) -> Result<Value> {
