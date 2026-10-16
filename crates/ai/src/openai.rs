@@ -72,11 +72,14 @@ pub(crate) fn turn(
         Err(Failure::Cancelled) => return Ok(Next::Cancelled),
         Err(f) => return Err(cfg.failure(f)),
     };
-    // A local model whose chat template lost its tool format writes the calls as text.
+    // A local model whose chat template lost its tool format writes the calls as text, also next
+    // to real ones (after a garbled token).
     let shown = m.text.get(..m.shown).unwrap_or_default().to_string();
-    if custom && m.calls.is_empty() {
+    if custom {
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
-        (m.text, m.calls) = text_calls(&m.text, &names);
+        let (text, written) = text_calls(&m.text, &names);
+        m.text = text;
+        merge(&mut m.calls, written);
     }
     // The rest of the text as it is now: what was shown stays a prefix of it, since the calls
     // are taken from text held back; were it not, what follows their common part.
@@ -91,7 +94,11 @@ pub(crate) fn turn(
     let mut calls = Vec::with_capacity(m.calls.len());
     let mut tool_calls = Vec::with_capacity(m.calls.len());
     for (i, c) in m.calls.into_iter().enumerate() {
-        let id = if c.id.is_empty() { format!("call_{}", first + i) } else { c.id };
+        let mut id = if c.id.is_empty() { format!("call_{}", first + i) } else { c.id };
+        // Unique, so each result pairs with its call: a server's ids may look like made-up ones.
+        while calls.iter().any(|p: &Call| p.id == id) {
+            id.push('_');
+        }
         let input = match serde_json::from_str::<Value>(&c.args) {
             _ if c.args.trim().is_empty() => Ok(json!({})),
             Ok(v @ Value::Object(_)) => Ok(v),
@@ -251,8 +258,12 @@ fn shown_len(text: &str) -> usize {
     head.char_indices().rfind(|(_, c)| c.is_whitespace()).map_or(0, |(i, c)| i + c.len_utf8())
 }
 
-/// A call written as text: `{"name": tool in known, "arguments" | "parameters": {...}}`.
+/// A call written as text: `{"name": tool in known, "arguments" | "parameters": {...}}`, or
+/// `{tool in known: {...}}` (qwen2.5 through Ollama).
 fn text_call(v: &Value, known: &[&str]) -> Option<ToolCall> {
+    if let Some((name, a @ Value::Object(_))) = v.as_object().filter(|o| o.len() == 1).and_then(|o| o.iter().next()) {
+        return known.contains(&name.as_str()).then(|| ToolCall { name: name.clone(), args: a.to_string(), ..ToolCall::default() });
+    }
     let name = v["name"].as_str().filter(|n| known.contains(n))?;
     let args = match v.get("arguments").or_else(|| v.get("parameters"))? {
         Value::Null => String::new(),
@@ -304,6 +315,16 @@ fn text_calls(text: &str, known: &[&str]) -> (String, Vec<ToolCall>) {
     }
     shown.push_str(text.get(done..).unwrap_or_default());
     if calls.is_empty() { (text.to_string(), calls) } else { (shown.trim_end().to_string(), calls) }
+}
+
+/// Add the calls written as text to the reply's own, but not one that is the same as one of
+/// those (the same tool and arguments): the model wrote a call it also made.
+fn merge(calls: &mut Vec<ToolCall>, written: Vec<ToolCall>) {
+    let args = |a: &str| if a.trim().is_empty() { json!({}) } else { serde_json::from_str(a).unwrap_or_else(|_| Value::from(a)) };
+    let room = MAX_CALLS.saturating_sub(calls.len());
+    let new: Vec<ToolCall> =
+        written.into_iter().filter(|w| !calls.iter().any(|c| c.name == w.name && args(&c.args) == args(&w.args))).take(room).collect();
+    calls.extend(new);
 }
 
 /// A `tool` message per call, then one user message with the images the tools returned.
@@ -379,6 +400,42 @@ mod tests {
         // Unknown tools, calls without arguments and other code stay text.
         let text = "Use <tool_call>{\"name\": \"draw_circle\", \"arguments\": {}}</tool_call> or {\"name\": \"render\"},\n```\nline 0,0 1,1\n```";
         assert_eq!(calls(text), (text.to_string(), vec![]));
+    }
+
+    #[test]
+    fn calls_written_keyed_by_their_tool_are_taken() {
+        // qwen2.5:7b-instruct through Ollama, after garbled `<tool_call>` tokens.
+        let text = "ournaments\n{\"execute\": {\"command\": \"rectang\", \"params\": {\"p1\": [0, 0], \"p2\": [600, 400]}}}\nEscorts\n{\"execute\": {\"command\": \"circle\"}}";
+        let (shown, calls) = text_calls(text, &["execute", "render"]);
+        let got: Vec<(&str, &str)> = calls.iter().map(|c| (c.name.as_str(), c.args.as_str())).collect();
+        assert_eq!(
+            got,
+            [("execute", "{\"command\":\"rectang\",\"params\":{\"p1\":[0,0],\"p2\":[600,400]}}"), ("execute", "{\"command\":\"circle\"}")]
+        );
+        assert_eq!(shown, "ournaments\n\nEscorts");
+        // An unknown tool, another key or arguments that are not an object stay text.
+        let text = "{\"draw\": {}} {\"execute\": {}, \"x\": 1} {\"render\": \"iso\"}";
+        assert_eq!(text_calls(text, &["execute", "render"]).1.len(), 0);
+    }
+
+    #[test]
+    fn calls_written_as_text_join_real_ones_but_not_twice() {
+        let call = |name: &str, args: &str| ToolCall { name: name.into(), args: args.into(), ..ToolCall::default() };
+        let mut calls =
+            vec![ToolCall { id: "a".into(), ..call("execute", "{\"command\":\"circle\",\"params\":{\"radius\":5}}") }, call("cancel", "")];
+        let written = vec![
+            call("execute", "{\"params\": {\"radius\": 5}, \"command\": \"circle\"}"),
+            call("cancel", "{}"),
+            call("execute", "{\"command\": \"zoom\"}"),
+            call("execute", "{\"command\":\"circle\",\"params\":{\"radius\":6}}"),
+        ];
+        merge(&mut calls, written);
+        let got: Vec<(&str, &str)> = calls.iter().map(|c| (c.name.as_str(), c.args.as_str())).collect();
+        assert_eq!(got[2..], [("execute", "{\"command\": \"zoom\"}"), ("execute", "{\"command\":\"circle\",\"params\":{\"radius\":6}}")]);
+        assert_eq!(calls.len(), 4, "the same calls written again are left out");
+        let mut full: Vec<ToolCall> = (0..MAX_CALLS).map(|_| call("cancel", "")).collect();
+        merge(&mut full, vec![call("render", "{}")]);
+        assert_eq!(full.len(), MAX_CALLS);
     }
 
     #[test]

@@ -435,6 +435,45 @@ fn tool_calls_written_as_text_run() {
     assert_eq!(msgs[3]["tool_call_id"], msgs[2]["tool_calls"][0]["id"]);
 }
 
+/// A local model wrote one call as text next to its real calls: it runs too, but not one it
+/// wrote again (the same tool and arguments). Ids stay unique, so each result pairs with its
+/// call; the custom server's key goes along as a bearer token.
+#[test]
+fn calls_written_next_to_real_ones_run_once() {
+    let content = |t: &str| json!({"choices": [{"delta": {"content": t}}]});
+    let real =
+        json!({"index": 0, "id": "call_2", "function": {"name": "execute", "arguments": "{\"command\":\"circle\",\"params\":{\"radius\":5}}"}});
+    let first: String = [
+        content("Drawing it.\n<tool"),
+        content("_call>\n{\"name\": \"execute\", \"arguments\": {\"params\": {\"radius\": 5}, \"command\": \"circle\"}}\n</tool_call>\n"),
+        content("render {\"view\": \"iso\"}"),
+        json!({"choices": [{"delta": {"tool_calls": [real]}, "finish_reason": "tool_calls"}]}),
+    ]
+    .iter()
+    .map(|v| format!("data: {v}\n\n"))
+    .chain(["data: [DONE]\n\n".to_string()])
+    .collect();
+    let done = format!("data: {}\n\ndata: [DONE]\n\n", content("Done."));
+    let (url, seen, server) = mock(vec![(200, SSE, first), (200, SSE, done)]);
+    let cfg = Config { provider: ProviderKind::Custom, base_url: url, model: "qwen".into(), api_key: " sk-local ".into(), ..Config::default() };
+    let (mut conv, mut b) = (Conversation::new(), Fake::default());
+    let (r, events) = go(&cfg, &mut conv, &mut b, &no_stop());
+    server.join().unwrap();
+    assert_eq!(r, Ok(()));
+    let methods: Vec<&str> = b.calls.iter().map(|(m, _)| m.as_str()).collect();
+    assert_eq!(methods, ["engine.execute", "ui.render"]);
+    let shown: String = events.iter().filter_map(|e| if let Event::Text(t) = e { Some(t.as_str()) } else { None }).collect();
+    assert_eq!(shown, "Drawing it.Done.");
+    let seen = seen.lock().unwrap();
+    assert!(seen[0].0.contains("authorization: bearer sk-local\r\n"), "{}", seen[0].0);
+    let msgs = seen[1].1["messages"].as_array().unwrap();
+    assert_eq!(msgs[2]["content"], "Drawing it.");
+    let ids: Vec<&Value> = msgs[2]["tool_calls"].as_array().unwrap().iter().map(|c| &c["id"]).collect();
+    assert_eq!(ids, [&json!("call_2"), &json!("call_2_")], "the made-up id is not the server's");
+    assert_eq!((&msgs[3]["tool_call_id"], &msgs[4]["tool_call_id"]), (ids[0], ids[1]));
+    assert_eq!(msgs.len(), 6, "then the image the render returned");
+}
+
 /// A local server that isn't running fails at once with a hint, not after 14 s of retries.
 #[test]
 fn an_unreachable_local_server_fails_fast() {

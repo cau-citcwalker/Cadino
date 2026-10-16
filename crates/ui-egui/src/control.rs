@@ -17,7 +17,8 @@
 //! - `ui.set {...UiState fields}`, `ui.resize {width, height}`
 //! - `ui.screenshot {path?}`: PNG of the window; `ui.render {path?, width?, height?, fit?, view?}`:
 //!   headless render of the drawing (no window needed; fits the drawing unless `fit` is false;
-//!   `view` = `plan`, `front`, `iso`… looks at model space from there, shaded with edges; replies `pngBase64`)
+//!   `view` = `plan`, `front`, `iso`… looks at model space from there, shaded with edges on white;
+//!   replies `pngBase64`)
 //! - `app.open {path}`, `app.save {path?}`, `app.quit`
 //! - `control.methods`: this list, with params and a description; `ping`: replies `"pong"`
 
@@ -214,7 +215,7 @@ const METHODS: &[(&str, &str, &str)] = &[
     (
         "ui.render",
         "{path?, width?, height?, fit?, window?, view?}",
-        "Headless render of the drawing; `view` (plan, top, front, back, left, right, iso, iso_se, iso_ne, iso_nw) looks at model space from that direction, shaded with edges and fitted, without changing the drawing's view; `current` (default) renders what the canvas shows. Replies pngBase64.",
+        "Headless render of the drawing; `view` (plan, top, front, back, left, right, iso, iso_se, iso_ne, iso_nw) looks at model space from that direction, shaded with edges on white and fitted, without changing the drawing's view; `current` (default) renders what the canvas shows. Replies pngBase64.",
     ),
     ("app.open", "{path}", "Open a drawing."),
     ("app.save", "{path?}", "Save the drawing (Save As with a path)."),
@@ -483,8 +484,9 @@ pub fn handle(app: &mut CadApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
             let Ok(st) = app.session.state() else { return err("no drawing") };
             // `window`: just that area, at the size given or matching its shape.
             let window = render_window(p);
-            // A named view looks at model space from that direction, shaded with edges; otherwise
-            // the space as the canvas shows it: its view direction and visual style.
+            // A named view looks at model space from that direction, shaded with edges on white
+            // (where dark edges read); otherwise the space as the canvas shows it: its view
+            // direction and visual style.
             let named = match s("view").filter(|v| !v.eq_ignore_ascii_case("current")) {
                 Some(v) => match cadcraft_geom::ViewDir::named(v) {
                     Some(dir) => Some(dir),
@@ -510,7 +512,8 @@ pub fn handle(app: &mut CadApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
                 None => render_view(&list.bounds, v.center, v.height, fit, w, h),
             };
             let (w, h) = (view.width, view.height);
-            let Some(png) = cadcraft_render::raster::render_png(&list, &view, &cadcraft_render::raster::RasterOptions::default()) else {
+            let look = if named.is_some() { cadcraft_render::raster::RasterOptions::paper() } else { Default::default() };
+            let Some(png) = cadcraft_render::raster::render_png(&list, &view, &look) else {
                 return err("render failed");
             };
             #[cfg(not(target_arch = "wasm32"))]
@@ -673,6 +676,46 @@ mod tests {
         let v = render("sideways");
         assert_eq!(v["ok"], false);
         assert!(v["error"].as_str().is_some_and(|e| e.contains("unknown view")), "{v}");
+    }
+
+    /// The assistant looks at named views: a box in iso is drawn on white with its dark edges
+    /// along the silhouette; the current view keeps the canvas's dark background.
+    #[test]
+    fn render_named_view_draws_dark_edges_on_white() {
+        use cadcraft_geom::Vec3;
+        let v = |i: u32| Vec3::new(f64::from(i & 1), f64::from((i >> 1) & 1), f64::from((i >> 2) & 1));
+        let corners =
+            [[0, 2, 1], [1, 2, 3], [4, 5, 6], [5, 7, 6], [0, 1, 4], [1, 5, 4], [2, 6, 3], [3, 6, 7], [0, 4, 2], [2, 4, 6], [1, 3, 5], [3, 7, 5]];
+        let e = |a: u32, b: u32| vec![v(a), v(b)];
+        let mesh = cadcraft_geom::Mesh3 {
+            verts: corners.iter().flatten().map(|&i| v(i)).collect(),
+            tris: (0..12).map(|t| [3 * t, 3 * t + 1, 3 * t + 2]).collect(),
+            edges: vec![e(0, 1), e(1, 3), e(3, 2), e(2, 0), e(4, 5), e(5, 7), e(7, 6), e(6, 4), e(0, 4), e(1, 5), e(2, 6), e(3, 7)],
+            open: false,
+        };
+        let solid = cadcraft_doc::Solid3d { brep: "".into(), mesh: Arc::new(mesh), ..Default::default() };
+        let mut app = CadApp::new(cadcraft_engine::Session::new(), crate::Services::default());
+        app.session.doc_mut().unwrap().add(&cadcraft_doc::Space::Model, Default::default(), cadcraft_doc::EntityKind::Solid3d(solid)).unwrap();
+        let mut render = |view: &str| {
+            let (req, _reply) = ControlRequest::new("ui.render", json!({"view": view, "width": 200, "height": 200}));
+            let Outcome::Done(v) = handle(&mut app, &egui::Context::default(), &req) else { panic!("no render") };
+            let png = v["result"]["pngBase64"].as_str().and_then(cadcraft_engine::cmd::file::base64_decode).unwrap();
+            image::load_from_memory(&png).unwrap().to_rgb8()
+        };
+        let img = render("iso");
+        let luma = |x: u32, y: u32| img.get_pixel(x, y).0.iter().map(|&c| u32::from(c)).sum::<u32>() / 3;
+        assert_eq!(luma(0, 0), 255, "white background");
+        // Across the middle rows, the first ink from either side is a dark edge (a hairline
+        // anti-aliased over two pixels).
+        for y in 70..130 {
+            let row: Vec<u32> = (0..200).map(|x| luma(x, y)).collect();
+            for side in [row.clone(), row.into_iter().rev().collect()] {
+                let first = side.iter().position(|&l| l < 250).unwrap();
+                let darkest = side.iter().skip(first).take(3).min().unwrap();
+                assert!(*darkest < 140, "row {y}: silhouette {:?}", &side[first..first + 3]);
+            }
+        }
+        assert!(render("current").get_pixel(0, 0).0.iter().all(|&c| c < 100), "the canvas look");
     }
 
     #[test]

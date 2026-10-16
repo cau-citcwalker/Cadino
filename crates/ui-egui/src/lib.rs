@@ -607,7 +607,7 @@ impl CadApp {
             animation::unsmooth_scroll(ctx);
         }
         self.drain_control(ctx);
-        self.assistant.poll();
+        assistant::poll(self);
         self.finish_opening();
         self.opening.show(ctx);
         if !self.synthetic.is_empty() {

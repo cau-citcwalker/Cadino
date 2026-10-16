@@ -147,8 +147,9 @@ pub(crate) fn get_json(url: &str, headers: &[(&'static str, String)]) -> Result<
 
 /// POST `body` (JSON) to `url`, or GET it when `body` is `None`. Any status comes back as a
 /// [`Reply`]; a failure to connect or send is a retry on a cloud provider's own URL, and
-/// [`Failure::Unreachable`] elsewhere; no answer within 180 s is a retry there and fatal
-/// elsewhere. Redirects are not followed (they would carry the API key to another host).
+/// [`Failure::Unreachable`] elsewhere; no answer within 180 s is a retry there, and none
+/// within 10 minutes is fatal elsewhere. Redirects are not followed (they would carry the API
+/// key to another host).
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn send(body: Option<&str>, url: &str, headers: &[(&'static str, String)]) -> Result<Reply, Failure> {
     native::send(body, url, headers)
@@ -172,8 +173,11 @@ mod native {
     use crate::ProviderKind;
 
     const CONNECT: Duration = Duration::from_secs(15);
-    /// The longest wait for the next bytes of a reply.
+    /// The longest wait for the next bytes of a reply from a cloud provider (they stream pings).
     const READ: Duration = Duration::from_secs(if cfg!(test) { 3 } else { 180 });
+    /// The same for any other server: a local model on the CPU can read a long prompt for
+    /// minutes before its first token, and Stop still ends the wait at once.
+    const LOCAL_READ: Duration = Duration::from_secs(if cfg!(test) { 3 } else { 600 });
     /// A wait for bytes is cut into these, so Stop ends it at once.
     const SLICE: Duration = Duration::from_millis(250);
 
@@ -191,12 +195,14 @@ mod native {
     impl Connector for PerRead {
         type Out = Capped;
         fn connect(&self, details: &ConnectionDetails, chained: Option<()>) -> Result<Option<Capped>, ureq::Error> {
-            Ok(self.0.connect(details, chained)?.map(Capped))
+            let cloud = details.uri.host().is_some_and(|h| ["api.anthropic.com", "api.openai.com"].contains(&h));
+            let cap = if cloud { READ } else { LOCAL_READ };
+            Ok(self.0.connect(details, chained)?.map(|t| Capped(t, cap)))
         }
     }
 
     #[derive(Debug)]
-    struct Capped(Box<dyn Transport>);
+    struct Capped(Box<dyn Transport>, Duration);
 
     impl Transport for Capped {
         fn buffers(&mut self) -> &mut dyn Buffers {
@@ -206,7 +212,7 @@ mod native {
             self.0.transmit_output(amount, timeout)
         }
         fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
-            let cap: time::Duration = READ.into();
+            let cap: time::Duration = self.1.into();
             let timeout = if timeout.after > cap { NextTimeout { after: cap, reason: Timeout::RecvBody } } else { timeout };
             if *timeout.after <= SLICE {
                 return self.0.await_input(timeout);
@@ -250,7 +256,7 @@ mod native {
             }
         };
         // A local server that isn't running refuses at once: say so instead of retrying for 14 s.
-        // One that doesn't answer in 180 s is busy with something else: sending it again only
+        // One that doesn't answer in 10 minutes is busy with something else: sending it again only
         // queues the same prompt behind it.
         let cloud = [ProviderKind::Anthropic, ProviderKind::OpenAi].iter().any(|p| url.starts_with(p.default_base_url()));
         let resp = sent.map_err(|e| match e {

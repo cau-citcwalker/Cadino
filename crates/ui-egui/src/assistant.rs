@@ -9,6 +9,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use cadcraft_ai::Event;
+use cadcraft_engine::Session;
+use cadcraft_geom::{Bounds2, Vec2};
 use egui::text::LayoutJob;
 use egui::{Align, Layout, RichText, TextFormat};
 use serde_json::{Value, json};
@@ -83,6 +85,59 @@ struct Run {
     rx: Receiver<Event>,
     cancel: Arc<AtomicBool>,
     usage: [u64; 3],
+    /// The drawing when the message was sent ([`footprint`]).
+    before: Option<Footprint>,
+}
+
+/// A drawing's entity count and its extents as the current view sees them.
+type Footprint = (usize, Bounds2);
+
+fn footprint(s: &Session) -> Option<Footprint> {
+    Some((s.state().ok()?.doc.entity_count(), s.view_extents(&s.space()).ok()?))
+}
+
+/// After a message that changed the drawing (`before` it was sent), zoom to extents once when
+/// some of it is out of view, so the user sees what was made: models often forget to. `free` is
+/// the share of the canvas's width the palette leaves uncovered ([`free_part`]); the view counts
+/// only that part, and the extents go into it.
+fn reveal(s: &mut Session, before: Option<Footprint>, free: [f64; 2]) {
+    let Some(now @ (_, ext)) = footprint(s) else { return };
+    if before == Some(now) || ext.is_empty() {
+        return;
+    }
+    let (w, h) = s.viewport_px;
+    let Ok(st) = s.state_mut() else { return };
+    let v = st.zoom_frame();
+    let aspect = st.zoom_aspect(w / h.max(1.0));
+    // A paper-space viewport is not where the canvas is: all of it counts there.
+    let [a, b] = if st.zoom_viewport().is_some() { [0.0, 1.0] } else { free };
+    let (width, half) = (v.height * aspect, v.height * 0.5);
+    let left = v.center.x - width * 0.5;
+    if !Bounds2::new(Vec2::new(left + width * a, v.center.y - half), Vec2::new(left + width * b, v.center.y + half)).contains_box(&ext) {
+        // ZOOM Extents' frame for the free part, moved so its centre is the free part's.
+        let height = ext.height().max(ext.width() / (aspect * (b - a)).max(1e-6)).max(1e-6) * 1.05;
+        let center = ext.center() + Vec2::new((0.5 - (a + b) * 0.5) * height * aspect, 0.0);
+        st.set_zoom_frame(cadcraft_engine::View { center, height });
+    }
+}
+
+/// The share `[from, to]` of the canvas's width the floating palette leaves free: the wider side
+/// of it, or all of it when the palette is docked, closed or leaves under a quarter.
+/// ponytail: the palette counts as covering the canvas's full height.
+fn free_part(app: &CadApp) -> [f64; 2] {
+    let floating = app.ui.docking.layout.floating.iter().find(|g| g.panels.contains(&crate::docking::Panel::Assistant));
+    let (Some(c), Some(p)) = (app.canvas.rect, floating) else { return [0.0, 1.0] };
+    let p = egui::Rect::from_min_size(egui::pos2(p.rect[0], p.rect[1]), egui::vec2(p.rect[2], p.rect[3]));
+    if !c.intersects(p) || c.width() < 1.0 {
+        return [0.0, 1.0];
+    }
+    let left = f64::from(((p.left() - c.left()) / c.width()).clamp(0.0, 1.0));
+    let right = f64::from(((c.right() - p.right()) / c.width()).clamp(0.0, 1.0));
+    match left.max(right) {
+        m if m < 0.25 => [0.0, 1.0],
+        _ if left >= right => [0.0, left],
+        _ => [1.0 - right, 1.0],
+    }
 }
 
 /// The chat: its transcript, the conversation sent to the model and the message being answered.
@@ -125,23 +180,26 @@ impl Assistant {
             run.cancel.store(true, Ordering::Relaxed);
         }
     }
+}
 
-    /// Take the worker's events into the transcript. Called every frame.
-    pub fn poll(&mut self) {
-        let Some(run) = &mut self.run else { return };
-        loop {
-            match run.rx.try_recv() {
-                Ok(e) => apply(&mut self.items, &mut run.usage, e),
-                Err(TryRecvError::Empty) => return,
-                Err(TryRecvError::Disconnected) => break,
-            }
-        }
-        if let Some(run) = self.run.take()
-            && run.usage != [0; 3]
-        {
-            self.items.push(Item::Usage(run.usage));
+/// Take the worker's events into the transcript; once the message is answered, show what it
+/// made ([`reveal`]). Called every frame.
+pub fn poll(app: &mut CadApp) {
+    let a = &mut app.assistant;
+    let Some(run) = &mut a.run else { return };
+    loop {
+        match run.rx.try_recv() {
+            Ok(e) => apply(&mut a.items, &mut run.usage, e),
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => break,
         }
     }
+    let Some(run) = a.run.take() else { return };
+    if run.usage != [0; 3] {
+        a.items.push(Item::Usage(run.usage));
+    }
+    let free = free_part(app);
+    reveal(&mut app.session, run.before, free);
 }
 
 fn apply(items: &mut Vec<Item>, usage: &mut [u64; 3], e: Event) {
@@ -223,8 +281,9 @@ fn send(app: &mut CadApp, ctx: &egui::Context) {
     app.assistant.input.clear();
     app.assistant.items.push(Item::User(text.clone()));
     let backend = InApp { tx: app.assistant_tx.clone(), ctx: ctx.clone() };
+    let before = footprint(&app.session);
     match spawn(app.ai.config(), Arc::clone(&app.assistant.conv), text, backend) {
-        Ok(run) => app.assistant.run = Some(run),
+        Ok(run) => app.assistant.run = Some(Run { before, ..run }),
         Err(e) => app.assistant.items.push(Item::Error(e)),
     }
 }
@@ -264,7 +323,7 @@ fn spawn(mut cfg: cadcraft_ai::Config, conv: Arc<Mutex<cadcraft_ai::Conversation
             ctx.request_repaint();
         })
         .map_err(|e| format!("The assistant could not start: {e}"))?;
-    Ok(Run { rx, cancel, usage: [0; 3] })
+    Ok(Run { rx, cancel, usage: [0; 3], before: None })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -444,6 +503,24 @@ fn item_ui(ui: &mut egui::Ui, i: usize, item: &mut Item) {
     }
 }
 
+/// `line` without Markdown images (`![Isometric view](img-0)`): the model has no address for its
+/// renders, which show as thumbnails under their tool calls anyway.
+fn without_images(line: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some((before, after)) = rest.split_once("![") {
+        out.push_str(before);
+        match after.split_once("](").and_then(|(alt, tail)| Some((alt, tail.split_once(')')?.1))) {
+            Some((alt, tail)) if !alt.contains(']') => rest = tail,
+            _ => {
+                out.push_str("![");
+                rest = after;
+            }
+        }
+    }
+    out + rest
+}
+
 /// A tool's PNG as a texture no larger than twice the shown width.
 fn thumbnail(ctx: &egui::Context, b64: &str) -> Option<egui::TextureHandle> {
     let bytes = cadcraft_engine::cmd::file::base64_decode(b64)?;
@@ -473,6 +550,8 @@ fn markdown(ui: &mut egui::Ui, text: &str) {
             ui.label(RichText::new(line).font(crate::theme::mono()).color(t.text).background_color(t.field));
             continue;
         }
+        let line = without_images(line);
+        let trimmed = line.trim_start();
         if trimmed.is_empty() {
             ui.add_space(4.0);
             continue;
@@ -577,7 +656,10 @@ mod tests {
         let events = [
             Event::Thinking("Plan the desk ".into()),
             Event::Thinking("top first.".into()),
-            Event::Text("I'll draw a **1400 × 700** top:\n\n- corners `R30`\n  - nested\n# Done\n```\nline 0,0 1400,0\n```\n".into()),
+            Event::Text(
+                "I'll draw a **1400 × 700** top:\n\n- corners `R30`\n  - nested\n# Done\n```\nline 0,0 1400,0\n```\n![Isometric View](img-0)\n"
+                    .into(),
+            ),
             Event::ToolCall { id: "t1".into(), name: "execute".into(), input: json!({"command": "rectang", "params": {}}) },
             Event::ToolResult { id: "t1".into(), ok: true, text: "{\"handle\": \"2A\"}".into(), image_png_base64: None },
             Event::ToolCall { id: "t2".into(), name: "render".into(), input: json!({"view": "iso"}) },
@@ -743,6 +825,73 @@ mod tests {
         assert!(answers[0].is_ok(), "{answers:?}");
         assert!(std::path::Path::new(&png).exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn markdown_images_are_left_out() {
+        assert_eq!(without_images("![Isometric View](img-0)"), "");
+        assert_eq!(without_images("See ![Iso](img-0) and ![앞](img-1)."), "See  and .");
+        for kept in ["![x] and [link](u)", "![unclosed](img", "a ![ b", "![", "plain [link](u)"] {
+            assert_eq!(without_images(kept), kept);
+        }
+    }
+
+    /// A message that drew out of view ends zoomed to extents; one that changed nothing, or whose
+    /// work is in view, leaves the view as it was.
+    #[test]
+    fn a_message_that_drew_out_of_view_zooms_to_extents() {
+        let mut a = app();
+        let _ = a.run("circle", json!({"center": [0, 0], "radius": 5}));
+        // The message is answered from `view`, with a circle drawn at `change` meanwhile; the view after.
+        let answered = |a: &mut CadApp, view: cadcraft_engine::View, change: Option<[f64; 2]>| {
+            a.session.state_mut().unwrap().set_view_quiet(view);
+            let before = footprint(&a.session);
+            if let Some(center) = change {
+                let _ = a.run("circle", json!({"center": center, "radius": 5}));
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            drop(tx);
+            a.assistant.run = Some(Run { rx, cancel: Arc::default(), usage: [0; 3], before });
+            poll(a);
+            assert!(!a.assistant.running());
+            a.session.state().unwrap().view()
+        };
+        let zoomed_in = cadcraft_engine::View { center: Vec2::new(100.0, 100.0), height: 1.0 };
+        assert_eq!(answered(&mut a, zoomed_in, None), zoomed_in, "nothing changed");
+        let wide = cadcraft_engine::View { center: Vec2::ZERO, height: 1000.0 };
+        assert_eq!(answered(&mut a, wide, Some([50.0, 0.0])), wide, "all of it in view");
+        let v = answered(&mut a, wide, Some([5000.0, 5000.0]));
+        assert!(v.height < 1.1 * 5010.0 && (v.center - Vec2::new(2500.0, 2500.0)).len() < 10.0, "{v:?}");
+    }
+
+    /// What was drawn under the floating palette, or zoomed to under it, ends in the part of the
+    /// canvas it leaves free.
+    #[test]
+    fn what_was_made_is_shown_beside_the_floating_palette() {
+        for model_zoomed in [false, true] {
+            let mut a = app();
+            a.session.viewport_px = (1000.0, 500.0);
+            a.canvas.rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 500.0)));
+            assert_eq!(free_part(&a), [0.0, 1.0], "no palette");
+            open(&mut a).unwrap();
+            let [from, to] = free_part(&a);
+            assert!(from == 0.0 && (0.5..0.7).contains(&to), "the palette floats by the right edge: {to}");
+            a.session.state_mut().unwrap().set_view_quiet(cadcraft_engine::View { center: Vec2::ZERO, height: 100.0 });
+            let before = footprint(&a.session);
+            // Under the palette, which covers x > -100 + 200 * to.
+            let _ = a.run("circle", json!({"center": [50, 0], "radius": 5}));
+            if model_zoomed {
+                let _ = a.run("zoom", json!({"mode": "extents"}));
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            drop(tx);
+            a.assistant.run = Some(Run { rx, cancel: Arc::default(), usage: [0; 3], before });
+            poll(&mut a);
+            // The free part of the view (twice as wide as high), in drawing units.
+            let v = a.session.state().unwrap().view();
+            let (l, r) = (v.center.x - v.height, v.center.x - v.height + 2.0 * v.height * to);
+            assert!(l <= 45.0 && r >= 55.0 && r - l < 15.0, "model zoomed: {model_zoomed}: {l}..{r}");
+        }
     }
 
     #[test]

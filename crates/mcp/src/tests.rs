@@ -217,11 +217,14 @@ fn render_named_views() {
     let mut s = Server::new(Box::new(Headless::default()));
     tool(&mut s, "command_line", json!({"text": "rectang 0,0 10,5"}));
     let png = |s: &mut Server, view: &str| tool(s, "render", json!({"view": view, "width": 64, "height": 64}))["data"].as_str().unwrap().to_string();
-    let plan = png(&mut s, "plan");
-    assert_eq!(plan, png(&mut s, "current"), "the drawing is in plan view");
+    let (plan, current) = (png(&mut s, "plan"), png(&mut s, "current"));
+    // The drawing is in plan view, but a named view is drawn on white (dark edges read there),
+    // the current one as the canvas shows it.
+    assert_ne!(plan, current);
     assert_ne!(plan, png(&mut s, "front"), "seen from the front the rectangle is edge-on");
     assert_ne!(plan, png(&mut s, "iso"));
-    assert_eq!(plan, png(&mut s, "current"), "the drawing's view is unchanged");
+    assert_eq!(plan, png(&mut s, "plan"));
+    assert_eq!(current, png(&mut s, "current"), "the drawing's view is unchanged");
     let r = call(&mut s, 5, "tools/call", json!({"name": "render", "arguments": {"view": "sideways"}}));
     assert_eq!(r["error"]["code"], -32602, "{r}");
     let e = crate::Backend::call(s.backend(), "ui.render", json!({"view": "sideways"})).unwrap_err();

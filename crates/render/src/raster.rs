@@ -74,6 +74,14 @@ impl Default for RasterOptions {
     }
 }
 
+impl RasterOptions {
+    /// On white, as on paper: for images read rather than worked in (a named view rendered for the
+    /// AI assistant), where the solids' dark edges would vanish into the canvas's dark background.
+    pub fn paper() -> Self {
+        RasterOptions { background: Rgb(255, 255, 255), ..Default::default() }
+    }
+}
+
 /// Render to a pixmap. Returns `None` for zero or absurd sizes.
 pub fn render(list: &DisplayList, view: &View, o: &RasterOptions) -> Option<Pixmap> {
     if view.width == 0 || view.height == 0 || view.width > 16384 || view.height > 16384 {

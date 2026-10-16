@@ -19,7 +19,7 @@ pub const CANT_REACH: &str = "Can't reach {base}. Is the local model server (Oll
 pub const NO_IMAGES: &str = "This model does not take images; the assistant goes on without them.";
 pub const LENGTH_LIMIT: &str = "The reply reached the model's length limit.";
 pub const CONTENT_FILTER: &str = "The provider's content filter stopped the reply.";
-pub const MAX_TOKENS: &str = "The reply reached max_tokens ({max_tokens}); raise it in Options ▸ AI.";
+pub const MAX_TOKENS: &str = "The reply reached the output limit ({max_tokens} tokens); ask for a smaller step or to continue.";
 pub const DECLINED: &str = "Claude declined this request.";
 /// `{reason}`: the refusal's category and explanation.
 pub const DECLINED_WHY: &str = "Claude declined this request ({reason}).";

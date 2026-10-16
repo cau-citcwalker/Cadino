@@ -103,6 +103,12 @@ pub fn delete(_provider: ProviderKind) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// A local or custom server's key is its own (Options ▸ AI): never OpenAI's from the environment.
+    #[test]
+    fn a_custom_server_takes_no_environment_key() {
+        assert_eq!(env(ProviderKind::Custom), None);
+    }
+
     /// The system keychain round trip, under a service of its own: never the real "Cadino" keys.
     /// Run by hand (`cargo test -p cadcraft-ai -- --ignored keychain`); it leaves nothing behind.
     #[test]

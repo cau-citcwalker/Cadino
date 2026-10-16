@@ -198,7 +198,11 @@ const HEADLESS_METHODS: &[(&str, &str, &str)] = &[
     ("engine.execute", "{command, params}", "Run any command with JSON parameters. Never opens a dialog."),
     ("engine.commands", "", "Every command: id, label, menu path, shortcut, aliases, params doc, enabled."),
     ("drawing.inspect", "{entities?, limit?}", "Drawing summary and entities with handles and geometry."),
-    ("ui.render", "{path?, width?, height?, fit?, window?, view?}", "Render the drawing (a named view shaded with edges); replies pngBase64."),
+    (
+        "ui.render",
+        "{path?, width?, height?, fit?, window?, view?}",
+        "Render the drawing (a named view shaded with edges on white); replies pngBase64.",
+    ),
     ("app.open", "{path}", "Open a drawing."),
     ("app.save", "{path?}", "Save the drawing (Save As with a path)."),
     ("control.methods", "", "This list."),
@@ -298,7 +302,7 @@ impl Backend for Headless {
                 let h = p.get("height").and_then(Value::as_f64).unwrap_or(1000.0).clamp(16.0, 8192.0) as u32;
                 let st = s.state().map_err(|e| e.to_string())?;
                 let window = render_window(&p);
-                // A named view looks at model space from that direction, shaded with edges;
+                // A named view looks at model space from that direction, shaded with edges on white;
                 // otherwise the space as the canvas shows it: its view direction and visual style.
                 let named = match str_p("view").filter(|v| !v.eq_ignore_ascii_case("current")) {
                     Some(v) => Some(cadcraft_engine::geom::ViewDir::named(&v).ok_or_else(|| format!("unknown view `{v}`"))?),
@@ -325,8 +329,8 @@ impl Backend for Headless {
                     cadcraft_render::raster::View { center: v.center, scale: f64::from(h) / v.height.max(1e-12), width: w, height: h }
                 };
                 let (w, h) = (view.width, view.height);
-                let png =
-                    cadcraft_render::raster::render_png(&list, &view, &cadcraft_render::raster::RasterOptions::default()).ok_or("render failed")?;
+                let look = if named.is_some() { cadcraft_render::raster::RasterOptions::paper() } else { Default::default() };
+                let png = cadcraft_render::raster::render_png(&list, &view, &look).ok_or("render failed")?;
                 if let Some(path) = str_p("path") {
                     std::fs::write(&path, &png).map_err(|e| format!("{path}: {e}"))?;
                 }

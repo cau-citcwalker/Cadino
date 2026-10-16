@@ -1424,6 +1424,7 @@
 	The address must start with http:// or https://	Адреса має починатися з http:// або https://
 	Refresh models	Оновити моделі
 	API key	Ключ API
+	API key (optional)	Ключ API (необов’язково)
 	Thinking effort	Глибина міркувань
 	Allow the assistant to open, save and export files	Дозволити помічнику відкривати, зберігати й експортувати файли
 	Custom instructions	Власні інструкції
@@ -1459,7 +1460,7 @@
 	This model does not take images; the assistant goes on without them.	Ця модель не приймає зображень; помічник продовжує без них.
 	The reply reached the model's length limit.	Відповідь досягла обмеження довжини моделі.
 	The provider's content filter stopped the reply.	Фільтр вмісту постачальника зупинив відповідь.
-	The reply reached max_tokens ({max_tokens}); raise it in Options ▸ AI.	Відповідь досягла max_tokens ({max_tokens}); збільште його в Параметри ▸ ШІ.
+	The reply reached the output limit ({max_tokens} tokens); ask for a smaller step or to continue.	Відповідь досягла межі виводу ({max_tokens} токенів); попросіть менший крок або продовження.
 	Claude declined this request.	Claude відхилив цей запит.
 	Claude declined this request ({reason}).	Claude відхилив цей запит ({reason}).
 	Connected: {count} models	З’єднано: моделей — {count}

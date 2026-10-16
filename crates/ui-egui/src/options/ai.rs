@@ -178,11 +178,11 @@ fn assistant(app: &CadApp, ui: &mut egui::Ui, changes: &mut Map<String, Value>) 
         });
         ui.end_row();
 
-        if p.needs_key() {
-            ui.label(crate::tl!("API key"));
-            ui.vertical(|ui| key(ui, p));
-            ui.end_row();
-        }
+        // A custom server's key is optional: hosted OpenAI-compatible ones (OpenRouter, Groq,
+        // DeepSeek…) want one, local ones don't.
+        ui.label(if p.needs_key() { crate::tl!("API key") } else { crate::tl!("API key (optional)") });
+        ui.vertical(|ui| key(ui, p));
+        ui.end_row();
 
         if p == ProviderKind::Anthropic {
             ui.label(crate::tl!("Thinking effort"));
@@ -376,6 +376,27 @@ mod tests {
         if cfg!(windows) {
             assert_eq!(code, r#"claude mcp add cadino -- "C:\Program Files\Cadino\cadcraft-cli.exe" mcp --connect 127.0.0.1:7979 --lazy"#);
         }
+    }
+
+    /// A custom server takes an optional key (hosted ones need it), saved like the others; it
+    /// still counts as set up with a model alone.
+    #[test]
+    fn a_custom_server_offers_an_optional_key() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+        let mut a = CadApp::new(cadcraft_engine::Session::new(), crate::Services::default());
+        a.ai.provider = ProviderKind::Custom;
+        a.ai.custom_model = "deepseek-chat".into();
+        a.ui.dialog = Some("options:ai".into());
+        let ctx = egui::Context::default();
+        assert!(a.ai.is_configured(&ctx));
+        let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui_state(|ui, app: &mut CadApp| app.ui(ui), a);
+        h.run_steps(3);
+        assert!(h.query_by_label("API key (optional)").is_some());
+        assert!(h.query_by_label("Save").is_some() && h.query_by_label("Remove").is_some());
+        h.state_mut().ai.provider = ProviderKind::OpenAi;
+        h.run_steps(3);
+        assert!(h.query_by_label("API key").is_some() && h.query_by_label("API key (optional)").is_none());
     }
 
     #[test]

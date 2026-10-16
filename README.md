@@ -112,7 +112,7 @@ numbers):
 | Parametric | Geometric and dimensional constraints, AUTOCONSTRAIN, PARAMETERS with expressions, conflict detection; constraints re-solve after every edit |
 | Grips | Hot grips with Space to cycle Stretch, Move, Rotate, Scale and Mirror |
 | Interface languages | English, Ukrainian (Українська), Brazilian Portuguese (Português (Brasil)), German (Deutsch), Spanish (Español), Czech (Čeština), Russian (Русский), French (Français), Simplified Chinese (简体中文, with an installed CJK font), Italian (Italiano), Korean (한국어, with an installed Hangul font), Swedish (Svenska) and Arabic (العربية, with an installed Arabic font), live switching and a remembered Auto/system-language choice; [details](docs/localization.md) |
-| Automation | MCP server, JSON control channel, `cadcraft-cli` (info, convert, run, commands, mcp), and a built-in AI Assistant that drafts and models from a chat with Claude, GPT or a local model ([guide](docs/ai.md)) |
+| Automation | MCP server, JSON control channel, `cadcraft-cli` (info, convert, run, commands, mcp), and a built-in AI Assistant that drafts and models from a chat with Claude, GPT, a local model or another OpenAI-compatible server ([guide](docs/ai.md)) |
 
 ## Quick start
 
