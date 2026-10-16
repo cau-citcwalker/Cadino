@@ -3,7 +3,7 @@
 //! position (drag it to move it) and a down-pointing triangle for a list (click it for the
 //! visibility states or lookup values). Dragging runs the engine's dynamic grip edit
 //! ([`cadcraft_engine::Session::start_dyn_grip`]); a list choice runs `blocks.reference.set`.
-//! Grips sit where they are in the world (at the reference's height), whatever the construction
+//! Grips sit where they are in the world (on the reference's plane), whatever the construction
 //! plane.
 
 use std::sync::Arc;
@@ -14,9 +14,9 @@ use serde_json::json;
 use crate::CadApp;
 use crate::canvas::Xf;
 use crate::theme::Tokens;
-use cadcraft_engine::doc::Handle;
 use cadcraft_engine::doc::dynblock::{DynGrip, GripShape};
-use cadcraft_engine::geom::Vec2;
+use cadcraft_engine::doc::{Entity, Handle};
+use cadcraft_engine::geom::{Vec2, Vec3};
 
 /// Most selected references whose grips are shown.
 const MAX_REFERENCES: usize = 200;
@@ -40,14 +40,27 @@ pub(crate) fn of_selection(app: &mut CadApp) -> Arc<Vec<(Handle, DynGrip, f64)>>
             .filter(|h| st.doc.entity(**h).is_some_and(|e| !st.doc.layer(&e.common.layer).is_some_and(|l| l.locked)))
             .take(MAX_REFERENCES)
             .flat_map(|h| {
-                // A tilted reference's grips are where plan shows them (`dynblock::grips`).
-                let z = st.doc.entity(*h).filter(|e| e.plan_xf().is_none()).map_or(0.0, |e| e.kind.elevation());
-                cadcraft_engine::doc::dynblock::grips(&st.doc, *h).into_iter().map(move |g| (*h, g, z))
+                let e = st.doc.entity(*h);
+                cadcraft_engine::doc::dynblock::grips(&st.doc, *h).into_iter().map(move |g| {
+                    let z = e.map_or(0.0, |e| height(e, g.at));
+                    (*h, g, z)
+                })
             })
             .collect();
         app.canvas.dyn_grips = Cache { key, grips: Arc::new(grips) };
     }
     app.canvas.dyn_grips.grips.clone()
+}
+
+/// The height of reference `e`'s plane over world plan point `p`: where a grip `dynblock::grips`
+/// places at `p` (seen from above) really is. A level reference's elevation.
+/// ponytail: a reference standing on end (its plane upright) keeps its grips on its plan line at
+/// z = 0; place them from its own coordinates if anyone stands dynamic blocks up.
+fn height(e: &Entity, p: Vec2) -> f64 {
+    let Some(pl) = e.plane() else { return 0.0 };
+    let (o, n) = (pl.apply(Vec3::ZERO), pl.apply_vec(Vec3::Z));
+    let z = o.z - (n.x * (p.x - o.x) + n.y * (p.y - o.y)) / n.z;
+    if n.z.abs() > 1e-6 * n.len() && z.is_finite() { z } else { 0.0 }
 }
 
 /// Where world plan point `p` at height `z` (a grip's, in drawing coordinates) is on screen,
@@ -122,15 +135,21 @@ pub(crate) fn click(app: &mut CadApp, (h, g): (Handle, DynGrip)) {
         app.canvas.dyn_menu_fresh = true;
         return;
     }
-    // ponytail: the engine's dynamic grip drag takes world XY points, not the construction plane's
-    // the canvas gives; refused (the drawing unchanged) outside World until it takes CPlane points.
-    if app.session.cplane() != cadcraft_engine::geom::Mat4::IDENTITY {
-        app.session.echo("Dynamic grips are dragged in the World construction plane only for now (CPLANE World); lists still work.");
-        return;
-    }
-    app.canvas.hot_grips.clear();
+    // The drag takes the construction plane's points (a tilted plane refuses it, the drawing
+    // unchanged).
     match app.session.start_dyn_grip(h, g.node, g.part) {
-        Ok(()) => app.canvas.dyn_hot = Some((h, g.node, g.part)),
+        Ok(()) => {
+            app.canvas.hot_grips.clear();
+            app.canvas.dyn_hot = Some((h, g.node, g.part));
+            // In a 3D view the cursor moves the grip in its reference's plane (the engine takes the
+            // plan point into it), or level through it, so it follows the cursor.
+            app.canvas.grip_plane = app.canvas.xf.and_then(|xf| {
+                let d = app.session.doc().ok()?;
+                let e = d.entity(h)?;
+                let tilted = e.plan_xf().and(e.plane()).map(|pl| pl.apply_vec(Vec3::Z));
+                crate::canvas::drag_plane(&xf, g.at.to3(height(e, g.at)), tilted)
+            });
+        }
         Err(e) => app.session.echo(e.to_string()),
     }
 }
@@ -177,12 +196,10 @@ pub(crate) fn menu(app: &mut CadApp, ctx: &egui::Context, xf: &Xf) {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use cadcraft_engine::doc::dynblock::GripPart;
-    use cadcraft_engine::geom::{Mat4, Vec3};
+    use cadcraft_engine::geom::Mat4;
 
     /// Dynamic grips sit where they are in the world through any construction plane (a UCS moved
-    /// in plan doesn't carry them along); outside World a drag isn't started, as the engine's
-    /// takes world points, and the drawing stays as it was.
+    /// in plan doesn't carry them along).
     #[test]
     fn dynamic_grips_are_placed_through_the_construction_plane() {
         let rect = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0));
@@ -191,12 +208,36 @@ mod tests {
         let p = Vec2::new(1.0, 2.0);
         assert!(spot(&ucs, p, 0.0).distance(plan.to_screen(p)) < 1e-3, "world (1, 2), not the UCS's");
         assert!(spot(&ucs, p, 0.0).distance(ucs.to_screen(p)) > 10.0);
-        let mut app = CadApp::new(cadcraft_engine::Session::new(), crate::Services::default());
-        app.session.execute("cplane", &json!({ "origin": [5, 5, 0] })).unwrap();
-        let g =
-            DynGrip { node: 1, part: GripPart::End, shape: GripShape::Linear, at: p, dir: Vec2::X, property: "Width".into(), choices: Vec::new() };
-        click(&mut app, (Handle(1), g));
-        assert!(app.session.running.is_none() && app.canvas.dyn_hot.is_none());
-        assert!(app.session.log.last().is_some_and(|m| m.contains("World construction plane")), "{:?}", app.session.log.last());
+    }
+
+    /// A tilted reference's dynamic grips sit on its plane, over the plan point `dynblock::grips`
+    /// gives (not on its shadow at z = 0); a level one's at its height; one standing on end on its
+    /// plan line at 0.
+    #[test]
+    fn dynamic_grips_sit_on_a_tilted_references_plane() {
+        let ins = cadcraft_engine::doc::Insert {
+            block: "B".into(),
+            insert: Vec3::new(100.0, 0.0, 5.0),
+            scale: Vec3::new(1.0, 1.0, 1.0),
+            rotation: 0.0,
+            attribs: Vec::new(),
+            cols: 1,
+            rows: 1,
+            col_spacing: 0.0,
+            row_spacing: 0.0,
+        };
+        let reference = |extrusion| Entity {
+            handle: Handle(1),
+            common: cadcraft_engine::doc::Common { extrusion, ..Default::default() },
+            kind: cadcraft_engine::doc::EntityKind::Insert(ins.clone()),
+        };
+        let p = Vec2::new(136.0, -3.2);
+        assert_eq!(height(&reference(Vec3::Z), p), 5.0);
+        let tilted = reference(Vec3::new(0.0, -0.6, 0.8));
+        let z = height(&tilted, p);
+        // On its plane: in its own coordinates the point has no height.
+        let own = tilted.plane().unwrap().inverse().unwrap().apply(p.to3(z));
+        assert!(own.z.abs() < 1e-9 && z.abs() > 1.0, "{z} {own:?}");
+        assert_eq!(height(&reference(Vec3::X), p), 0.0);
     }
 }

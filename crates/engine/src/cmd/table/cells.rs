@@ -399,7 +399,8 @@ fn run_recalc(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The table and cell (row, col) under `p` in the current space.
 fn cell_under(s: &Session, p: Vec2) -> Option<(Handle, usize, usize)> {
-    let d = s.doc().ok()?;
+    // `p` is in the construction plane: the tables as it sees them.
+    let d = s.pick_doc().ok()?;
     let space = d.space(&s.space())?;
     for e in space.iter() {
         let EntityKind::Table(t) = &e.kind else { continue };

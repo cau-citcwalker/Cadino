@@ -650,3 +650,59 @@ fn front_construction_plane_points_at_the_profile_prompts() {
     zs.sort_by(|a, b| a.0.total_cmp(&b.0));
     assert!(zs.len() == 2 && (zs[0].1 - 5.0).abs() < 1e-6 && (zs[1].0 - 5.0).abs() < 1e-6, "{zs:?}");
 }
+
+/// REVOLVE's axis picked at a height (snapped to a raised 3D edge, or typed `x,y,z`) in the
+/// Front plane stays at that height: the ring turns about an axis 3 out of the plane.
+#[test]
+fn front_construction_plane_revolve_axis_keeps_its_height() {
+    let mut s = session();
+    s.execute("cplane", &json!({ "preset": "front" })).unwrap();
+    s.execute("cplane", &json!({ "origin": [100, 0, 0] })).unwrap();
+    let out = s.cplane().apply_vec(Vec3::Z);
+    let r = s.execute("pline", &json!({ "points": [[2, 0], [4, 0], [4, 3], [2, 3]], "closed": true })).unwrap();
+    s.set_selection(vec![handle(&r["handle"])]);
+    s.start("revolve").unwrap();
+    s.point_z = Some(3.0);
+    s.input(Input::Point(Vec2::ZERO)).unwrap();
+    s.input(Input::Point(Vec2::new(0.0, 1.0))).unwrap();
+    s.point_z = None;
+    s.input(Input::Enter).unwrap();
+    let ring = s.doc().unwrap().model.iter().last().map(|e| e.handle).unwrap();
+    // About the world Z axis through (100, 0, 0) + 3 out: the profile's far corner 5 away.
+    let c = Vec3::new(100.0, 0.0, 0.0) + out * 3.0;
+    let (lo, hi) = box3(&solid(&s, ring));
+    let (want_lo, want_hi) = (c - Vec3::new(5.0, 5.0, 0.0), c + Vec3::new(5.0, 5.0, 3.0));
+    assert!((lo - want_lo).len() < 0.05 && (hi - want_hi).len() < 0.05, "{lo:?} {hi:?} about {c:?}");
+}
+
+/// A lofted leg (round sections 40, 32 and 24 across, 300 tall: B-spline faces whose control
+/// points reach well past it) lists its true size, however it is turned; the same leg in block
+/// references stretched 1.5 times up lists 450 tall.
+#[test]
+fn cut_lists_measure_lofted_legs_truly() {
+    let mut s = session();
+    let ring = |s: &mut Session, r: f64, z: f64| {
+        s.add_entity(EntityKind::Circle(cadcraft_engine::doc::Circle { center: Vec3::new(0.0, 0.0, z), radius: r })).unwrap().hex()
+    };
+    let secs = [ring(&mut s, 20.0, 0.0), ring(&mut s, 16.0, 150.0), ring(&mut s, 12.0, 300.0)];
+    let leg = s.execute("loft", &json!({ "handles": secs })).unwrap()["handle"].clone();
+    s.execute("part", &json!({ "handles": [leg], "name": "Leg" })).unwrap();
+    for angle in [0.0, 30.0] {
+        s.execute("rotate", &json!({ "handles": [leg], "base": [0, 0], "angle": angle })).unwrap();
+        let r = s.execute("cutlist", &json!({ "handles": [leg] })).unwrap();
+        assert_eq!(rows(&r), vec![(300.0, 40.0, 40.0, 1)], "{r}");
+    }
+    s.execute("block", &json!({ "name": "LEG", "base": [0, 0], "handles": [leg], "keep": "delete" })).unwrap();
+    let ins = s.execute("insert", &json!({ "name": "LEG", "at": [0, 0] })).unwrap()["handle"].clone();
+    s.doc_mut()
+        .unwrap()
+        .modify_entity(handle(&ins), |e| {
+            if let EntityKind::Insert(i) = &mut e.kind {
+                i.scale = Vec3::new(1.0, 1.0, 1.5);
+                (i.cols, i.col_spacing) = (4, 500.0);
+            }
+        })
+        .unwrap();
+    let r = s.execute("cutlist", &json!({})).unwrap();
+    assert_eq!(rows(&r), vec![(450.0, 40.0, 40.0, 4)], "{r}");
+}

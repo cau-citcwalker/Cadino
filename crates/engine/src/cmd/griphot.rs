@@ -484,7 +484,7 @@ impl Session {
         }
         let g = GripEdit::new(self, hot.to_vec())?;
         let label = g.label();
-        let machine = crate::guard::Guarded::wrap(Box::new(g));
+        let machine = crate::guard::Guarded::wrap(Box::new(g), false);
         let st = self.state()?;
         let (before, selection_before) = (st.doc.clone(), st.selection.clone());
         self.running = Some(Running { id: "grip".into(), machine, before, selection_before });

@@ -53,9 +53,10 @@ impl Guarded {
         Ok(Box::new(Guarded { inner, broken: Cell::new(None), world }))
     }
 
-    /// Wrap a machine created by other means (the hot-grip edit).
-    pub(crate) fn wrap(inner: Box<dyn Interactive>) -> Box<dyn Interactive> {
-        Box::new(Guarded { inner, broken: Cell::new(None), world: false })
+    /// Wrap a machine created by other means (the hot-grip edit, a dynamic grip's drag); with
+    /// `world` it works in World as a plan-only command in a level plane does.
+    pub(crate) fn wrap(inner: Box<dyn Interactive>, world: bool) -> Box<dyn Interactive> {
+        Box::new(Guarded { inner, broken: Cell::new(None), world })
     }
 
     fn internal(&self, p: &(dyn Any + Send)) -> EngineError {

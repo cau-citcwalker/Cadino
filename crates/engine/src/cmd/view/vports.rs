@@ -282,7 +282,11 @@ impl DocState {
         let left = mine.or_else(|| self.tiles.left.iter().rev().find(fits)).map(|l| (l.tiles.clone(), l.active));
         let (tiles, active) = left.unwrap_or_else(|| (cfg.clone(), 0));
         let old = std::mem::take(&mut self.tiles);
-        self.tiles = ModelTiles { left: old.left, maximized: old.maximized, ..Default::default() };
+        // The tiles a VIEWPORTS.SINGLE replaced belong to the view it left: saving writes what is
+        // on show from here on.
+        // ponytail: redoing VIEWPORTS.SINGLE forgets them too (MAXIMIZE then gives Rhino's four);
+        // upgrade: key them by the drawing, as `left` is.
+        self.tiles = ModelTiles { left: old.left, ..Default::default() };
         // Other tiles' views: ZOOM Previous starts again.
         self.view_history.clear();
         if cfg.len() > 1 {

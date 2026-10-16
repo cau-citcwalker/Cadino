@@ -116,6 +116,15 @@ impl Xf {
     pub fn is_plan(&self) -> bool {
         self.dir.is_plan()
     }
+    /// Whether picks and selection windows take what is drawn under the cursor and in the
+    /// rectangle on screen ([`list_pick`], [`list_window`]): in a 3D view, and in plan with a
+    /// tilted construction plane, where the engine would pick and window in the plane's
+    /// coordinates, not as the screen shows them. Plan with a level UCS (moved or turned) is the
+    /// engine's, which selects the screen's windows there itself.
+    fn picks_drawn(&self) -> bool {
+        let n = self.cplane.col(2);
+        !self.is_plan() || n.x.hypot(n.y) > 1e-9
+    }
     /// Drawing points are view-plane points: plan view with the World CPlane, where the old 2D
     /// shortcuts (an axis-aligned grid, a drag's matrix as it is) hold.
     fn flat(&self) -> bool {
@@ -295,9 +304,9 @@ fn window_corner(app: &CadApp, xf: &Xf) -> Option<Vec2> {
     })
 }
 
-/// Close the pending selection window at screen point `at` in a 3D view with what is drawn in it
-/// (see [`list_window`]; dragged right to left, a crossing window): handed to the command asking
-/// for objects, or selected.
+/// Close the pending selection window at screen point `at` where the view picks what is drawn
+/// ([`Xf::picks_drawn`]) with what is drawn in it (see [`list_window`]; dragged right to left, a
+/// crossing window): handed to the command asking for objects, or selected.
 fn close_view_window(app: &mut CadApp, xf: &Xf, at: Pos2, shift: bool) -> cadcraft_engine::Result<()> {
     let Some(corner) = window_corner(app, xf) else { return Ok(()) };
     let end = xf.to_view(at);
@@ -427,9 +436,10 @@ pub struct CanvasState {
     pub(crate) gumball: gumball::Gumball,
     /// The edge-on construction plane warning is showing (it is given once per hover).
     edge_warned: bool,
-    /// While a grip edit in a 3D view drags a grip off the construction plane: the plane (world
-    /// point, normal) the cursor moves it in ([`grip_plane`], [`point_at`]).
-    grip_plane: Option<(cadcraft_geom::Vec3, cadcraft_geom::Vec3)>,
+    /// While a grip edit in a 3D view drags a grip off the construction plane or of a tilted
+    /// object: the plane (world point, normal) the cursor moves it in ([`grip_plane`],
+    /// [`drag_plane`], [`point_at`]).
+    pub(crate) grip_plane: Option<(cadcraft_geom::Vec3, cadcraft_geom::Vec3)>,
     /// The drawing the engine's object snaps run on in a 3D view ([`snap3d::ground_doc`]).
     pub(crate) ground: snap3d::Ground,
 }
@@ -1986,7 +1996,8 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
             }
             // In a 3D view an object prompt picks what is drawn under the cursor, and its window
             // takes what is drawn in it (the engine selects in plan).
-            let view_select = !xf.is_plan() && app.session.select_mode.is_none() && app.session.current_prompt().is_some_and(|q| q.picks_objects());
+            let view_select =
+                xf.picks_drawn() && app.session.select_mode.is_none() && app.session.current_prompt().is_some_and(|q| q.picks_objects());
             let at = hover_pos.filter(|_| view_select);
             let result = if let Some(hp) = at.filter(|_| app.session.pending_window.is_some()) {
                 close_view_window(app, &xf, hp, mods.shift)
@@ -2007,7 +2018,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
             crate::dyngrips::click(app, g);
         } else if let Some(g) = grip_at(app, &xf, hover_pos) {
             click_grip(app, g, mods.shift);
-        } else if let Some(hp) = hover_pos.filter(|_| !xf.is_plan()) {
+        } else if let Some(hp) = hover_pos.filter(|_| xf.picks_drawn()) {
             // A 3D view picks and windows what is drawn (the engine selects in plan).
             if app.session.pending_window.is_some() {
                 if let Err(e) = close_view_window(app, &xf, hp, mods.shift) {
@@ -2041,7 +2052,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         if app.session.pending_window.is_some()
             && let Some(end) = ui.input(|i| i.pointer.interact_pos())
         {
-            let done = if !xf.is_plan() {
+            let done = if xf.picks_drawn() {
                 close_view_window(app, &xf, end, mods.shift)
             } else if app.session.prompting() {
                 app.session.point_z = None;
@@ -2086,7 +2097,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
             let filter = app.session.settings.previewfilter;
             let ap = app.session.settings.pickbox.max(1.0) * 1.5 / scale;
             // Plan picks as the engine does, in the construction plane's coordinates.
-            let picked = if xf.is_plan() {
+            let picked = if !xf.picks_drawn() {
                 app.session.pick_doc().ok().and_then(|d| cadcraft_engine::select::pick(&d, &st.edit_space(), w, ap))
             } else {
                 hover_pos.zip(app.canvas.list.as_ref()).and_then(|(hp, l)| list_pick(l, xf.to_view(hp), ap))
@@ -2319,7 +2330,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
             draw_list(&painter, &xf, &list, bg, false);
         }
     } else if let (Some(c), true) = (app.canvas.cursor, app.session.prompting()) {
-        let ents = placed(app.session.preview(c), &xf.cplane);
+        let ents = placed(lift_grip_band(app, &xf, c, app.session.preview(c)), &xf.cplane);
         if !ents.is_empty()
             && let Ok(st) = app.session.state()
         {
@@ -2950,11 +2961,13 @@ fn grip_heights(e: &cadcraft_doc::Entity, n: usize) -> Vec<f64> {
     g3.into_iter().map(|q| if q.z.is_finite() { q.z } else { 0.0 }).collect()
 }
 
-/// The plane a grip edit in 3D view `xf` moves grip `(h, i)` in when it is off the construction
-/// plane: through the grip, parallel to the plane (the engine edits grips in its x, y and keeps
-/// their height), as (world point, normal); `None` for a grip on the plane (points land on it).
-/// ponytail: a tilted object's grip stretches along its own plane, so it lands near the cursor,
-/// not under it; upgrade: the engine takes grip points with a height.
+/// The plane a grip edit in 3D view `xf` moves grip `(h, i)` in ([`drag_plane`]), so the grip
+/// lands under the cursor: a tilted object's own plane (the engine takes the CPlane x, y it is
+/// given into that plane, `Entity::plan_to_local`), else level with the CPlane through the grip
+/// (the engine keeps grip heights).
+/// ponytail: an object standing on the CPlane (its plane square to it) only stretches across, at
+/// the grip's height: the CPlane x, y the engine takes can't carry one; upgrade: grip points with
+/// a height (`Session::point_z`) in the engine's grip edit.
 fn grip_plane(app: &CadApp, xf: &Xf, (h, i): (Handle, usize)) -> Option<(cadcraft_geom::Vec3, cadcraft_geom::Vec3)> {
     if xf.is_plan() {
         return None;
@@ -2963,12 +2976,52 @@ fn grip_plane(app: &CadApp, xf: &Xf, (h, i): (Handle, usize)) -> Option<(cadcraf
     let e = d.entity(h)?;
     let g = e.grips();
     let z = grip_heights(e, g.len()).get(i).copied()?;
-    let p = g.get(i)?.to3(z);
-    (z.abs() > 1e-9 * (1.0 + p.len())).then(|| (xf.cplane.apply(p), xf.cplane.apply_vec(cadcraft_geom::Vec3::Z)))
+    let tilted = e.plan_xf().map(|_| xf.cplane.apply_vec(e.common.extrusion));
+    drag_plane(xf, xf.cplane.apply(g.get(i)?.to3(z)), tilted)
+}
+
+/// The plane (world point, normal) a grip at world point `p` moves in under the cursor in view
+/// `xf`: its object's plane, normal `tilted` (one not level with the construction plane), unless
+/// the view sees that nearly edge-on; else the plane through `p` level with the CPlane when `p` is
+/// off it. `None` in plan, and for a grip on the CPlane (points land on it).
+pub(crate) fn drag_plane(xf: &Xf, p: cadcraft_geom::Vec3, tilted: Option<cadcraft_geom::Vec3>) -> Option<(cadcraft_geom::Vec3, cadcraft_geom::Vec3)> {
+    if xf.is_plan() {
+        return None;
+    }
+    if let Some(n) = tilted.map(|n| n.normalized()).filter(|n| n.dot(xf.dir.axes().2).abs() > 0.1) {
+        return Some((p, n));
+    }
+    let z = xf.cplane.inverse()?.apply(p).z;
+    (z.abs() > 1e-9 * (1.0 + p.len())).then(|| (p, xf.cplane.apply_vec(cadcraft_geom::Vec3::Z)))
+}
+
+/// A grip edit's rubber band (the engine's line from the base grip to the cursor `c`, the last of
+/// the preview `ents` in CPlane coordinates, on the CPlane) in the plane the grip moves in
+/// ([`drag_plane`]): from the grip where it is drawn to where it lands, not on its shadow. For a
+/// plane square to the CPlane, at the grip's height (where the engine puts it).
+/// ponytail: a tilted object's stretched shape still previews flat on the CPlane (the engine's
+/// grip preview is its plan view); upgrade: the engine previews it in its own plane.
+fn lift_grip_band(app: &CadApp, xf: &Xf, c: Vec2, mut ents: Vec<cadcraft_doc::Entity>) -> Vec<cadcraft_doc::Entity> {
+    let Some((o, n)) = app.canvas.grip_plane else { return ents };
+    let Some(ci) = xf.cplane.inverse() else { return ents };
+    let (o, n) = (ci.apply(o), ci.apply_vec(n));
+    let z = |q: Vec2| {
+        let h = o.z - (n.x * (q.x - o.x) + n.y * (q.y - o.y)) / n.z;
+        if n.z.abs() > 1e-9 * n.len() && h.is_finite() { h } else { o.z }
+    };
+    if let Some(cadcraft_doc::EntityKind::Line(l)) = ents.last_mut().map(|e| &mut e.kind) {
+        // Within rounding: a drag run in World hands its band back through the plane.
+        let tol = 1e-9 * (1.0 + c.len() + l.a.xy().len());
+        if l.b.xy().near(c, tol) && l.a.z.abs() <= tol && l.b.z.abs() <= tol {
+            l.a.z = z(l.a.xy());
+            l.b.z = z(c);
+        }
+    }
+    ents
 }
 
 /// The drawing point under screen point `at`: on the construction plane ([`Xf::to_world`]), or
-/// while a grip off the plane is dragged, on the plane it moves in ([`grip_plane`]), so the grip
+/// while a grip is dragged in a plane of its own, on that plane ([`drag_plane`]), so the grip
 /// follows the cursor.
 fn point_at(app: &CadApp, xf: &Xf, at: Pos2) -> Vec2 {
     if let Some((o, n)) = app.canvas.grip_plane
@@ -4067,11 +4120,194 @@ pub(crate) mod tests {
         assert_eq!(app.session.running.as_ref().map(|r| r.id.as_str()), Some("grip"));
         let to = corner + vec2(30.0, -10.0);
         let want = xf.ray_on(to, g(0.0, 0.0, 20.0), cadcraft_geom::Vec3::Z).unwrap();
+        // The rubber band runs at the polyline's height, from the grip to the cursor.
+        let (a, b) = grip_band(&mut f, &mut app, to);
+        assert!(a.distance(corner) < 1e-2 && b.distance(to) < 1e-2, "{a:?} {b:?}");
         f.click(&mut app, to);
         let d = app.session.doc().unwrap();
         let cadcraft_doc::EntityKind::LwPolyline(p) = &d.entity(h).unwrap().kind else { panic!() };
         assert!(p.vertices[1].p.dist(want.xy()) < 1e-6 && p.elevation == 20.0, "{:?} {} want {want:?}", p.vertices[1].p, p.elevation);
         assert!(p.vertices[0].p == Vec2::ZERO);
+    }
+
+    /// With the cursor at `to` during a grip edit, where the grip edit's rubber band (the preview's
+    /// last line, ending at the cursor) starts and ends on screen.
+    fn grip_band(f: &mut Frames, app: &mut CadApp, to: Pos2) -> (Pos2, Pos2) {
+        f.run(app, vec![egui::Event::PointerMoved(to)]);
+        let (xf, c) = (app.canvas.xf.unwrap(), app.canvas.cursor.unwrap());
+        let band = lift_grip_band(app, &xf, c, app.session.preview(c));
+        let Some(cadcraft_doc::EntityKind::Line(l)) = band.last().map(|e| &e.kind) else { panic!("{band:?}") };
+        assert_eq!(l.b.xy(), c);
+        (xf.local_to_screen(l.a), xf.local_to_screen(l.b))
+    }
+
+    /// In a 3D view a tilted object's grip lands under the cursor: the cursor moves it in the
+    /// object's own plane, where the engine takes the point given; its rubber band runs from the
+    /// grip to there.
+    #[test]
+    fn a_tilted_objects_grip_lands_under_the_cursor() {
+        let g = cadcraft_geom::Vec3::new;
+        let mut f = Frames::default();
+        let mut app = app_looking(&mut f, [-1.0, -1.0, 1.0]);
+        app.session.settings.osmode = 0;
+        app.session.settings.polarmode = false;
+        let st = app.session.state_mut().unwrap();
+        let center = st.view_dir.project(g(5.0, 0.0, 5.0));
+        st.set_view_quiet(cadcraft_engine::View { center, height: 80.0 });
+        // Tilted 45° about world X, 5 along its normal.
+        let vertices = vec![cadcraft_geom::PolyVertex::new(Vec2::ZERO), cadcraft_geom::PolyVertex::new(Vec2::new(10.0, 0.0))];
+        let p = cadcraft_doc::LwPolyline { vertices, closed: false, const_width: 0.0, elevation: 5.0, plinegen: false };
+        let common = cadcraft_doc::Common { extrusion: g(0.0, -1.0, 1.0).normalized(), ..Default::default() };
+        let h = app.session.doc_mut().unwrap().add(&cadcraft_doc::Space::Model, common, cadcraft_doc::EntityKind::LwPolyline(p)).unwrap();
+        app.session.set_selection(vec![h]);
+        rebuild_now(&mut f, &mut app);
+        let xf = app.canvas.xf.unwrap();
+        let plane = app.session.doc().unwrap().entity(h).unwrap().plane().unwrap();
+        let corner = xf.world_to_screen(plane.apply(g(10.0, 0.0, 0.0)));
+        assert_eq!(grip_at(&app, &xf, Some(corner)).map(|(o, _)| o), Some(h));
+        f.click(&mut app, corner);
+        assert_eq!(app.session.running.as_ref().map(|r| r.id.as_str()), Some("grip"));
+        let to = corner + vec2(30.0, -10.0);
+        let (a, b) = grip_band(&mut f, &mut app, to);
+        assert!(a.distance(corner) < 1e-2 && b.distance(to) < 1e-2, "{a:?} {b:?}");
+        f.click(&mut app, to);
+        let d = app.session.doc().unwrap();
+        let e = d.entity(h).unwrap();
+        let cadcraft_doc::EntityKind::LwPolyline(p) = &e.kind else { panic!() };
+        let at = xf.world_to_screen(e.plane().unwrap().apply(p.vertices[1].p.to3(0.0)));
+        assert!(at.distance(to) < 1e-2, "{at:?} want {to:?}");
+        assert_eq!(p.vertices[0].p, Vec2::ZERO);
+    }
+
+    /// The DOOR block of the engine's dynamic grip tests (its Width grip, node 2, at own (136, -4)),
+    /// referenced at (100, 0); osnaps and polar off.
+    fn door(f: &mut Frames) -> (CadApp, Handle) {
+        let grip =
+            "0 BLOCKLINEARGRIP\n5 68\n330 61\n100 AcDbEvalExpr\n90 9\n98 33\n99 232\n100 AcDbBlockElement\n300 End Grip\n98 33\n99 232\n1071 0\n";
+        let src = include_str!("../../io/tests/data/dynblock_door.txt")
+            .replace("\r\n", "\n")
+            .replace("170 4\n91 0\n91 0\n", "170 4\n91 8\n91 9\n")
+            .replace("1030 0\n93 0\n170 0\n171 0\n100 AcDbBlockVisibilityParameter", "1030 0\n93 10\n170 0\n171 0\n100 AcDbBlockVisibilityParameter")
+            .replace("91 5\n93 32\n95 6\n360 67", "91 5\n93 32\n95 6\n360 67\n92 -1\n92 -1\n92 -1\n92 -1\n91 6\n93 32\n95 9\n360 68")
+            .replace("95 1\n333 63\n", "95 2\n333 63\n333 68\n")
+            .replace("0 BLOCKFLIPGRIP", &format!("{grip}0 BLOCKFLIPGRIP"));
+        let text: String = src
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(|l| {
+                let (code, value) = l.split_once(' ').unwrap_or((l, ""));
+                format!("{code}\n{value}\n")
+            })
+            .collect();
+        let mut app = app_looking(f, [0.0, 0.0, 1.0]);
+        app.session.open_drawing(cadcraft_io::read_dxf(text.as_bytes()).unwrap(), "door", None);
+        let r = app.session.execute("insert", &serde_json::json!({ "name": "Door", "at": [100, 0] })).unwrap();
+        app.session.settings.osmode = 0;
+        app.session.settings.polarmode = false;
+        (app, Handle::parse_hex(r["handle"].as_str().unwrap()).unwrap())
+    }
+
+    fn door_width(app: &mut CadApp, h: Handle) -> String {
+        let r = app.session.execute("blocks.reference", &serde_json::json!({ "handle": h.hex() })).unwrap();
+        r["properties"].as_array().unwrap().iter().find(|p| p["name"] == "Width").and_then(|p| p["value"].as_str()).unwrap_or_default().to_string()
+    }
+
+    /// Under a level UCS (moved and turned) a dynamic grip drags in plan as in World: the Width
+    /// grip dropped on world (130.4, 7) gives Width 30. A tilted construction plane refuses the
+    /// drag and leaves the drawing as it was.
+    #[test]
+    fn dynamic_grips_drag_under_a_level_ucs() {
+        let g = cadcraft_geom::Vec3::new;
+        let mut f = Frames::default();
+        let (mut app, h) = door(&mut f);
+        app.session.execute("view.set", &serde_json::json!({ "center": [120, 0], "height": 80 })).unwrap();
+        app.session.execute("cplane", &serde_json::json!({ "origin": [5, 5, 0], "xaxis": [0, 1, 0] })).unwrap();
+        app.session.set_selection(vec![h]);
+        f.run(&mut app, Vec::new());
+        let xf = app.canvas.xf.unwrap();
+        assert!(xf.is_plan() && xf.cplane() != Mat4::IDENTITY);
+        f.click(&mut app, xf.world_to_screen(g(136.0, -4.0, 0.0)));
+        assert_eq!(app.session.running.as_ref().map(|r| r.id.as_str()), Some("grip"));
+        f.click(&mut app, xf.world_to_screen(g(130.4, 7.0, 0.0)));
+        assert_eq!(door_width(&mut app, h), "30.0000");
+        // A plane tilted out of the plan view's: refused, nothing changes.
+        app.session.execute("cplane", &serde_json::json!({ "preset": "front" })).unwrap();
+        app.session.set_selection(vec![h]);
+        f.run(&mut app, Vec::new());
+        let xf = app.canvas.xf.unwrap();
+        f.click(&mut app, xf.world_to_screen(g(130.0, -4.0, 0.0)));
+        assert!(app.session.running.is_none(), "{:?}", app.session.log.last());
+        assert_eq!(door_width(&mut app, h), "30.0000");
+    }
+
+    /// In a 3D view a tilted reference's dynamic grip sits on its plane and drags there: dropped
+    /// where its own point (130.4, 7) is drawn it gives Width 30, as dropped there in plan.
+    #[test]
+    fn a_tilted_references_dynamic_grip_drags_on_its_plane() {
+        let mut f = Frames::default();
+        let (mut app, h) = door(&mut f);
+        app.session.doc_mut().unwrap().modify_entity(h, |e| e.common.extrusion = cadcraft_geom::Vec3::new(0.0, -0.6, 0.8)).unwrap();
+        let st = app.session.state_mut().unwrap();
+        st.view_dir = ViewDir::new(cadcraft_geom::Vec3::new(-1.0, -1.0, 1.0));
+        let center = st.view_dir.project(cadcraft_geom::Vec3::new(130.0, 0.0, 0.0));
+        st.set_view_quiet(cadcraft_engine::View { center, height: 40.0 });
+        app.session.set_selection(vec![h]);
+        rebuild_now(&mut f, &mut app);
+        let xf = app.canvas.xf.unwrap();
+        assert!(!xf.is_plan());
+        let plane = app.session.doc().unwrap().entity(h).unwrap().plane().unwrap();
+        let on = |own: Vec2| xf.world_to_screen(plane.apply(own.to3(0.0)));
+        f.click(&mut app, on(Vec2::new(136.0, -4.0)));
+        assert_eq!(app.session.running.as_ref().map(|r| r.id.as_str()), Some("grip"));
+        f.click(&mut app, on(Vec2::new(130.4, 7.0)));
+        assert_eq!(door_width(&mut app, h), "30.0000");
+    }
+
+    /// In plan with a turned UCS a selection window takes what is in the rectangle drawn on screen:
+    /// a window dragged to the right, a crossing window to the left, as AutoCAD selects; not a box
+    /// in UCS coordinates, where with the UCS turned 180° a drag to the right would cross. Click,
+    /// click at "Select objects" too; turned 30°, and with a construction plane tilted 30° (what
+    /// is drawn in the rectangle).
+    #[test]
+    fn a_turned_ucs_selects_the_window_drawn_on_screen() {
+        let r = 30f64.to_radians();
+        for plane in [
+            serde_json::json!({ "origin": [3, 2, 0], "xaxis": [-1, 0, 0] }),
+            serde_json::json!({ "origin": [3, 2, 0], "xaxis": [r.cos(), r.sin(), 0] }),
+            serde_json::json!({ "origin": [3, 2, 1], "xaxis": [-1, 0, 0], "ypoint": [3, 2.0 - r.cos(), 1.0 + r.sin()] }),
+        ] {
+            let mut f = Frames::default();
+            let mut app = app_looking(&mut f, [0.0, 0.0, 1.0]);
+            app.session.execute("view.set", &serde_json::json!({ "center": [0, 0], "height": 60 })).unwrap();
+            app.session.execute("cplane", &plane).unwrap();
+            f.run(&mut app, Vec::new());
+            let xf = app.canvas.xf.unwrap();
+            assert!(xf.is_plan() && !xf.flat());
+            let c = xf.rect.center();
+            let world = |s: Pos2| xf.cplane().apply(xf.to_world(s).to3(0.0));
+            let line = |app: &mut CadApp, s: Pos2, e: Pos2| add(app, cadcraft_doc::EntityKind::Line(cadcraft_doc::Line { a: world(s), b: world(e) }));
+            // `a` inside the window, `b` across its right side.
+            let a = line(&mut app, c + vec2(-50.0, -20.0), c + vec2(50.0, 0.0));
+            let b = line(&mut app, c + vec2(0.0, 60.0), c + vec2(250.0, 60.0));
+            rebuild_now(&mut f, &mut app);
+            f.drag(&mut app, c + vec2(-100.0, -60.0), c + vec2(150.0, 100.0));
+            assert_eq!(app.session.selection(), vec![a], "{plane}");
+            app.session.set_selection(Vec::new());
+            f.drag(&mut app, c + vec2(150.0, 100.0), c + vec2(-100.0, -60.0));
+            let mut sel = app.session.selection();
+            sel.sort();
+            assert_eq!(sel, vec![a, b], "{plane}");
+            app.session.set_selection(Vec::new());
+            app.session.cmdline("erase").unwrap();
+            f.click(&mut app, c + vec2(-100.0, -60.0));
+            assert!(app.session.pending_window.is_some());
+            f.click(&mut app, c + vec2(150.0, 100.0));
+            assert!(app.session.pending_window.is_none());
+            app.session.input(Input::Enter).unwrap();
+            let d = app.session.doc().unwrap();
+            assert!(d.entity(a).is_none() && d.entity(b).is_some(), "{plane}");
+        }
     }
 
     /// In a 3D view an object off the construction plane gives no object snap on its shadow (the

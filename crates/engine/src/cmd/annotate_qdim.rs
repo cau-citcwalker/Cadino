@@ -123,7 +123,8 @@ fn plan(
         if pts.is_empty() {
             return Err(bad("qdim", "select objects with points to dimension"));
         }
-        let origin = datum.unwrap_or(Vec2::ZERO);
+        // AutoCAD's default datum: the current UCS's origin (QDIM runs in World: the plane set).
+        let origin = datum.unwrap_or(s.user_cplane().col(3).xy());
         // X datum (horizontal): leaders run to the line position's y; Y datum: to its x.
         return Ok(pts
             .iter()

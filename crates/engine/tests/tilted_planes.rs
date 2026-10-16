@@ -349,6 +349,26 @@ fn splinedit_keeps_the_elevation_and_refuses_plan_points_on_a_tilted_spline() {
         assert!(r.as_ref().is_err_and(|e| e.to_string().contains("tilted plane")), "{opt}: {r:?}");
         assert_eq!(all(&s), before, "{opt}");
     }
+    // A refit to given points too; one by index still works.
+    let r = s.execute("splinedit", &json!({ "handle": k.hex(), "option": "refit", "fit": [[0, 0], [10, 0]] }));
+    assert!(r.as_ref().is_err_and(|e| e.to_string().contains("tilted plane")), "{r:?}");
+    assert_eq!(all(&s), before);
+    // At the prompt, a plan point on its segment (x = 0) never stands for one of its own points:
+    // Fit data > Delete, Edit vertex > Delete and the Weight marker's Select point refuse it.
+    s.viewport_px = (1000.0, 1000.0);
+    s.execute("view.set", &json!({ "center": [0, 5], "height": 30 })).unwrap();
+    for keys in [&["f", "d"][..], &["e", "d"], &["e", "w", "s"]] {
+        s.cmdline("splinedit").unwrap();
+        s.cmdline("0,8").unwrap();
+        for k in keys {
+            s.cmdline(k).unwrap();
+        }
+        let r = s.cmdline("0,8");
+        let said = r.as_ref().is_err_and(|e| e.to_string().contains("tilted plane")) || s.log.last().is_some_and(|m| m.contains("tilted plane"));
+        assert!(said, "{keys:?}: {r:?} {:?}", s.log.last());
+        s.cancel();
+        assert_eq!(all(&s), before, "{keys:?}");
+    }
 }
 
 /// A closed panel outline standing in the YZ plane (facing +X) at elevation 600: plan view sees

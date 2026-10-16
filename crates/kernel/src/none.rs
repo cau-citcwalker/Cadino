@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use cadcraft_geom::{Mesh3, Vec3};
+use cadcraft_geom::{Mat4, Mesh3, Vec3};
 
 use crate::curve::Run;
 use crate::{BoolOp, Built, Curve, Imported, KernelError, Outline, Placed, Primitive, Result, Seg};
@@ -61,6 +61,6 @@ pub fn import_iges(_: &Path) -> Result<Imported> {
 pub fn outline(_: &str) -> Result<Outline> {
     Err(KernelError::Unavailable)
 }
-pub fn bounding(_: Placed) -> Result<(Vec3, Vec3)> {
-    Err(KernelError::Unavailable)
+pub fn boxes(_: &str, xforms: &[Mat4]) -> Vec<Option<(Vec3, Vec3)>> {
+    vec![None; xforms.len()]
 }

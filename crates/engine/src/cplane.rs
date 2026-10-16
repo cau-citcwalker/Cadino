@@ -12,11 +12,14 @@
 //! everyday 2D UCS: an origin moved, an XY rotated) they run in World: the points given at their
 //! prompts are taken from the plane into the world and their rubber bands back
 //! ([`crate::guard`]), and their JSON forms take world coordinates. A tilted plane refuses them.
+//! The view commands that take world points ([`WORLD_POINTS`]) are taken into the world the same
+//! way in a level plane. Selection windows are the screen's: world plan boxes in a level plane
+//! ([`Session::select_box`]).
 
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use cadcraft_doc::{Drawing, Entity, EntityKind, EntityStore, Handle};
-use cadcraft_geom::{Mat3, Mat4, Vec2};
+use cadcraft_geom::{Bounds2, Mat3, Mat4, Vec2};
 
 use crate::{EngineError, Input, Result, Session};
 
@@ -81,7 +84,40 @@ pub const PLAN_ONLY: &[&str] = &[
     "autoconstrain",
     "dimconstraint",
     "dclinear",
+    "gccoincident",
+    "gcperpendicular",
+    "gcparallel",
+    "gctangent",
+    "gchorizontal",
+    "gcvertical",
+    "gccollinear",
+    "gcconcentric",
+    "gcsmooth",
+    "gcsymmetric",
+    "gcequal",
+    "gcfix",
+    "dcaligned",
+    "dchorizontal",
+    "dcvertical",
+    "dcangular",
+    "dcradius",
+    "dcdiameter",
+    // Their base point is the one PASTECLIP and PASTEBLOCK move from.
+    "copybase",
+    // Edits that store a picked point in an existing (world) object.
+    "dimtedit",
+    "dimjogline",
+    "mledit",
+    "mleaderedit",
+    "mleaderedit.add",
+    "mleaderedit.remove",
+    "mleaderalign",
 ];
+
+/// View commands whose points are world plan points (ZOOM Window, Center and Dynamic; PAN): in a
+/// level plane other than World their prompts' points are taken into the world as the plan-only
+/// commands' are; a tilted plane leaves them as they were.
+pub const WORLD_POINTS: &[&str] = &["zoom", "zoom.window", "zoom.dynamic", "pan"];
 
 /// Whether construction plane `c` is tilted: its normal is not the world Z axis (either way).
 pub(crate) fn tilted(c: &Mat4) -> bool {
@@ -95,11 +131,15 @@ pub(crate) fn refused(s: &Session, id: &str) -> Option<String> {
         .then(|| format!("{} works in plan: use it in a level construction plane (CPLANE World, or a UCS turned about Z).", id.to_ascii_uppercase()))
 }
 
-/// Whether command `id` runs in World for the current construction plane: a plan-only one in a
-/// level plane other than World.
+/// Whether construction plane `c` is level (its normal ±Z) but not World itself.
+pub(crate) fn level_moved(c: &Mat4) -> bool {
+    *c != Mat4::IDENTITY && !tilted(c)
+}
+
+/// Whether command `id` runs in World for the current construction plane: a plan-only one (or a
+/// view command taking world points) in a level plane other than World.
 pub(crate) fn in_world(s: &Session, id: &str) -> bool {
-    let c = s.cplane();
-    PLAN_ONLY.contains(&id) && c != Mat4::IDENTITY && !tilted(&c)
+    (PLAN_ONLY.contains(&id) || WORLD_POINTS.contains(&id)) && level_moved(&s.cplane())
 }
 
 /// Point `p` of plane `c` at height `z` (along its normal), in the world: its plan point and
@@ -180,6 +220,37 @@ fn seen_in(d: &Drawing, c: &Mat4) -> Drawing {
 }
 
 impl Session {
+    /// The construction plane the user set, also while a plan-only command runs in World (where
+    /// [`Session::cplane`] reads World): AutoCAD's current UCS, for what a command keeps of it
+    /// (DIMORDINATE's datum).
+    pub(crate) fn user_cplane(&self) -> Mat4 {
+        let was = self.plan_world.swap(false, std::sync::atomic::Ordering::Relaxed);
+        let c = self.cplane();
+        self.plan_world.store(was, std::sync::atomic::Ordering::Relaxed);
+        c
+    }
+
+    /// What a selection window from `a` to `b` (CPlane points) takes, as the screen shows it: in a
+    /// level plane the world plan box with those corners (AutoCAD's windows are the screen's, not
+    /// the UCS's), crossing when it was drawn right to left on screen; in a tilted plane the box
+    /// in its coordinates.
+    pub(crate) fn select_box(&self, a: Vec2, b: Vec2) -> Result<Vec<Handle>> {
+        let (c, space) = (self.cplane(), self.space());
+        let (a, b, d) = if tilted(&c) { (a, b, self.pick_doc()?) } else { (plane_to_plan(&c, a), plane_to_plan(&c, b), self.state()?.doc.clone()) };
+        Ok(crate::select::select_window(&d, &space, Bounds2::new(a, b), b.x < a.x))
+    }
+
+    /// What a typed selection mode (W, C, Box, F, WP, CP) takes once its points are in: in a level
+    /// plane its points in the world on the drawing itself, so boxes are the screen's.
+    pub(crate) fn select_by_mode(&self, mode: &crate::select::SelectMode) -> Result<Option<Vec<Handle>>> {
+        let (c, space) = (self.cplane(), self.space());
+        if tilted(&c) {
+            return Ok(mode.select(&*self.pick_doc()?, &space));
+        }
+        let world = crate::select::SelectMode { kind: mode.kind, pts: mode.pts.iter().map(|p| plane_to_plan(&c, *p)).collect() };
+        Ok(world.select(self.doc()?, &space))
+    }
+
     /// The drawing as the current construction plane sees it, for picks, snaps and grips: the
     /// drawing itself in World (and outside model space); else a copy whose model space is in
     /// CPlane coordinates ([`Entity::on`]), without the objects that can't be expressed there

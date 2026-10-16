@@ -23,7 +23,9 @@ pub(super) fn run_splinedit(s: &mut Session, p: &Value) -> Result<Value> {
         return Ok(json!({ "handle": h.hex(), "joined": removed.len() }));
     }
     // Points and directions are given in plan: a spline in a tilted plane takes none.
-    if matches!(opt.as_str(), "move" | "fitmove" | "fitadd" | "kink" | "tangents" | "vertexmove" | "vertexadd") {
+    if matches!(opt.as_str(), "move" | "fitmove" | "fitadd" | "kink" | "tangents" | "vertexmove" | "vertexadd")
+        || (opt == "refit" && p.get("fit").is_some_and(|f| !f.is_null()))
+    {
         level_only(&e)?;
     }
     let mut k = edit(sp, &opt, p)?;
@@ -579,6 +581,11 @@ impl Interactive for SplineditM {
         };
         let enter = i == Input::Enter;
         let sp = self.spline(s).ok_or_else(|| other("The spline was erased."))?;
+        // Every point given below is a plan point compared with or stored as the spline's own: a
+        // spline in a tilted plane takes none (its options without points still work).
+        if point.is_some() {
+            level_only(&curves::entity(s, h)?)?;
+        }
         match self.sub {
             Sub::Main => match (enter, kw) {
                 (true, _) | (_, "exit" | "x") => {

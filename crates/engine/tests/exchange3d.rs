@@ -272,3 +272,31 @@ fn an_empty_handle_list_exports_the_selection() {
     assert_eq!(r["exported"], 1, "{r}");
     let _ = (std::fs::remove_file(&igs), std::fs::remove_file(&stp));
 }
+
+/// A selection holding only a curve object that makes no curve (a degenerate ellipse) is left out
+/// and said so: the whole model is not written in its place.
+#[test]
+fn a_selection_of_unexportable_curves_exports_nothing() {
+    let mut s = drawing();
+    let e = s
+        .add_entity(EntityKind::Ellipse(cadcraft_engine::doc::Ellipse {
+            center: Vec3::new(5.0, 5.0, 0.0),
+            major: Vec3::ZERO,
+            ratio: 0.5,
+            start: 0.0,
+            end: std::f64::consts::TAU,
+        }))
+        .unwrap();
+    s.set_selection(vec![e]);
+    let path = temp("left-out.igs");
+    let _ = std::fs::remove_file(&path);
+    let r = s.execute("igesout", &json!({ "path": path.to_str().unwrap() }));
+    let msg = r.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(msg.contains("no 3D solids or curves") && msg.contains("1 curve left out"), "{msg}");
+    assert!(!path.exists(), "nothing written");
+    // Nothing selected: the whole model, as before.
+    s.set_selection(Vec::new());
+    let r = s.execute("igesout", &json!({ "path": path.to_str().unwrap() })).unwrap();
+    assert_eq!((r["solids"].as_u64(), r["curves"].as_u64(), r["skipped"].as_u64()), (Some(1), Some(2), Some(1)), "{r}");
+    let _ = std::fs::remove_file(&path);
+}

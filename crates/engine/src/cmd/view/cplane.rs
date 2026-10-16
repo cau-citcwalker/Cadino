@@ -3,9 +3,10 @@
 //! JSON: `{preset}` (World/Top, Front, Right, Back, Left, Bottom: Rhino's and AutoCAD's
 //! orthographic planes, at the world origin), or `{origin?, xaxis?, ypoint?}` in world
 //! coordinates (what is left out stays as the current plane has it), `{}` reports the current
-//! plane. At the prompt: "Specify origin of UCS or [World/Top/Front/Right/Back/Left/Bottom/3point]
-//! <World>", then a point on the X axis and one on the XY plane (Enter keeps the current axes);
-//! points given there are in the current plane's coordinates, as every point is. Setting a plane
+//! plane. At the prompt: "Specify origin of UCS or [World/Top/Front/Right/Back/Left/Bottom/3point/
+//! X/Y/Z] <World>", then a point on the X axis and one on the XY plane (Enter keeps the current
+//! axes); X, Y and Z turn the current plane about its own axis by an angle (AutoCAD's `UCS Z 90`).
+//! Points given there are in the current plane's coordinates, as every point is. Setting a plane
 //! is an undo step.
 
 use cadcraft_geom::{Mat4, Vec3};
@@ -65,6 +66,14 @@ fn frame_from(cur: &Mat4, o: Vec3, x: Vec3, y: Option<Vec3>) -> Option<Mat4> {
     y.into_iter().chain([cur.col(2).cross(x), cur.col(1), cur.col(0)]).find_map(|y| Mat4::frame(o, x, y))
 }
 
+/// Plane `c` turned by `a` radians about its own axis `k` (0, 1, 2: x, y, z) through its origin,
+/// by the right-hand rule.
+fn turned(c: &Mat4, k: usize, a: f64) -> Mat4 {
+    let axis = [Vec3::X, Vec3::Y, Vec3::Z].get(k).copied().unwrap_or(Vec3::Z);
+    let t = c.mul(&Mat4::rotation(axis, a));
+    Mat4::frame(t.col(3), t.col(0), t.col(1)).unwrap_or(*c)
+}
+
 fn describe(c: &Mat4) -> Value {
     let v = |a: Vec3| json!([a.x, a.y, a.z]);
     let world = *c == Mat4::IDENTITY;
@@ -117,6 +126,8 @@ enum Stage {
     NewOrigin,
     XPoint,
     YPoint,
+    /// X, Y, Z: the angle to turn the plane about its axis 0, 1 or 2.
+    Rotate(usize),
 }
 
 /// UCS / CPLANE at the prompt.
@@ -148,12 +159,16 @@ impl Interactive for CplaneM {
             Stage::Origin => {
                 let msg = if self.name == "UCS" { "Specify origin of UCS" } else { "CPlane origin" };
                 let mut kws = PRESETS.to_vec();
-                kws.push("3point");
+                kws.extend(["3point", "X", "Y", "Z"]);
                 Prompt::new(msg, Accept::POINT).kw(&kws).default("World")
             }
             Stage::NewOrigin => Prompt::new("Specify new origin point", Accept::POINT).default("current origin"),
             Stage::XPoint => Prompt::new("Specify point on X-axis", Accept::POINT).default("Accept"),
             Stage::YPoint => Prompt::new("Specify point on the XY plane", Accept::POINT).default("Accept"),
+            Stage::Rotate(k) => {
+                let axis = ["X", "Y", "Z"].get(k).copied().unwrap_or("Z");
+                Prompt::new(format!("Specify rotation angle about {axis} axis"), Accept::NUMBER).default("90")
+            }
         }
     }
     fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
@@ -164,6 +179,10 @@ impl Interactive for CplaneM {
                 let t = t.trim().to_ascii_lowercase();
                 if matches!(t.as_str(), "3point" | "3p" | "3") {
                     self.stage = Stage::NewOrigin;
+                    return Ok(Step::Continue);
+                }
+                if let Some(k) = ["x", "y", "z"].iter().position(|a| *a == t) {
+                    self.stage = Stage::Rotate(k);
                     return Ok(Step::Continue);
                 }
                 let c = preset(&t).ok_or_else(|| EngineError::Other("Invalid option keyword.".into()))?;
@@ -203,6 +222,12 @@ impl Interactive for CplaneM {
                 let o = self.origin.unwrap_or(cur.col(3));
                 let c = frame_from(&cur, o, self.x.unwrap_or(cur.col(0)), None).ok_or_else(|| EngineError::Other("Invalid X axis.".into()))?;
                 Self::set(s, c)
+            }
+            (Stage::Rotate(k), Input::Enter) => Self::set(s, turned(&cur, k, std::f64::consts::FRAC_PI_2)),
+            (Stage::Rotate(k), Input::Text(t)) => {
+                let a =
+                    s.angle_settings().amount(&t).filter(|a| a.is_finite()).ok_or_else(|| EngineError::Other("Requires a valid angle.".into()))?;
+                Self::set(s, turned(&cur, k, a))
             }
             (_, Input::Cancel) => Ok(Step::Cancel),
             _ => Err(EngineError::Other("Requires a point or an option keyword.".into())),

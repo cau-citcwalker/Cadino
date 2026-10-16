@@ -51,8 +51,8 @@ fn path_req<'a>(cmd: &str, p: &'a Value) -> Result<&'a str> {
 }
 
 /// What to export: the objects among `handle`/`handles`, else the selected ones (as STEPOUT
-/// chooses), else all of model space; as solids, curves, and how many curve objects can't be made
-/// into curves (degenerate).
+/// chooses), else (nothing selected that could be exported or left out) all of model space; as
+/// solids, curves, and how many curve objects can't be made into curves (degenerate).
 fn export_set(s: &Session, p: &Value) -> Result<(Vec<Solid3d>, Vec<Curve>, usize)> {
     // An empty list (as MCP clients send optional arrays) counts as none given.
     let given = ["handle", "handles"].iter().any(|k| p.get(k).is_some_and(|v| !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty())));
@@ -86,11 +86,11 @@ fn export_set(s: &Session, p: &Value) -> Result<(Vec<Solid3d>, Vec<Curve>, usize
         (xs, cs, bad)
     };
     let mut got = pick(&if given { targets(s, p)? } else { s.selection() });
-    if !given && got.0.is_empty() && got.1.is_empty() {
+    if !given && got.0.is_empty() && got.1.is_empty() && got.2 == 0 {
         got = pick(&d.model.iter().map(|e| e.handle).collect::<Vec<_>>());
     }
     if got.0.is_empty() && got.1.is_empty() {
-        return Err(EngineError::Other("There are no 3D solids or curves to export.".into()));
+        return Err(EngineError::Other(format!("There are no 3D solids or curves to export{}.", left_out(got.2))));
     }
     Ok(got)
 }

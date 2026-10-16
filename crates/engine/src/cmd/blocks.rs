@@ -348,7 +348,9 @@ fn run_wblock(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn run_base(s: &mut Session, p: &Value) -> Result<Value> {
     let at = point_req("base", p, "at")?;
-    s.doc_mut()?.header.set("INSBASE", cadcraft_doc::HVal::Point(v3(at)));
+    // Given in the construction plane; $INSBASE is a world point.
+    let at = s.cplane().apply(v3(at));
+    s.doc_mut()?.header.set("INSBASE", cadcraft_doc::HVal::Point(at));
     ok()
 }
 

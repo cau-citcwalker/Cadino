@@ -509,10 +509,11 @@ impl PartM {
 
 // ---------------- CUTLIST ----------------
 
-/// Most solids one cut list or drawing gathers, and most block reference copies it opens on the
-/// way (hostile arrays and nesting).
+/// Most solids one cut list or drawing gathers, most block reference copies it opens on the way
+/// and most objects in them it looks at (hostile arrays and nesting).
 const MAX_PARTS: usize = 100_000;
 const MAX_COPIES: usize = 1_000_000;
+const MAX_VISITS: usize = 10_000_000;
 
 /// The solids a command works on, placed in the world: those given, else every one in model
 /// space (`seen`: only those on a layer that is on and thawed). A block reference stands for the
@@ -523,7 +524,7 @@ fn chosen(s: &Session, p: &Value, cmd: &str, seen: bool) -> Result<Vec<Solid3d>>
     let given = ["handle", "handles"].iter().any(|k| p.get(k).is_some_and(|v| !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty())));
     let d = s.doc()?;
     let hs: Vec<Handle> = if given { targets(s, p)? } else { d.model.iter().map(|e| e.handle).collect() };
-    let mut g = Gather { d, seen, out: Vec::new(), copies: 0 };
+    let mut g = Gather { d, seen, out: Vec::new(), copies: 0, visits: 0, solid_blocks: HashMap::new() };
     let mut once = HashSet::with_capacity(hs.len());
     for h in hs.into_iter().filter(|h| once.insert(*h)) {
         let Some(e) = d.entity(h) else { continue };
@@ -531,8 +532,8 @@ fn chosen(s: &Session, p: &Value, cmd: &str, seen: bool) -> Result<Vec<Solid3d>>
             g.add(e, &Mat4::IDENTITY, &e.common.layer, 0);
         }
     }
-    if g.out.len() >= MAX_PARTS || g.copies >= MAX_COPIES {
-        log::warn!("{cmd}: past {MAX_PARTS} solids or {MAX_COPIES} block copies, the rest were left out");
+    if g.out.len() >= MAX_PARTS || g.copies >= MAX_COPIES || g.visits >= MAX_VISITS {
+        log::warn!("{cmd}: past {MAX_PARTS} solids, {MAX_COPIES} block copies or {MAX_VISITS} objects in blocks, the rest were left out");
     }
     if g.out.is_empty() { Err(bad(cmd, "there are no 3D solids")) } else { Ok(g.out) }
 }
@@ -543,34 +544,68 @@ struct Gather<'a> {
     seen: bool,
     out: Vec<Solid3d>,
     copies: usize,
+    visits: usize,
+    /// Whether each block holds a solid, itself or in a reference it holds (worked out once, so
+    /// arrays of linework are passed by).
+    solid_blocks: HashMap<&'a str, bool>,
 }
 
-impl Gather<'_> {
+impl<'a> Gather<'a> {
     fn shown(&self, layer: &str) -> bool {
         !self.seen || self.d.layer(layer).is_none_or(Layer::visible)
     }
 
+    /// Whether block `name` holds a 3D solid, in itself or in a reference it holds.
+    /// ponytail: a block in a reference cycle (which AutoCAD refuses) may be judged by the part of
+    /// the cycle seen first.
+    fn has_solids(&mut self, name: &'a str, depth: usize) -> bool {
+        if let Some(has) = self.solid_blocks.get(name) {
+            return *has;
+        }
+        // Past the nesting the walk opens: looked at by the walk itself (and its caps).
+        if depth >= MAX_BLOCK_DEPTH {
+            return true;
+        }
+        // Meanwhile none, so a block holding itself ends.
+        self.solid_blocks.insert(name, false);
+        let d = self.d;
+        let has = d.block(name).is_some_and(|b| {
+            b.entities.iter().any(|e| match &e.kind {
+                EntityKind::Solid3d(_) => true,
+                EntityKind::Insert(i) => self.has_solids(&i.block, depth + 1),
+                _ => false,
+            })
+        });
+        self.solid_blocks.insert(name, has);
+        has
+    }
+
     /// `e`, on `layer` (a block's layer 0 objects take their reference's), placed by `at`.
-    fn add(&mut self, e: &Entity, at: &Mat4, layer: &str, depth: usize) {
+    fn add(&mut self, e: &'a Entity, at: &Mat4, layer: &str, depth: usize) {
         if self.out.len() >= MAX_PARTS {
             return;
         }
         match &e.kind {
             EntityKind::Solid3d(x) => self.out.push(Solid3d { xform: at.mul(&x.xform), ..x.clone() }),
-            EntityKind::Insert(ins) if depth < MAX_BLOCK_DEPTH => {
-                let Some(blk) = self.d.block(&ins.block) else { return };
+            EntityKind::Insert(ins) if depth < MAX_BLOCK_DEPTH && self.has_solids(&ins.block, 0) => {
+                let d = self.d;
+                let Some(blk) = d.block(&ins.block) else { return };
                 // The reference's own plane takes the block's XY plane on to the world.
                 let plane = at.mul(&e.plane().unwrap_or(Mat4::IDENTITY));
                 for r in 0..ins.rows.clamp(1, 10_000) {
                     for c in 0..ins.cols.clamp(1, 10_000) {
                         self.copies += 1;
-                        if self.copies > MAX_COPIES || self.out.len() >= MAX_PARTS {
+                        if self.copies > MAX_COPIES || self.out.len() >= MAX_PARTS || self.visits >= MAX_VISITS {
                             return;
                         }
                         let off = Vec2::new(ins.col_spacing * f64::from(c), ins.row_spacing * f64::from(r)).rotate(ins.rotation);
                         let m = Mat3::translate(off).then_before(ins.transform(blk.base.xy()));
                         let w = plane.mul(&ins.lift(&m, blk.base));
                         for be in blk.entities.iter() {
+                            self.visits += 1;
+                            if self.visits >= MAX_VISITS {
+                                return;
+                            }
                             let l = if be.common.layer == "0" { layer } else { be.common.layer.as_str() };
                             if self.shown(l) {
                                 self.add(be, &w, l, depth + 1);
@@ -588,14 +623,6 @@ impl Gather<'_> {
 fn tenths(v: f64) -> Option<i64> {
     let t = (v * 10.0).round();
     (t.is_finite() && t.abs() < 9.0e15).then_some(t as i64)
-}
-
-/// A transform's uniform scale.
-fn scale_of(m: &Mat4) -> f64 {
-    let r = &m.m;
-    let det = r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1]) - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
-        + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]);
-    det.abs().cbrt()
 }
 
 /// Most outline points [`part_axes`] tries directions for (each one against every point).
@@ -688,18 +715,18 @@ fn hull(mut pts: Vec<Vec2>) -> Vec<Vec2> {
 }
 
 /// Each part's length, width and thickness in tenths, longest first: the box of its B-rep along
-/// its own axes ([`part_axes`]), from the kernel (round faces measure their full size); from its
-/// mesh where the kernel can't measure it (no B-rep, a transform it can't apply, a build without
-/// it). A part scaled as a whole measures its scaled size.
+/// its own axes ([`part_axes`] of the part as placed, so a part in a block reference scaled
+/// unevenly measures stretched), from the kernel (round and free-form faces measure their true
+/// size); from its mesh where the kernel can't measure it (no B-rep, a build without it).
 fn part_sizes(xs: &[&Solid3d]) -> Vec<Option<[i64; 3]>> {
-    // Model coordinates → along the part's axes, at its scale.
+    // World → along the part's axes; worked out once per mesh and turn (block copies repeat both).
+    let mut axes: HashMap<(*const Mesh3, [u64; 9]), Mat4> = HashMap::new();
     let frames: Vec<Mat4> = xs
         .iter()
         .map(|x| {
-            let mut t = part_axes(&x.mesh);
-            let k = scale_of(&x.xform);
-            t.m.iter_mut().take(3).flat_map(|r| r.iter_mut().take(3)).for_each(|v| *v *= k);
-            t
+            let m = &x.xform.m;
+            let turn: [u64; 9] = std::array::from_fn(|i| m.get(i / 3).and_then(|r| r.get(i % 3)).map_or(0, |v| v.to_bits()));
+            axes.entry((std::sync::Arc::as_ptr(&x.mesh), turn)).or_insert_with(|| part_axes(&placed_mesh(x))).mul(&x.xform)
         })
         .collect();
     let exact = if xs.iter().any(|x| !x.brep.is_empty()) {
@@ -721,6 +748,17 @@ fn part_sizes(xs: &[&Solid3d]) -> Vec<Option<[i64; 3]>> {
             Some(s)
         })
         .collect()
+}
+
+/// The part's mesh where it is in the world.
+fn placed_mesh(x: &Solid3d) -> Mesh3 {
+    let at = |p: &Vec3| x.xform.apply(*p);
+    Mesh3 {
+        verts: x.mesh.verts.iter().map(at).collect(),
+        tris: x.mesh.tris.clone(),
+        edges: x.mesh.edges.iter().map(|e| e.iter().map(at).collect()).collect(),
+        open: x.mesh.open,
+    }
 }
 
 /// The box of the finite points among `pts`.
@@ -2107,6 +2145,81 @@ mod tests {
         assert!(!matches!(r, Err(EngineError::Internal(..))), "{r:?}");
         let total = r.unwrap()["total"].as_u64().unwrap();
         assert!(total > 0 && total <= MAX_PARTS as u64, "{total}");
+    }
+
+    /// A reference `name` at the origin, changed by `f`.
+    fn reference(s: &mut Session, name: &str, f: impl FnOnce(&mut cadcraft_doc::Insert)) -> Handle {
+        let h = Handle::parse_hex(s.execute("insert", &json!({ "name": name, "at": [0, 0] })).unwrap()["handle"].as_str().unwrap()).unwrap();
+        s.doc_mut()
+            .unwrap()
+            .modify_entity(h, |e| {
+                if let EntityKind::Insert(i) = &mut e.kind {
+                    f(i);
+                }
+            })
+            .unwrap();
+        h
+    }
+
+    /// A board in a block inserted with an uneven scale lists stretched, as it is drawn: along Z
+    /// it is thicker, along X longer, and turned as well it still measures along its own axes.
+    #[test]
+    fn cut_lists_measure_unevenly_scaled_references_as_drawn() {
+        let mut s = Session::new();
+        let x =
+            Solid3d { part: Part { name: "Board".into(), material: "Birch".into() }, ..hlr::tests::cube(Vec3::ZERO, Vec3::new(600.0, 400.0, 18.0)) };
+        let b = s.add_entity(EntityKind::Solid3d(x)).unwrap();
+        s.execute("block", &json!({ "name": "BOARD", "base": [0, 0], "handles": [b.hex()], "keep": "delete" })).unwrap();
+        let only = |s: &mut Session, h: Handle| sizes(&s.execute("cutlist", &json!({ "handles": [h.hex()] })).unwrap());
+        let h = reference(&mut s, "BOARD", |i| i.scale = Vec3::new(1.0, 1.0, 1.5));
+        assert_eq!(only(&mut s, h), vec![(600.0, 400.0, 27.0, 1)]);
+        let h = reference(&mut s, "BOARD", |i| i.scale = Vec3::new(2.0, 1.0, 1.0));
+        assert_eq!(only(&mut s, h), vec![(1200.0, 400.0, 18.0, 1)]);
+        let h = reference(&mut s, "BOARD", |i| {
+            i.scale = Vec3::new(2.0, 1.0, 1.0);
+            i.rotation = 30f64.to_radians();
+        });
+        assert_eq!(only(&mut s, h), vec![(1200.0, 400.0, 18.0, 1)]);
+        // Mirrored and stretched.
+        let h = reference(&mut s, "BOARD", |i| i.scale = Vec3::new(-1.0, 0.5, 1.0));
+        assert_eq!(only(&mut s, h), vec![(600.0, 200.0, 18.0, 1)]);
+    }
+
+    /// A million copies of a block of linework are passed by without looking into them; a block
+    /// holding a solid among much linework is looked into only so far.
+    #[test]
+    fn block_arrays_without_solids_are_passed_by() {
+        let mut s = Session::new();
+        let l = s.execute("line", &json!({ "points": [[0, 0], [5, 0]] })).unwrap()["handles"][0].clone();
+        s.execute("block", &json!({ "name": "LINES", "base": [0, 0], "handles": [l], "keep": "delete" })).unwrap();
+        let mut blk = s.doc().unwrap().block("LINES").unwrap().as_ref().clone();
+        let line = blk.entities.iter().next().unwrap().as_ref().clone();
+        for i in 1..20_000 {
+            blk.entities.push(Entity { handle: Handle(0x10_0000 + i), ..line.clone() });
+        }
+        s.doc_mut().unwrap().blocks.insert("LINES".into(), Arc::new(blk));
+        let grid = |i: &mut cadcraft_doc::Insert| {
+            (i.rows, i.cols) = (1000, 1000);
+            (i.row_spacing, i.col_spacing) = (10.0, 10.0);
+        };
+        let h = reference(&mut s, "LINES", grid);
+        let d = s.doc().unwrap();
+        let mut g = Gather { d, seen: true, out: Vec::new(), copies: 0, visits: 0, solid_blocks: HashMap::new() };
+        g.add(d.entity(h).unwrap(), &Mat4::IDENTITY, "0", 0);
+        assert_eq!((g.out.len(), g.copies, g.visits), (0, 0, 0));
+        // The same with a board in it: looked at until the cap, then left.
+        let board = block(&mut s, [600.0, 400.0, 18.0], "Board", "");
+        let mut blk = s.doc().unwrap().block("LINES").unwrap().as_ref().clone();
+        blk.entities.push(Entity { handle: Handle(0x20_0000), ..s.doc().unwrap().entity(board).unwrap().as_ref().clone() });
+        s.doc_mut().unwrap().blocks.insert("LINES".into(), Arc::new(blk));
+        s.doc_mut().unwrap().remove_entity(board);
+        let d = s.doc().unwrap();
+        let mut g = Gather { d, seen: true, out: Vec::new(), copies: 0, visits: 0, solid_blocks: HashMap::new() };
+        g.add(d.entity(h).unwrap(), &Mat4::IDENTITY, "0", 0);
+        assert!(g.visits <= MAX_VISITS && g.copies <= MAX_VISITS / 20_000 + 1 && !g.out.is_empty(), "{} {} {}", g.visits, g.copies, g.out.len());
+        let found = g.out.len();
+        let total = s.execute("cutlist", &json!({})).unwrap()["total"].as_u64().unwrap();
+        assert!(total > 0 && total as usize == found, "{total}");
     }
 
     /// A list longer than a table holds goes on in more tables side by side, every row kept and

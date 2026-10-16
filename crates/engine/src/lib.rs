@@ -1242,8 +1242,7 @@ impl Session {
             Input::Point(p) => {
                 let ap = self.pixel_size() * self.settings.pickbox.max(1.0) * 1.5;
                 if let Some(pw) = self.pending_window.take() {
-                    let crossing = p.x < pw.corner.x;
-                    let hs = select::select_window(&*self.pick_doc()?, &space, Bounds2::new(pw.corner, p), crossing);
+                    let hs = self.select_box(pw.corner, p)?;
                     return Ok(Some(Input::Pick(cmd::groups::expand(self, hs))));
                 }
                 match select::pick(&*self.pick_doc()?, &space, p, ap) {
@@ -1303,14 +1302,14 @@ impl Session {
         match input {
             Input::Point(p) => {
                 if mode.push(p) {
-                    return Ok(mode.select(&*self.pick_doc()?, &self.space()).map(Input::Pick));
+                    return Ok(self.select_by_mode(&mode)?.map(Input::Pick));
                 }
             }
             Input::Keyword(k) if k == "Undo" => {
                 mode.pts.pop();
             }
             // Enter ends a fence or polygon; with too few points the mode is dropped.
-            Input::Enter => return Ok(mode.select(&*self.pick_doc()?, &self.space()).map(Input::Pick)),
+            Input::Enter => return Ok(self.select_by_mode(&mode)?.map(Input::Pick)),
             Input::Cancel | Input::Pick(_) => return Ok(Some(input)),
             _ => self.echo("Invalid point."),
         }
@@ -1786,8 +1785,7 @@ impl Session {
         let space = self.space();
         let pickadd = self.settings.pickadd;
         if let Some(pw) = self.pending_window.take() {
-            let crossing = p.x < pw.corner.x;
-            let hs = select::select_window(&*self.pick_doc()?, &space, Bounds2::new(pw.corner, p), crossing);
+            let hs = self.select_box(pw.corner, p)?;
             let hs = cmd::groups::expand(self, hs);
             let mut sel = if pickadd || shift { self.selection() } else { Vec::new() };
             if shift && pickadd {

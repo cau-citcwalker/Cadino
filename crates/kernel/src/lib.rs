@@ -10,6 +10,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use cadcraft_geom::{Mat4, Mesh3, Vec3};
@@ -652,18 +653,76 @@ pub fn outlines(breps: &[&str]) -> Result<Vec<Option<Outline>>> {
 }
 
 /// The bounding box (min, max) of each placed solid's B-rep, from its geometry rather than its
-/// tessellation (a round face measures its full size), in one worker; `None` for one that can't
-/// be read or placed.
-/// ponytail: B-spline curves and surfaces are bounded by their control points (a little large);
-/// exact extrema (BRepBndLib::AddOptimal) when free-form parts go in cut lists.
+/// display mesh (a round face measures its full size, a free-form one its true size, not its
+/// control points'), in one worker; `None` for one that can't be read or placed. Any affine
+/// transform is taken, a block reference's uneven scale too. Planes, cylinders, cones, spheres
+/// and tori under a similarity measure exactly, anything else within about 1e-4 of the solid's
+/// size (see the backend's `boxes`).
+///
+/// Each B-rep goes to the worker once, with each distinct turn of it once: a moved copy's box is
+/// the box moved (block arrays, the views of one drawing).
 pub fn boxes(solids: &[Placed]) -> Result<Vec<Option<(Vec3, Vec3)>>> {
     if !available() {
         return Err(KernelError::Unavailable);
     }
-    if solids.is_empty() {
-        return Ok(Vec::new());
+    let (groups, which) = box_jobs(solids);
+    let starts: Vec<usize> = groups
+        .iter()
+        .scan(0, |n, g| {
+            let at = *n;
+            *n += g.1.len();
+            Some(at)
+        })
+        .collect();
+    let jobs: usize = groups.iter().map(|g| g.1.len()).sum();
+    let got = if jobs == 0 { Vec::new() } else { run(Request::Boxes(groups))?.boxes()? };
+    if got.len() != jobs {
+        return Err(mismatch());
     }
-    run(Request::Boxes(solids.iter().map(|s| check_brep(s.brep).ok().map(|_| Solid::of(*s))).collect()))?.boxes()
+    Ok(which
+        .into_iter()
+        .map(|w| {
+            let (g, j, off) = w?;
+            let (lo, hi) = got.get(starts.get(g)? + j).copied().flatten()?;
+            let (lo, hi) = (lo + off, hi + off);
+            (lo.is_finite() && hi.is_finite()).then_some((lo, hi))
+        })
+        .collect())
+}
+
+/// What [`boxes`] asks the worker: each B-rep once, with each distinct linear part it is placed
+/// by; and per solid its B-rep, its transform among them and its move (`None`: no B-rep).
+type BoxJobs = (Vec<(String, Vec<Mat4>)>, Vec<Option<(usize, usize, Vec3)>>);
+
+fn box_jobs(solids: &[Placed]) -> BoxJobs {
+    let mut groups: Vec<(String, Vec<Mat4>)> = Vec::new();
+    // Copies share their text (one allocation): looked up by address first, by text once each.
+    let mut by_addr: HashMap<(usize, usize), Option<usize>> = HashMap::new();
+    let mut by_text: HashMap<&str, Option<usize>> = HashMap::new();
+    let mut by_turn: HashMap<(usize, [u64; 16]), usize> = HashMap::new();
+    let mut which = Vec::with_capacity(solids.len());
+    for s in solids {
+        let g = *by_addr.entry((s.brep.as_ptr() as usize, s.brep.len())).or_insert_with(|| {
+            *by_text.entry(s.brep).or_insert_with(|| {
+                check_brep(s.brep).ok().map(|_| {
+                    groups.push((s.brep.to_owned(), Vec::new()));
+                    groups.len() - 1
+                })
+            })
+        });
+        let mut turn = *s.xform;
+        turn.m.iter_mut().take(3).for_each(|r| r[3] = 0.0);
+        let key: [u64; 16] = std::array::from_fn(|i| turn.m.as_flattened().get(i).map_or(0, |v| v.to_bits()));
+        which.push(g.and_then(|g| {
+            let jobs = &mut groups.get_mut(g)?.1;
+            let j = *by_turn.entry((g, key)).or_insert_with(|| {
+                jobs.push(turn);
+                jobs.len() - 1
+            });
+            Some((g, j, s.xform.col(3)))
+        }));
+    }
+    (groups, which)
 }
 
 /// One kernel operation with its data, as the worker process receives it.
@@ -688,7 +747,8 @@ enum Request {
     ExportIges(Vec<Solid>, Vec<Curve>, PathBuf),
     ImportIges(PathBuf),
     Outlines(Vec<Option<String>>),
-    Boxes(Vec<Option<Solid>>),
+    /// Each B-rep with the transforms to box it under; the reply has one box per transform.
+    Boxes(Vec<(String, Vec<Mat4>)>),
 }
 
 /// [`Placed`], owning its data.
@@ -774,7 +834,7 @@ impl Request {
             Request::ExportIges(ss, cs, path) => backend::export_iges(&placed(ss), cs, path).map(|_| Reply::Done),
             Request::ImportIges(path) => backend::import_iges(path).map(Reply::Imported),
             Request::Outlines(breps) => Ok(Reply::Outlines(breps.iter().map(|b| b.as_deref().and_then(|b| backend::outline(b).ok())).collect())),
-            Request::Boxes(ss) => Ok(Reply::Boxes(ss.iter().map(|s| s.as_ref().and_then(|s| backend::bounding(s.placed()).ok())).collect())),
+            Request::Boxes(gs) => Ok(Reply::Boxes(gs.iter().flat_map(|(b, xs)| backend::boxes(b, xs)).collect())),
         }
     }
 }
@@ -967,6 +1027,30 @@ pub(crate) mod tests {
         assert!(matches!(tessellate("0 DXF garbage"), Err(KernelError::Invalid(_))));
         let p = Placed { brep: "nope", xform: &Mat4::IDENTITY };
         assert!(matches!(boolean(BoolOp::Union, p, p), Err(KernelError::Invalid(_))));
+    }
+
+    /// Block copies and views of the same solids: each B-rep goes once, each turn of it once.
+    #[test]
+    fn box_requests_carry_each_brep_once() {
+        let (a, b) = (String::from("CASCADE Topology A"), String::from("CASCADE Topology B"));
+        let a2 = a.clone();
+        let view = xform(Vec3::new(1.0, 0.0, 0.0), 1.0, 1.0, false, Vec3::ZERO);
+        let mut xs = Vec::new();
+        for i in 0..500 {
+            let at = Mat4::translate(Vec3::new(f64::from(i) * 1000.0, 0.0, 0.0));
+            xs.extend([at, view.mul(&at)]);
+        }
+        let mut solids: Vec<Placed> = xs.iter().flat_map(|x| [Placed { brep: &a, xform: x }, Placed { brep: &b, xform: x }]).collect();
+        solids.push(Placed { brep: &a2, xform: &view });
+        solids.push(Placed { brep: "not a B-rep", xform: &view });
+        let (groups, which) = box_jobs(&solids);
+        assert_eq!(groups.iter().map(|(t, xs)| (t.as_str(), xs.len())).collect::<Vec<_>>(), vec![(a.as_str(), 2), (b.as_str(), 2)]);
+        assert_eq!(which.len(), solids.len());
+        assert_eq!(which[2], Some((0, 1, Vec3::ZERO)));
+        let (g, j, off) = which[4].unwrap();
+        assert!(g == 0 && j == 0 && (off - Vec3::new(1000.0, 0.0, 0.0)).len() < 1e-12);
+        assert_eq!(which[solids.len() - 2], Some((0, 1, Vec3::ZERO)), "the same text elsewhere");
+        assert_eq!(which[solids.len() - 1], None);
     }
 
     #[test]

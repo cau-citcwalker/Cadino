@@ -268,7 +268,7 @@ fn hostile_cplane_params_never_change_the_drawing() {
 fn ucs_at_the_prompt() {
     let mut s = Session::new();
     s.cmdline("ucs").unwrap();
-    assert_eq!(s.prompt_text(), "UCS Specify origin of UCS or [World/Top/Front/Right/BAck/Left/BOttom/3point] <World>:");
+    assert_eq!(s.prompt_text(), "UCS Specify origin of UCS or [World/Top/Front/Right/BAck/Left/BOttom/3point/X/Y/Z] <World>:");
     s.cmdline("front").unwrap();
     assert_eq!(s.cplane(), front());
     s.cmdline("ucs w").unwrap();
@@ -622,4 +622,94 @@ fn constraints_pick_objects_where_the_plane_shows_them() {
     s.input(crate::Input::Point(Vec2::new(4.0, 3.45))).unwrap();
     assert!(s.running.is_none(), "{}", s.prompt_text());
     assert_eq!(s.doc().unwrap().constraints.len(), 1);
+}
+
+#[test]
+fn every_constraint_command_runs_in_a_level_plane_and_is_refused_in_a_tilted_one() {
+    use crate::cplane::{PLAN_ONLY, in_world};
+    // Every GEOMCONSTRAINT / DIMCONSTRAINT command the Parametric menu runs picks objects in plan.
+    let picks = |id: &str| (id.starts_with("gc") || id.starts_with("dc")) && !id.starts_with("dcdisplay") || id.ends_with("constraint");
+    let ids: Vec<&str> = crate::command_specs().iter().map(|c| c.id).filter(|id| picks(id) && *id != "delconstraint").collect();
+    assert!(ids.len() >= 20, "{ids:?}");
+    let mut s = Session::new();
+    turned(&mut s);
+    for id in &ids {
+        assert!(PLAN_ONLY.contains(id) && in_world(&s, id), "{id}");
+    }
+    // GCPARALLEL picks the lines where the plane shows them.
+    s.viewport_px = (1000.0, 1000.0);
+    s.execute("line", &json!({ "points": [[0, 0], [8, 0.4]] })).unwrap();
+    s.execute("line", &json!({ "points": [[0, 3], [8, 3.9]] })).unwrap();
+    s.cmdline("gcparallel").unwrap();
+    s.input(crate::Input::Point(Vec2::new(4.0, 0.2))).unwrap();
+    s.input(crate::Input::Point(Vec2::new(4.0, 3.45))).unwrap();
+    assert!(s.running.is_none(), "{}", s.prompt_text());
+    assert_eq!(s.doc().unwrap().constraints.len(), 1);
+    // In Front: refused at the prompt and as JSON, the drawing unchanged.
+    set(&mut s, json!({ "preset": "front" }));
+    let before = s.state().unwrap().doc.clone();
+    for id in &ids {
+        assert!(s.start(id).is_err(), "{id}");
+        assert!(s.execute(id, &json!({ "h1": "1", "h2": "2" })).is_err(), "{id}");
+    }
+    assert!(Arc::ptr_eq(&before, &s.state().unwrap().doc));
+}
+
+#[test]
+fn edits_storing_picked_points_run_in_world_in_a_level_plane() {
+    let mut s = Session::new();
+    turned(&mut s);
+    for id in ["copybase", "dimtedit", "dimjogline", "mledit", "mleaderedit", "mleaderedit.add", "mleaderedit.remove", "mleaderalign", "zoom", "pan"]
+    {
+        assert!(crate::cplane::in_world(&s, id), "{id}");
+    }
+    // View commands keep working in a tilted plane.
+    set(&mut s, json!({ "preset": "front" }));
+    assert!(s.start("zoom").is_ok());
+    s.cancel();
+    assert!(s.start("dimtedit").is_err());
+}
+
+#[test]
+fn undo_through_a_maximized_view_saves_what_is_shown() {
+    use super::super::vports::with_live_tiles;
+    let mut s = Session::new();
+    s.execute("line", &json!({ "points": [[0, 0], [20, 10]] })).unwrap();
+    s.execute("viewports.rhino", &json!({})).unwrap();
+    s.execute("viewports.single", &json!({})).unwrap();
+    assert!(s.state().unwrap().tiles.maximized.is_some());
+    // U, U: back to the one plan view the drawing had; saving writes no tiles.
+    s.undo().unwrap();
+    s.undo().unwrap();
+    assert!(s.model_tiles().is_empty());
+    assert!(s.state().unwrap().tiles.maximized.is_none());
+    let tiled = with_live_tiles(&s).is_some_and(|d| d.vports.iter().any(|c| c.is_active() && c.tiles.len() > 1));
+    assert!(!tiled);
+    // Redo, redo: the Rhino tiles then one view again, still saved as shown.
+    s.redo().unwrap();
+    assert_eq!(s.model_tiles().len(), 4);
+    s.redo().unwrap();
+    assert!(s.model_tiles().is_empty());
+    let tiled = with_live_tiles(&s).is_some_and(|d| d.vports.iter().any(|c| c.is_active() && c.tiles.len() > 1));
+    assert!(!tiled);
+}
+
+#[test]
+fn a_dimension_in_a_moved_plane_attaches_to_the_objects_it_was_snapped_to() {
+    let mut s = Session::new();
+    set(&mut s, json!({ "origin": [100, 0, 0] }));
+    // Something at the world origin that a world lookup would wrongly find.
+    s.cmdline("ucs w").unwrap();
+    s.execute("line", &json!({ "points": [[0, 0], [50, 0]] })).unwrap();
+    let decoy = last(&s).handle;
+    set(&mut s, json!({ "origin": [100, 0, 0] }));
+    s.execute("line", &json!({ "points": [[0, 0], [50, 0]] })).unwrap();
+    let h = last(&s).handle;
+    s.execute("dimlinear", &json!({ "p1": [0, 0], "p2": [50, 0], "at": [25, 10] })).unwrap();
+    let EntityKind::Dimension(d) = last(&s).kind else { panic!() };
+    assert!(d.assoc.len() == 2 && d.assoc.iter().all(|a| a.handle == h), "{:?} (decoy {decoy:?})", d.assoc);
+    // Editing the line drags the dimension with it.
+    s.execute("move", &json!({ "handles": [h.hex()], "from": [0, 0], "to": [0, 5] })).unwrap();
+    let EntityKind::Dimension(d) = last(&s).kind else { panic!() };
+    assert!(near(d.p13, Vec3::new(100.0, 5.0, 0.0)) && near(d.p14, Vec3::new(150.0, 5.0, 0.0)), "{d:?}");
 }

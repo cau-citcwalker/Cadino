@@ -161,7 +161,8 @@ fn add_dim(s: &mut Session, k: EntityKind) -> Result<Handle> {
         && dm.assoc.is_empty()
         && assoc_enabled(s)
     {
-        dm.assoc = crate::assoc::reassociate(s.doc()?, &s.space(), dm);
+        // Its points are where the construction plane sees the objects (handles are the same).
+        dm.assoc = crate::assoc::reassociate(&*s.pick_doc()?, &s.space(), dm);
     }
     let h = s.add_entity(k)?;
     s.last_dim = Some(h);
@@ -335,9 +336,30 @@ fn run_arclen(s: &mut Session, p: &Value) -> Result<Value> {
 fn run_ordinate(s: &mut Session, p: &Value) -> Result<Value> {
     let f = point_req("dimordinate", p, "feature")?;
     let l = point_req("dimordinate", p, "leader")?;
-    let xtype = p.get("xtype").and_then(Value::as_bool).unwrap_or((l - f).y.abs() > (l - f).x.abs());
-    let k = dim(s, DimKind::Ordinate { x_type: xtype }, Vec2::ZERO, f, l, Vec2::ZERO, Vec2::ZERO, "");
+    let k = ordinate(s, f, l, p.get("xtype").and_then(Value::as_bool))?;
     Ok(json!({ "handle": add_dim(s, k)?.hex() }))
+}
+
+/// An ordinate dimension of feature `f` with its leader to `l` (world points: DIMORDINATE is
+/// plan-only), measured as AutoCAD measures it: from the current UCS's origin along its axes.
+/// `xtype` (an X datum: the UCS x) is forced, else it comes from the leader's direction in the
+/// UCS. The dimension keeps its datum in `defpt` and measures along world X or Y, so a UCS turned
+/// by other than a multiple of 90° is refused.
+/// ponytail: no stored measuring direction (DXF 51) yet; upgrade: keep it in the dimension and
+/// measure along it in `render::dim`.
+fn ordinate(s: &Session, f: Vec2, l: Vec2, xtype: Option<bool>) -> Result<EntityKind> {
+    let c = s.user_cplane();
+    let u = c.col(0).xy();
+    let d = l - f;
+    let x = xtype.unwrap_or(d.dot(u.perp()).abs() > d.dot(u).abs());
+    let x = if u.x.abs() > 1.0 - 1e-9 {
+        x
+    } else if u.y.abs() > 1.0 - 1e-9 {
+        !x
+    } else {
+        return Err(EngineError::Other("DIMORDINATE measures along the UCS axes only in a UCS turned by a multiple of 90°.".into()));
+    };
+    Ok(dim(s, DimKind::Ordinate { x_type: x }, c.col(3).xy(), f, l, Vec2::ZERO, Vec2::ZERO, ""))
 }
 
 /// The last linear/aligned dimension (for CONTINUE/BASELINE).
@@ -1418,9 +1440,8 @@ struct OrdinateM {
 }
 
 impl OrdinateM {
-    fn kind(&self, s: &Session, f: Vec2, l: Vec2) -> EntityKind {
-        let x = self.xtype.unwrap_or((l - f).y.abs() > (l - f).x.abs());
-        self.text.apply(dim(s, DimKind::Ordinate { x_type: x }, Vec2::ZERO, f, l, Vec2::ZERO, Vec2::ZERO, ""))
+    fn kind(&self, s: &Session, f: Vec2, l: Vec2) -> Result<EntityKind> {
+        Ok(self.text.apply(ordinate(s, f, l, self.xtype)?))
     }
 }
 
@@ -1458,7 +1479,7 @@ impl Interactive for OrdinateM {
                 Ok(Step::Continue)
             }
             (Some(f), Input::Point(l)) => {
-                add_dim(s, self.kind(s, f, l))?;
+                add_dim(s, self.kind(s, f, l)?)?;
                 Ok(Step::Done)
             }
             (_, Input::Enter) => Ok(Step::Cancel),
@@ -1466,7 +1487,7 @@ impl Interactive for OrdinateM {
         }
     }
     fn preview(&self, s: &Session, c: Vec2) -> Vec<EntityKind> {
-        self.feature.map(|f| vec![self.kind(s, f, c)]).unwrap_or_default()
+        self.feature.and_then(|f| self.kind(s, f, c).ok()).into_iter().collect()
     }
 }
 

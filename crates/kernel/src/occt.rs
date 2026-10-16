@@ -11,7 +11,7 @@ use std::hash::BuildHasher;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use cadcraft_geom::{Mesh3, Vec3};
+use cadcraft_geom::{Mat4, Mesh3, Vec3};
 use glam::{DVec3, dvec3};
 use opencascade::angle::Angle;
 use opencascade::bounding_box;
@@ -649,13 +649,36 @@ fn built(shape: Shape) -> Result<Built> {
 
 /// A stored solid in world coordinates.
 fn placed(p: Placed) -> Result<Shape> {
-    let s = read_brep(p.brep)?;
-    let t = similarity(p.xform)
+    place_owned(read_brep(p.brep)?, p.xform)
+}
+
+/// A copy of `s` moved by `xform`.
+/// [`place`] for a shape used once: with no scale or mirror to apply it is moved as it is,
+/// without the full copy a unit scale would make (every placed solid goes through here).
+fn place_owned(s: Shape, xform: &Mat4) -> Result<Shape> {
+    let t = similarity(xform)
+        .ok_or_else(|| KernelError::Invalid("the solid has a transform the kernel can't apply (only move, rotate, scale and mirror)".into()))?;
+    if t.mirror || (t.scale - 1.0).abs() > 1e-12 {
+        return place(&s, xform);
+    }
+    let mut s = s;
+    if t.angle.abs() > 1e-15 {
+        s = s.rotated(dv(t.axis), t.angle);
+    }
+    if t.offset != Vec3::ZERO {
+        s = s.translated(dv(t.offset));
+    }
+    Ok(s)
+}
+
+fn place(s: &Shape, xform: &Mat4) -> Result<Shape> {
+    let t = similarity(xform)
         .ok_or_else(|| KernelError::Invalid("the solid has a transform the kernel can't apply (only move, rotate, scale and mirror)".into()))?;
     // Mirrored across the XZ plane: through the origin, then half a turn about Y.
-    let mut s = if t.mirror { s.scaled(DVec3::ZERO, -1.0).rotated(DVec3::Y, PI) } else { s };
-    if (t.scale - 1.0).abs() > 1e-12 {
-        s = s.scaled(DVec3::ZERO, t.scale);
+    let k = if (t.scale - 1.0).abs() > 1e-12 { t.scale } else { 1.0 };
+    let mut s = s.scaled(DVec3::ZERO, if t.mirror { -k } else { k });
+    if t.mirror {
+        s = s.rotated(DVec3::Y, PI);
     }
     if t.angle.abs() > 1e-15 {
         s = s.rotated(dv(t.axis), t.angle);
@@ -745,18 +768,90 @@ pub fn outline(brep: &str) -> Result<Outline> {
     Ok(Outline { mesh, smooth })
 }
 
-/// The box of the placed shape's geometry (see [`crate::boxes`]), without the tolerance
-/// OpenCASCADE pads a box with.
-pub fn bounding(s: Placed) -> Result<(Vec3, Vec3)> {
-    let bb = bounding_box::aabb(&placed(s)?);
+/// OpenCASCADE's box of the shape's geometry, without the tolerance it pads a box with: exact
+/// for planes, cylinders, cones, spheres and tori, but a free-form (B-spline) face's or curve's
+/// is its control points', too large. Taken before the shape is meshed, or it boxes the mesh.
+fn geometry_box(s: &Shape) -> Option<(Vec3, Vec3)> {
+    let bb = bounding_box::aabb(s);
     if bb.is_void() {
-        return Err(KernelError::Invalid("the solid is empty".into()));
+        return None;
     }
     let (lo, hi) = (bb.min(), bb.max());
     // Never more than half the box off (a tiny shape keeps a box).
     let pad = bb.gap_vec().min((hi - lo) * 0.5).max(DVec3::ZERO);
     let (lo, hi) = (v3(lo + pad), v3(hi - pad));
-    if lo.is_finite() && hi.is_finite() { Ok((lo, hi)) } else { Err(KernelError::Failed("the solid's box is not finite".into())) }
+    (lo.is_finite() && hi.is_finite()).then_some((lo, hi))
+}
+
+/// How fine, against the shape's size, the mesh is that [`boxes`] checks OpenCASCADE's boxes
+/// with: each side of a free-form part 300 mm across within about 0.015 mm (its mesh takes a few
+/// seconds; finer gets slow fast).
+const BOX_DEFLECTION: f64 = 1e-4;
+
+/// The box of the stored shape under each transform (see [`crate::boxes`]); `None` for one that
+/// isn't affine or can't be measured. OpenCASCADE's box ([`geometry_box`], under a transform that
+/// isn't a similarity the box round its turned corners) holds the shape, and so does a fine
+/// mesh's box grown by its deflection (the mesh's points lie on the shape, which lies within the
+/// deflection of it). Each side is OpenCASCADE's where it lies within the mesh's reach, so
+/// analytic faces measure exactly; else the middle of that reach, so free-form ones measure within
+/// the deflection (half of it unless their control points lie close), never by their control
+/// points.
+/// ponytail: one mesh of the whole shape at 1e-4 of its size, as BRepBndLib's AddOptimal isn't
+/// in the bindings: a free-form part a metre across within about 0.1 mm a side, and about 3 s for
+/// a lofted leg. Extrema refined on the surface (Newton from the mesh's furthest point) when that
+/// is too coarse or too slow.
+pub fn boxes(brep: &str, xforms: &[Mat4]) -> Vec<Option<(Vec3, Vec3)>> {
+    let got = measure(brep, xforms).unwrap_or_default();
+    (0..xforms.len()).map(|i| got.get(i).copied().flatten()).collect()
+}
+
+fn measure(brep: &str, xforms: &[Mat4]) -> Result<Vec<Option<(Vec3, Vec3)>>> {
+    let s = read_brep(brep)?;
+    let Some(model) = geometry_box(&s) else { return Err(KernelError::Invalid("the solid is empty".into())) };
+    let outer: Vec<Option<(Vec3, Vec3)>> = xforms
+        .iter()
+        .map(|x| match similarity(x) {
+            Some(_) => place(&s, x).ok().and_then(|p| geometry_box(&p)),
+            None if x.is_affine() => {
+                let (lo, hi) = model;
+                points_box((0..8).map(|i| x.apply(Vec3::new(pick(i & 1, lo.x, hi.x), pick(i & 2, lo.y, hi.y), pick(i & 4, lo.z, hi.z)))))
+            }
+            None => None,
+        })
+        .collect();
+    let d = ((model.1 - model.0).len() * BOX_DEFLECTION).max(1e-7);
+    let pts = Mesher::try_new(&s, d).map_err(failed("meshing"))?.mesh().map_err(failed("meshing"))?.vertices;
+    Ok(xforms
+        .iter()
+        .zip(outer)
+        .map(|(x, o)| {
+            let (olo, ohi) = o?;
+            let (mlo, mhi) = points_box(pts.iter().map(|p| x.apply(v3(*p))))?;
+            // The deflection as the transform stretches it along each axis (its row's length).
+            let e = |i: usize| d * x.m.get(i).map_or(0.0, |r| r.iter().take(3).map(|v| v * v).sum::<f64>().sqrt());
+            // OpenCASCADE's side where the mesh allows it (with some slack, so an exact side
+            // never loses to rounding); else (its control points') the middle of where the mesh
+            // says the side is.
+            let low = |o: f64, m: f64, e: f64| if o >= m - 1.5 * e { o.min(m) } else { m - e / 2.0 };
+            let high = |o: f64, m: f64, e: f64| if o <= m + 1.5 * e { o.max(m) } else { m + e / 2.0 };
+            let lo = Vec3::new(low(olo.x, mlo.x, e(0)), low(olo.y, mlo.y, e(1)), low(olo.z, mlo.z, e(2)));
+            let hi = Vec3::new(high(ohi.x, mhi.x, e(0)), high(ohi.y, mhi.y, e(1)), high(ohi.z, mhi.z, e(2)));
+            (lo.is_finite() && hi.is_finite()).then_some((lo, hi))
+        })
+        .collect())
+}
+
+fn pick(bit: usize, lo: f64, hi: f64) -> f64 {
+    if bit == 0 { lo } else { hi }
+}
+
+/// The box of `pts`; `None` when there are none or one isn't finite.
+fn points_box(mut pts: impl Iterator<Item = Vec3>) -> Option<(Vec3, Vec3)> {
+    let first = pts.next()?;
+    pts.try_fold((first, first), |(lo, hi), p| {
+        p.is_finite().then(|| (Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z)), Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z))))
+    })
+    .filter(|(lo, hi)| lo.is_finite() && hi.is_finite())
 }
 
 /// Two faces whose surface normals at a point of their edge are closer than this (half a degree)
@@ -1306,7 +1401,71 @@ mod modelling_tests {
         let (lo, hi) = got[0].unwrap();
         let (c30, s30) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
         assert!(near(hi - lo, v(600.0 * c30 + 400.0 * s30, 600.0 * s30 + 400.0 * c30, 18.0), 1e-6), "{lo:?} {hi:?}");
-        assert!(got[1].is_none() && got[2].is_none(), "{got:?}");
+        // Sheared (no similarity): the sheared board's box.
+        let (lo, hi) = got[1].unwrap();
+        assert!(near(lo, Vec3::ZERO, 1e-6) && near(hi, v(800.0, 400.0, 18.0), 1e-6), "{lo:?} {hi:?}");
+        assert!(got[2].is_none(), "{got:?}");
+    }
+
+    /// The box's size under `x`.
+    fn size_under(b: &Built, x: &Mat4) -> Vec3 {
+        let (lo, hi) = crate::boxes(&[Placed { brep: &b.brep, xform: x }]).unwrap()[0].unwrap();
+        hi - lo
+    }
+
+    /// Each transform's box size, in one call (one mesh), and how far OpenCASCADE's own box (its
+    /// control points') reaches past it at the worst.
+    fn sizes_under(b: &Built, xs: &[Mat4]) -> (Vec<Vec3>, f64) {
+        let placed: Vec<Placed> = xs.iter().map(|x| Placed { brep: &b.brep, xform: x }).collect();
+        let got: Vec<Vec3> = crate::boxes(&placed).unwrap().into_iter().map(|b| b.map(|(lo, hi)| hi - lo).unwrap()).collect();
+        let s = super::read_brep(&b.brep).unwrap();
+        let reach = |x: &Mat4, g: &Vec3| {
+            let (lo, hi) = super::geometry_box(&super::place(&s, x).unwrap()).unwrap();
+            let d = (hi - lo) - *g;
+            d.x.max(d.y).max(d.z)
+        };
+        let over = xs.iter().zip(&got).map(|(x, g)| reach(x, g)).fold(0.0, f64::max);
+        (got, over)
+    }
+
+    /// Free-form parts measure their true size, not their control points', however they are
+    /// turned: a smooth loft (a tapered round leg) and a tube swept along a spline.
+    #[test]
+    fn boxes_measure_free_form_parts_truly() {
+        let turns: Vec<Mat4> =
+            [0.0, 17.0, 30.0, 45.0].iter().map(|d: &f64| crate::tests::xform(Vec3::Z, d.to_radians(), 1.0, false, v(5.0, 6.0, 7.0))).collect();
+        let leg = crate::loft(&[circle(20.0, 0.0), circle(16.0, 150.0), circle(12.0, 300.0)], false).unwrap();
+        let (got, over) = sizes_under(&leg, &turns);
+        assert!(over > 0.1, "the control points reach out: {over}");
+        assert!(got.iter().all(|g| near(*g, v(40.0, 40.0, 300.0), 0.1) && g.x > 39.95 && g.y > 39.95), "{got:?}");
+        let path = Curve::Spline { points: (0..=4).map(|i| v(0.0, 0.0, 50.0 * f64::from(i))).collect(), tangents: None };
+        let tube = crate::sweep(&circle(10.0, 0.0), &path).unwrap();
+        let (got, over) = sizes_under(&tube, &turns);
+        assert!(over > 0.1, "the control points reach out: {over}");
+        assert!(got.iter().all(|g| near(*g, v(20.0, 20.0, 200.0), 0.1) && g.x > 19.95 && g.y > 19.95), "{got:?}");
+    }
+
+    /// A block reference scaled unevenly stretches the solid: it measures stretched, round faces
+    /// too, and copies moved apart measure moved apart.
+    #[test]
+    fn boxes_take_uneven_scales_and_moves() {
+        let c = crate::primitive(&Primitive::Cylinder { base: Vec3::ZERO, radius: 20.0, height: 100.0 }).unwrap();
+        let scale = |x: f64, y: f64, z: f64| Mat4 { m: [[x, 0.0, 0.0, 0.0], [0.0, y, 0.0, 0.0], [0.0, 0.0, z, 0.0], [0.0, 0.0, 0.0, 1.0]] };
+        assert!(near(size_under(&c, &scale(1.0, 1.0, 1.5)), v(40.0, 40.0, 150.0), 1e-3));
+        assert!(near(size_under(&c, &scale(2.0, 1.0, 1.0)), v(80.0, 40.0, 100.0), 1e-3));
+        // Stretched along X, then turned 30° about Z: an ellipse of half axes 40 and 20, turned.
+        let turned = crate::tests::xform(Vec3::Z, 30f64.to_radians(), 1.0, false, Vec3::ZERO).mul(&scale(2.0, 1.0, 1.0));
+        let got = size_under(&c, &turned);
+        assert!(near(got, v(2.0 * 1300f64.sqrt(), 2.0 * 700f64.sqrt(), 100.0), 0.1), "{got:?}");
+        // The same turn at two places: one box, moved.
+        let (a, b) = (Mat4::translate(v(1000.0, 0.0, 0.0)).mul(&turned), Mat4::translate(v(0.0, -50.0, 3.0)).mul(&turned));
+        let got = crate::boxes(&[Placed { brep: &c.brep, xform: &a }, Placed { brep: &c.brep, xform: &b }]).unwrap();
+        let ((alo, ahi), (blo, bhi)) = (got[0].unwrap(), got[1].unwrap());
+        assert!(near(alo - blo, v(1000.0, 50.0, -3.0), 1e-9) && near(ahi - bhi, v(1000.0, 50.0, -3.0), 1e-9), "{got:?}");
+        // No box through a perspective.
+        let mut p = Mat4::IDENTITY;
+        p.m[3][2] = 0.1;
+        assert_eq!(crate::boxes(&[Placed { brep: &c.brep, xform: &p }]).unwrap(), vec![None]);
     }
 
     #[test]

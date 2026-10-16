@@ -773,7 +773,9 @@ pub(super) struct ProfileM {
     op: ProfileOp,
     sel: SelectPhase,
     hs: Vec<Handle>,
-    axis: Vec<Vec2>,
+    /// REVOLVE's axis points, each with the height it was given at (`point_z`: a 3D snap, typed
+    /// `x,y,z`).
+    axis: Vec<(Vec2, Option<f64>)>,
 }
 
 impl ProfileM {
@@ -823,7 +825,7 @@ impl Interactive for ProfileM {
         match (self.op, self.axis.len()) {
             (ProfileOp::Extrude, _) => Prompt::new("Specify height of extrusion", Accept::NUMBER),
             (ProfileOp::Revolve, 0) => Prompt::new("Specify axis start point", Accept::POINT),
-            (ProfileOp::Revolve, 1) => Prompt::new("Specify axis endpoint", Accept::POINT).base_opt(self.axis.first().copied()),
+            (ProfileOp::Revolve, 1) => Prompt::new("Specify axis endpoint", Accept::POINT).base_opt(self.axis.first().map(|a| a.0)),
             (ProfileOp::Revolve, _) => Prompt::new("Specify angle of revolution", Accept::NUMBER).default("360"),
             (ProfileOp::Fillet, _) => Prompt::new("Specify fillet radius", Accept::NUMBER),
             (ProfileOp::Chamfer, _) => Prompt::new("Specify distance", Accept::NUMBER),
@@ -846,10 +848,11 @@ impl Interactive for ProfileM {
         }
         match (self.op, i) {
             (ProfileOp::Revolve, Input::Point(p)) if self.axis.len() < 2 => {
-                if self.axis.first().is_some_and(|a| a.near(p, EPS)) {
+                let z = s.point_z.filter(|z| z.is_finite());
+                if self.axis.first().is_some_and(|a| a.0.near(p, EPS) && (a.1.unwrap_or(0.0) - z.unwrap_or(0.0)).abs() <= EPS) {
                     return Err(EngineError::Other("The axis needs two different points.".into()));
                 }
-                self.axis.push(p);
+                self.axis.push((p, z));
                 Ok(Step::Continue)
             }
             (ProfileOp::Revolve, Input::Enter) if self.axis.len() == 2 => self.run(s, json!({ "axis": axis_json(s, &self.axis) })),
@@ -866,17 +869,19 @@ impl Interactive for ProfileM {
     }
 }
 
-/// The axis picked: in World, 2D points in each profile's plane (as before construction planes);
-/// in another construction plane, its points in the world.
-fn axis_json(s: &Session, a: &[Vec2]) -> Value {
+/// The axis picked: in World on the XY plane, 2D points in each profile's plane (as before
+/// construction planes); else (another construction plane, or a point given a height) its points
+/// in the world, at their heights.
+fn axis_json(s: &Session, a: &[(Vec2, Option<f64>)]) -> Value {
     let c = s.cplane();
+    let flat = c == Mat4::IDENTITY && a.iter().all(|(_, z)| z.is_none());
     Value::Array(
         a.iter()
-            .map(|p| {
-                if c == Mat4::IDENTITY {
+            .map(|(p, z)| {
+                if flat {
                     json!([p.x, p.y])
                 } else {
-                    let q = c.apply(p.to3(0.0));
+                    let q = c.apply(p.to3(z.unwrap_or(0.0)));
                     json!([q.x, q.y, q.z])
                 }
             })

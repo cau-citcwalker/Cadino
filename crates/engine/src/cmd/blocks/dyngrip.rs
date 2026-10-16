@@ -143,7 +143,17 @@ impl Session {
     /// Start dragging grip `part` of parameter `node` of dynamic block reference `handle` (the
     /// UI's click on a dynamic grip). A list grip (visibility, lookup) has no drag: the UI offers
     /// its choices and sets them with `blocks.reference.set`.
+    ///
+    /// The grips are where they are in the world; in a level construction plane other than World
+    /// the drag takes its points in the plane, as every prompt does, and works in World (see
+    /// [`crate::cplane`]). A tilted plane refuses it.
     pub fn start_dyn_grip(&mut self, handle: Handle, node: i32, part: GripPart) -> Result<()> {
+        let c = self.cplane();
+        if crate::cplane::tilted(&c) {
+            return Err(EngineError::Other(
+                "Dynamic grips are dragged in plan: use a level construction plane (CPLANE World, or a UCS turned about Z).".into(),
+            ));
+        }
         if self.running.is_some() {
             self.cancel();
         }
@@ -155,7 +165,7 @@ impl Session {
             return Err(EngineError::Other("a list grip is chosen from, not dragged".into()));
         }
         let edit = DynGripEdit { handle, node, part, from: g.at, property: g.property, distance: g.shape == GripShape::Linear };
-        let machine = crate::guard::Guarded::wrap(Box::new(edit));
+        let machine = crate::guard::Guarded::wrap(Box::new(edit), crate::cplane::level_moved(&c));
         let st = self.state()?;
         let (before, selection_before) = (st.doc.clone(), st.selection.clone());
         self.running = Some(Running { id: "grip".into(), machine, before, selection_before });
