@@ -77,6 +77,24 @@ impl ViewDir {
         (az, d.z.clamp(-1.0, 1.0).asin())
     }
 
+    /// A standard view by name, any case: `plan`/`top`, `front` (from -Y), `back`, `left` (from
+    /// -X), `right`, `iso` (south-west isometric), `iso_se`, `iso_ne`, `iso_nw`.
+    pub fn named(name: &str) -> Option<ViewDir> {
+        let d = match name.to_ascii_lowercase().as_str() {
+            "plan" | "top" => return Some(ViewDir::PLAN),
+            "front" => Vec3::new(0.0, -1.0, 0.0),
+            "back" => Vec3::new(0.0, 1.0, 0.0),
+            "left" => Vec3::new(-1.0, 0.0, 0.0),
+            "right" => Vec3::new(1.0, 0.0, 0.0),
+            "iso" => Vec3::new(-1.0, -1.0, 1.0),
+            "iso_se" => Vec3::new(1.0, -1.0, 1.0),
+            "iso_ne" => Vec3::new(1.0, 1.0, 1.0),
+            "iso_nw" => Vec3::new(-1.0, 1.0, 1.0),
+            _ => return None,
+        };
+        Some(ViewDir::new(d))
+    }
+
     pub fn is_plan(&self) -> bool {
         self.dir.x.abs() < 1e-12 && self.dir.y.abs() < 1e-12 && self.dir.z > 0.0
     }
@@ -183,6 +201,17 @@ mod tests {
         // Left: view x runs along -Y.
         let left = ViewDir::new(Vec3::new(-1.0, 0.0, 0.0));
         assert!(near(left.unproject_xy(Vec2::new(5.0, 2.0)), Vec2::new(0.0, -5.0)));
+    }
+
+    #[test]
+    fn named_views() {
+        assert!(ViewDir::named("TOP").is_some_and(|v| v.is_plan()) && ViewDir::named("plan") == ViewDir::named("top"));
+        assert_eq!(ViewDir::named("front"), Some(ViewDir::new(Vec3::new(0.0, -1.0, 0.0))));
+        assert_eq!(ViewDir::named("Iso"), Some(ViewDir::new(Vec3::new(-1.0, -1.0, 1.0))));
+        assert_eq!(ViewDir::named("iso_ne"), Some(ViewDir::new(Vec3::new(1.0, 1.0, 1.0))));
+        // Seen from the right, +Y runs to the right.
+        assert!(ViewDir::named("right").is_some_and(|v| v.project(Vec3::new(0.0, 1.0, 0.0)).x > 0.99));
+        assert!(ViewDir::named("current").is_none() && ViewDir::named("").is_none());
     }
 
     #[test]

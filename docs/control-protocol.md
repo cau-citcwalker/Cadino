@@ -44,7 +44,7 @@ field. `engine.commands` returns a separate command catalog, not a list of addit
 | `ui.resize` | `{width, height}` | Resize the window. |
 | `ui.focus` | | Activate the native window. Does not assign focus to a widget. |
 | `ui.screenshot` | `{path?}` | PNG of the window (needs a presented frame). |
-| `ui.render` | `{path?, width?, height?, fit?}` | Headless render. `fit` (default true) frames the whole drawing; `false` uses the current view. Replies `{pngBase64, width, height, bytes, path?}`. |
+| `ui.render` | `{path?, width?, height?, fit?, window?, view?}` | Headless render. `fit` (default true) frames the whole drawing; `false` uses the current view. `view` (`plan`, `top`, `front`, `back`, `left`, `right`, `iso`, `iso_se`, `iso_ne`, `iso_nw`) looks at model space from that direction, shaded with edges and fitted, without changing the drawing's view; `current` (default) renders what the canvas shows. Replies `{pngBase64, width, height, bytes, path?}`. |
 | `app.open` / `app.save` / `app.quit` | `{path}` | File operations. |
 | `control.methods` | | Every method this server answers: `{method, params, description}`. Headless (`cadcraft-cli mcp`) lists only the methods it serves. |
 | `ping` | | Replies `"pong"`. A cheap health check. |

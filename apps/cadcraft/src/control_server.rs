@@ -1,17 +1,20 @@
 //! Loopback JSON-lines control server: one request per line, one reply per line.
 //! This is the transport the MCP server (`cadcraft-cli mcp --connect`) wraps.
 //!
+//! `--control` starts one for the whole run; Options ▸ AI turns another on and off ([`Switch`]).
+//!
 //! Lines are bounded ([`MAX_LINE`]): a longer one is refused and the connection closed, without
 //! buffering the rest. So is the number of connections served at once ([`MAX_CONNECTIONS`]).
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
-use cadcraft_ui_egui::ControlRequest;
+use cadcraft_ui_egui::{CadApp, ControlRequest};
 use serde_json::{Value, json};
 
 /// Longest accepted request line (bytes, without the newline). Generous, so requests that carry
@@ -20,18 +23,73 @@ const MAX_LINE: usize = 256 * 1024 * 1024;
 /// Connections served at once; further ones get an error line and are closed.
 const MAX_CONNECTIONS: usize = 16;
 
-pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
+/// A running control server. Dropping the handle leaves it running; [`ControlServer::stop`] ends it.
+pub struct ControlServer {
+    port: u16,
+    stop: Arc<AtomicBool>,
+    accept: JoinHandle<()>,
+}
+
+/// Listen on `127.0.0.1:port`; the app answers the requests that arrive on the receiver.
+pub fn start(port: u16, ctx: egui::Context) -> std::io::Result<(ControlServer, Receiver<ControlRequest>)> {
+    let listener = TcpListener::bind(("127.0.0.1", port))?;
     let (tx, rx) = channel::<ControlRequest>();
-    let listener = match TcpListener::bind(("127.0.0.1", port)) {
-        Ok(l) => l,
-        Err(e) => {
-            log::error!("control server failed to bind 127.0.0.1:{port}: {e}");
-            return rx;
-        }
-    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    let accept = std::thread::Builder::new().name("control-accept".into()).spawn(move || accept_loop(listener, tx, ctx, &flag))?;
     log::info!("control server listening on 127.0.0.1:{port}");
-    std::thread::spawn(move || accept_loop(listener, tx, ctx));
-    rx
+    Ok((ControlServer { port, stop, accept }, rx))
+}
+
+impl ControlServer {
+    /// Stop accepting and free the port. Open connections are answered with an error from their
+    /// next request on, once the app has dropped the receiver.
+    pub fn stop(self) {
+        self.stop.store(true, Ordering::SeqCst);
+        // `accept` blocks: wake it with a connection of our own, then wait for the listener to go.
+        let addr = SocketAddr::from(([127, 0, 0, 1], self.port));
+        if TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok() {
+            let _ = self.accept.join();
+        }
+        log::info!("control server on 127.0.0.1:{} stopped", self.port);
+    }
+}
+
+/// The control server Options ▸ AI asks for ([`CadApp::wanted_control_port`]), started, moved and
+/// stopped to match it. A port that can't be opened is tried again only when the setting changes.
+#[derive(Default)]
+pub struct Switch {
+    wanted: Option<u16>,
+    server: Option<ControlServer>,
+}
+
+impl Switch {
+    pub fn reconcile(&mut self, cad: &mut CadApp, ctx: &egui::Context) {
+        let wanted = cad.wanted_control_port();
+        if wanted == self.wanted {
+            return;
+        }
+        self.wanted = wanted;
+        if let Some(server) = self.server.take() {
+            server.stop();
+            cad.detach_control();
+        }
+        cad.ai.mcp_status = match wanted {
+            None => cadcraft_ui_egui::tl!("Off").to_string(),
+            Some(port) => match start(port, ctx.clone()) {
+                Ok((server, rx)) => {
+                    cad.attach_control(rx);
+                    self.server = Some(server);
+                    cadcraft_ui_egui::tf!("Listening on 127.0.0.1:{port}", port = port)
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => cadcraft_ui_egui::tf!("Port {port} is in use", port = port),
+                Err(e) => {
+                    log::warn!("control server on 127.0.0.1:{port}: {e}");
+                    cadcraft_ui_egui::tf!("Port {port} could not be opened: {error}", port = port, error = e)
+                }
+            },
+        };
+    }
 }
 
 /// A connection's place among [`MAX_CONNECTIONS`], given back when the connection ends (also when
@@ -44,9 +102,12 @@ impl Drop for Slot {
     }
 }
 
-fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Context) {
+fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Context, stop: &AtomicBool) {
     let open = Arc::new(AtomicUsize::new(0));
     for mut stream in listener.incoming().flatten() {
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
         if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
             open.fetch_sub(1, Ordering::SeqCst);
             let _ = writeln!(stream, "{}", json!({"ok": false, "error": "too many control connections"}));
@@ -112,6 +173,7 @@ fn serve(stream: TcpStream, tx: Sender<ControlRequest>, ctx: egui::Context) {
                 let params = msg.get("params").cloned().unwrap_or(json!({}));
                 let (req, pending) = ControlRequest::new(method, params);
                 if tx.send(req).is_err() {
+                    let _ = writeln!(out, "{}", json!({"id": id, "ok": false, "error": "the control server was turned off"}));
                     break;
                 }
                 ctx.request_repaint();
@@ -163,7 +225,7 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
         let (tx, rx) = channel::<ControlRequest>();
-        std::thread::spawn(move || accept_loop(listener, tx, egui::Context::default()));
+        std::thread::spawn(move || accept_loop(listener, tx, egui::Context::default(), &AtomicBool::new(false)));
         std::thread::spawn(move || {
             for req in rx {
                 let _ = req.reply.send(json!({"ok": true, "method": req.method}));
@@ -185,6 +247,74 @@ mod tests {
             let v: Value = serde_json::from_str(&line).unwrap();
             assert_eq!((v["id"].as_i64(), v["method"].as_str()), (Some(id), Some(method)), "{line}");
         }
+    }
+
+    fn free_port() -> u16 {
+        TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port()
+    }
+
+    #[test]
+    fn a_stopped_server_frees_its_port_and_turns_away_its_connections() {
+        let port = free_port();
+        let (server, rx) = start(port, egui::Context::default()).unwrap();
+        let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut replies = BufReader::new(c.try_clone().unwrap());
+        let mut line = String::new();
+        c.write_all(b"{\"id\":6,\"method\":\"ping\"}\n").unwrap();
+        let req = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(req.begin());
+        req.reply.send(json!({"ok": true})).unwrap();
+        replies.read_line(&mut line).unwrap();
+        assert!(line.contains("\"ok\":true"), "{line}");
+        server.stop();
+        drop(rx);
+        // The connection made before the stop gets an error line instead of reaching the app.
+        c.write_all(b"{\"id\":7,\"method\":\"ping\"}\n").unwrap();
+        line.clear();
+        replies.read_line(&mut line).unwrap();
+        assert!(line.contains("turned off") && line.contains("\"id\":7"), "{line}");
+        // The port can be opened again at once.
+        let (again, _rx) = start(port, egui::Context::default()).unwrap();
+        again.stop();
+    }
+
+    #[test]
+    fn the_switch_follows_the_setting_and_does_not_retry_a_busy_port() {
+        let ctx = egui::Context::default();
+        let mut cad = CadApp::new(cadcraft_engine::Session::empty(), cadcraft_ui_egui::Services::default());
+        let mut switch = Switch::default();
+        let port = free_port();
+        cad.ai.mcp_port = port;
+        switch.reconcile(&mut cad, &ctx);
+        assert!(cad.ai.mcp_status.is_empty() && switch.server.is_none(), "off stays off");
+
+        cad.ai.mcp_enabled = true;
+        switch.reconcile(&mut cad, &ctx);
+        assert_eq!(cad.ai.mcp_status, format!("Listening on 127.0.0.1:{port}"));
+        assert!(TcpStream::connect(("127.0.0.1", port)).is_ok());
+
+        // Moving to a busy port stops the old server and reports the new port as in use, once.
+        let busy = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let busy_port = busy.local_addr().unwrap().port();
+        cad.ai.mcp_port = busy_port;
+        switch.reconcile(&mut cad, &ctx);
+        assert_eq!(cad.ai.mcp_status, format!("Port {busy_port} is in use"));
+        assert!(TcpListener::bind(("127.0.0.1", port)).is_ok(), "the old port is free again");
+        drop(busy);
+        switch.reconcile(&mut cad, &ctx);
+        assert!(switch.server.is_none(), "not retried every frame");
+
+        // Turning it off and on again retries.
+        cad.ai.mcp_enabled = false;
+        switch.reconcile(&mut cad, &ctx);
+        assert_eq!(cad.ai.mcp_status, "Off");
+        cad.ai.mcp_enabled = true;
+        switch.reconcile(&mut cad, &ctx);
+        assert_eq!(cad.ai.mcp_status, format!("Listening on 127.0.0.1:{busy_port}"));
+        cad.ai.mcp_enabled = false;
+        switch.reconcile(&mut cad, &ctx);
+        assert!(TcpListener::bind(("127.0.0.1", busy_port)).is_ok());
     }
 
     #[test]

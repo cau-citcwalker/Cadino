@@ -1,7 +1,8 @@
-//! CADCraft MCP server.
+//! Cadino MCP server.
 //!
 //! JSON-RPC 2.0 over stdio (newline-delimited), implementing the MCP lifecycle, tools and
-//! resources. Tools map onto the app's control-channel methods, served either by a headless
+//! resources. The tools ([`cadcraft_ai::tools`], shared with the built-in assistant) map onto the
+//! app's control-channel methods, served either by a headless
 //! [`Headless`] session in-process or by a running app through its loopback control port
 //! ([`Remote`]). Agents can type at the command line exactly like a user (`command_line`), call
 //! any command with JSON (`execute`), inspect the drawing and render it to a PNG.
@@ -10,7 +11,6 @@
 
 mod backend;
 mod server;
-mod tools;
 
 pub use backend::{Backend, Headless, Remote};
 pub use server::{PROTOCOL_VERSION, Server};

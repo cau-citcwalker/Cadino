@@ -1403,3 +1403,44 @@
 	CPlane Back	Площина побудови: ззаду
 	CPlane Left	Площина побудови: ліворуч
 	CPlane Bottom	Площина побудови: знизу
+	AI Assistant	ШІ-помічник
+	AI	ШІ
+	AI Settings	Налаштування ШІ
+	The AI assistant needs the desktop app.	ШІ-помічник працює лише в настільному застосунку.
+	New chat	Нова розмова
+	No model is set up yet.	Модель ще не налаштовано.
+	Set up a model…	Налаштувати модель…
+	Describe what to draw or model…	Опишіть, що накреслити чи змоделювати…
+	Stop	Зупинити
+	Send	Надіслати
+	Working…	Виконується…
+	Describe what you want, in any language, and the assistant drafts and models it in this drawing.	Опишіть будь-якою мовою, що вам потрібно, і помічник накреслить і змоделює це в цьому кресленні.
+	Thinking…	Міркування…
+	Tokens: {input} in · {output} out · {cached} cached	Токени: {input} вхідних · {output} вихідних · {cached} з кешу
+	Built-in assistant	Вбудований помічник
+	Provider	Постачальник
+	Local / custom (OpenAI-compatible)	Локальний / власний (сумісний з OpenAI)
+	Server address	Адреса сервера
+	The address must start with http:// or https://	Адреса має починатися з http:// або https://
+	Refresh models	Оновити моделі
+	API key	Ключ API
+	Thinking effort	Глибина міркувань
+	Allow the assistant to open, save and export files	Дозволити помічнику відкривати, зберігати й експортувати файли
+	Custom instructions	Власні інструкції
+	Added to every conversation, e.g. “Units are millimetres; walls are 200 thick.”	Додаються до кожної розмови, напр. «Одиниці — міліметри; стіни завтовшки 200.»
+	Test connection	Перевірити з’єднання
+	Paste your API key	Вставте свій ключ API
+	Saved in the system keychain	Збережено в системному сховищі ключів
+	Using {var} from the environment	Використовується {var} із середовища
+	Not set	Не задано
+	External AI apps (MCP)	Зовнішні ШІ-застосунки (MCP)
+	Not available in the browser: AI apps connect to the desktop app.	Недоступно в браузері: ШІ-застосунки під’єднуються до настільного застосунку.
+	Let AI apps on this computer control Cadino	Дозволити ШІ-застосункам на цьому комп’ютері керувати Cadino
+	Port	Порт
+	While this is on, any program on this computer can control Cadino.	Поки це ввімкнено, будь-яка програма на цьому комп’ютері може керувати Cadino.
+	cadcraft-cli was not found next to Cadino. Build or install it in the same folder for these to work.	cadcraft-cli не знайдено поруч із Cadino. Щоб ці налаштування працювали, зберіть або встановіть його в ту саму теку.
+	ChatGPT's app only connects to remote HTTPS servers: use Codex CLI, or the built-in assistant with OpenAI GPT.	Застосунок ChatGPT під’єднується лише до віддалених HTTPS-серверів: скористайтеся Codex CLI або вбудованим помічником з OpenAI GPT.
+	Listening on 127.0.0.1:{port}	Очікує з’єднань на 127.0.0.1:{port}
+	Port {port} is in use	Порт {port} зайнятий
+	Port {port} could not be opened: {error}	Не вдалося відкрити порт {port}: {error}
+@plural	{n} model	{n} модель|{n} моделі|{n} моделей

@@ -26,6 +26,11 @@ that control port at a call that finds nothing, and waits for it:
 exits with an error instead of falling back to a headless session, so a client meant for the app
 never edits a separate drawing by mistake. If the app can't be reached, startup fails too.
 
+In the app, Options ▸ AI can start and stop the control server (port 7979 by default) and shows
+ready-to-copy configurations for Claude Desktop, Claude Code, Codex CLI and Cursor that use the
+`cadcraft-cli` next to the app with `--connect 127.0.0.1:PORT --lazy`. The app's own AI Assistant
+palette (Tools ▸ AI Assistant) uses the same tools.
+
 Example client configuration (Claude Code / Claude Desktop):
 
 ```json
@@ -42,7 +47,7 @@ Example client configuration (Claude Code / Claude Desktop):
 | `list_commands {filter?}` | The command catalog; `filter` matches part of a command's id, label or an alias. |
 | `inspect_drawing {entities?, limit?}` | Counts, extents, layers, styles, blocks, layouts, selection, undo history and entities. |
 | `query_entities {type?, layer?, window?, crossing?, limit?, offset?}` | Filtered entities with handles and geometry. `window` `[[x0,y0],[x1,y1]]` finds objects whose geometry is inside it or crosses it (`crossing: false`: entirely inside). `count` is every match, `returned` the page (`offset`, `limit`, default 500). |
-| `render {width?, height?, fit?, window?}` | A PNG image of the drawing, or of just the area `window` `[[x0,y0],[x1,y1]]` (one sheet or room of a large drawing; 1600 px wide with the window's shape unless sized). |
+| `render {width?, height?, fit?, window?, view?}` | A PNG image of the drawing, or of just the area `window` `[[x0,y0],[x1,y1]]` (one sheet or room of a large drawing; 1600 px wide with the window's shape unless sized). `view` (`plan`/`top`, `front`, `back`, `left`, `right`, `iso` = south-west, `iso_se`, `iso_ne`, `iso_nw`) looks at model space from that side, shaded with edges, without changing the drawing's view. |
 | `find_text {contains?, layer?, window?, limit?, offset?}` | The readable texts — TEXT, MTEXT without formatting codes, block attributes, multileaders — with text, insertion point, height, rotation, style, layer and handle; filtered by content (any case), layer and a window around the insertion points. Read-only (the `texts` command). |
 | `new_drawing {metric?}`, `open {path}`, `save {path?}`, `cancel` | Files and Escape. `save` to a `.svg`, `.png` or `.pdf` path exports: the drawing keeps its name and unsaved changes. |
 | `screenshot`, `ui_inspect`, `ui_click {x, y}` | Only when connected to the app. |

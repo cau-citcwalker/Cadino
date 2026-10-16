@@ -16,6 +16,7 @@ const RECENT_CLEAR: &str = "ui.recent.clear";
 /// UI-only commands: (id, label, menu path, shortcut).
 pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("ui.spacemouse", "3D Mouse...", &["Tools", "3D Mouse..."], None),
+    ("assistant", "AI Assistant", &["Tools", "AI Assistant"], None),
     ("ui.spacemouse.calibrate", "Calibrate 3D Mouse", &[], None),
     ("ui.spacemouse.navigate", "3D Mouse Navigation", &[], None),
     ("ui.dock", "Arrange Panel", &[], None),
@@ -106,6 +107,10 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
     // QUICKCALC typed or from a menu opens the palette; with parameters it is CAL.
     if id == "ui.panel.quickcalc" || (matches!(id, "quickcalc" | "qc") && params.is_null()) {
         return Some(crate::palettes::quickcalc::open(app));
+    }
+    // ASSISTANT or AI typed, or Tools ▸ AI Assistant: the AI Assistant palette.
+    if matches!(id, "assistant" | "ai") {
+        return Some(crate::assistant::open(app));
     }
     if let Some(r) = crate::plotstyles::route(app, id, params) {
         return Some(r);

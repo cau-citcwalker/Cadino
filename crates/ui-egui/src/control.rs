@@ -15,8 +15,9 @@
 //! - `ui.click {x, y, shift?, ctrl?}`, `ui.move {x, y}`: real egui pointer input in screen points
 //! - `ui.key {key, cmd?, shift?, alt?}`, `ui.text {text}`: synthetic keyboard input
 //! - `ui.set {...UiState fields}`, `ui.resize {width, height}`
-//! - `ui.screenshot {path?}`: PNG of the window; `ui.render {path?, width?, height?, fit?}`: headless
-//!   render of the drawing (no window needed; fits the drawing unless `fit` is false; replies `pngBase64`)
+//! - `ui.screenshot {path?}`: PNG of the window; `ui.render {path?, width?, height?, fit?, view?}`:
+//!   headless render of the drawing (no window needed; fits the drawing unless `fit` is false;
+//!   `view` = `plan`, `front`, `iso`… looks at model space from there, shaded with edges; replies `pngBase64`)
 //! - `app.open {path}`, `app.save {path?}`, `app.quit`
 //! - `control.methods`: this list, with params and a description; `ping`: replies `"pong"`
 
@@ -210,7 +211,11 @@ const METHODS: &[(&str, &str, &str)] = &[
     ("ui.resize", "{width, height}", "Resize the window."),
     ("ui.focus", "", "Activate the native window."),
     ("ui.screenshot", "{path?}", "PNG of the window (needs a presented frame)."),
-    ("ui.render", "{path?, width?, height?, fit?}", "Headless render of the drawing; replies pngBase64."),
+    (
+        "ui.render",
+        "{path?, width?, height?, fit?, window?, view?}",
+        "Headless render of the drawing; `view` (plan, top, front, back, left, right, iso, iso_se, iso_ne, iso_nw) looks at model space from that direction, shaded with edges and fitted, without changing the drawing's view; `current` (default) renders what the canvas shows. Replies pngBase64.",
+    ),
     ("app.open", "{path}", "Open a drawing."),
     ("app.save", "{path?}", "Save the drawing (Save As with a path)."),
     ("app.quit", "", "Quit without the unsaved-changes prompt."),
@@ -475,19 +480,28 @@ pub fn handle(app: &mut CadApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
             let Ok(st) = app.session.state() else { return err("no drawing") };
             // `window`: just that area, at the size given or matching its shape.
             let window = render_window(p);
-            // Model space as the canvas shows it: its view direction and visual style.
-            let view_dir = if st.space == cadcraft_doc::Space::Model { st.view_dir } else { cadcraft_geom::ViewDir::PLAN };
+            // A named view looks at model space from that direction, shaded with edges; otherwise
+            // the space as the canvas shows it: its view direction and visual style.
+            let named = match s("view").filter(|v| !v.eq_ignore_ascii_case("current")) {
+                Some(v) => match cadcraft_geom::ViewDir::named(v) {
+                    Some(dir) => Some(dir),
+                    None => return err(format!("unknown view `{}`", v.chars().take(40).collect::<String>())),
+                },
+                None => None,
+            };
+            let space = if named.is_some() { cadcraft_doc::Space::Model } else { st.space.clone() };
+            let view_dir = named.unwrap_or(if st.space == cadcraft_doc::Space::Model { st.view_dir } else { cadcraft_geom::ViewDir::PLAN });
             let opts = cadcraft_render::Options {
                 view: window,
                 transparency: app.session.settings.transparency_display,
                 view_dir,
-                shaded: st.shaded,
-                edges: st.shaded_edges,
+                shaded: named.is_some() || st.shaded,
+                edges: named.is_some() || st.shaded_edges,
                 ..Default::default()
             };
-            let list = cadcraft_render::build(&st.doc, &st.space, &opts);
+            let list = cadcraft_render::build(&st.doc, &space, &opts);
             let v = st.view();
-            let fit = p.get("fit").and_then(Value::as_bool).unwrap_or(true);
+            let fit = named.is_some() || p.get("fit").and_then(Value::as_bool).unwrap_or(true);
             let view = match &window {
                 Some(win) => cadcraft_render::raster::View::of_window(win, f("width").map(|x| x as u32), f("height").map(|x| x as u32)),
                 None => render_view(&list.bounds, v.center, v.height, fit, w, h),
@@ -631,6 +645,28 @@ mod tests {
         let (req, _reply) = ControlRequest::new("ui.pointer", json!({"x": 3.0, "y": 4.0}));
         let _ = handle(&mut app, &egui::Context::default(), &req);
         assert_eq!((app.session.last_point, app.session.point_z), (Vec2::new(3.0, 4.0), None));
+    }
+
+    /// A named view renders model space from that direction; an unknown one is refused.
+    #[test]
+    fn render_named_view_returns_a_png() {
+        let mut app = CadApp::new(cadcraft_engine::Session::new(), crate::Services::default());
+        let _ = app.run("circle", json!({"center": [0, 0], "radius": 5}));
+        let mut render = |view: &str| {
+            let (req, _reply) = ControlRequest::new("ui.render", json!({"view": view, "width": 64, "height": 48}));
+            match handle(&mut app, &egui::Context::default(), &req) {
+                Outcome::Done(v) => v,
+                Outcome::Screenshot { .. } => Value::Null,
+            }
+        };
+        for view in ["iso", "front", "current"] {
+            let v = render(view);
+            let png = v["result"]["pngBase64"].as_str().and_then(cadcraft_engine::cmd::file::base64_decode).unwrap_or_default();
+            assert!(png.starts_with(b"\x89PNG"), "{view}: {v}");
+        }
+        let v = render("sideways");
+        assert_eq!(v["ok"], false);
+        assert!(v["error"].as_str().is_some_and(|e| e.contains("unknown view")), "{v}");
     }
 
     #[test]

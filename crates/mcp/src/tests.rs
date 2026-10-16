@@ -210,3 +210,20 @@ fn a_lazy_bridge_starts_without_the_app_and_says_how_to_open_it() {
     assert_ne!(r["result"]["isError"], json!(true), "{r}");
     app.join().unwrap();
 }
+
+/// `render` looks from a named view without changing the drawing's own; unknown names are invalid params.
+#[test]
+fn render_named_views() {
+    let mut s = Server::new(Box::new(Headless::default()));
+    tool(&mut s, "command_line", json!({"text": "rectang 0,0 10,5"}));
+    let png = |s: &mut Server, view: &str| tool(s, "render", json!({"view": view, "width": 64, "height": 64}))["data"].as_str().unwrap().to_string();
+    let plan = png(&mut s, "plan");
+    assert_eq!(plan, png(&mut s, "current"), "the drawing is in plan view");
+    assert_ne!(plan, png(&mut s, "front"), "seen from the front the rectangle is edge-on");
+    assert_ne!(plan, png(&mut s, "iso"));
+    assert_eq!(plan, png(&mut s, "current"), "the drawing's view is unchanged");
+    let r = call(&mut s, 5, "tools/call", json!({"name": "render", "arguments": {"view": "sideways"}}));
+    assert_eq!(r["error"]["code"], -32602, "{r}");
+    let e = crate::Backend::call(s.backend(), "ui.render", json!({"view": "sideways"})).unwrap_err();
+    assert_eq!(e, "unknown view `sideways`");
+}

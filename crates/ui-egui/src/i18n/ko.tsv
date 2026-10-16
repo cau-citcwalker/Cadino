@@ -1296,3 +1296,52 @@ menu	Modify	수정
 	Panel	패널
 	Part	부품
 	Rhino (IGES + STEP)	Rhino (IGES + STEP)
+	AI Assistant	AI 어시스턴트
+	AI	AI
+	AI Settings	AI 설정
+	The AI assistant needs the desktop app.	AI 어시스턴트는 데스크톱 앱에서만 사용할 수 있습니다.
+	New chat	새 대화
+	No model is set up yet.	아직 설정된 모델이 없습니다.
+	Set up a model…	모델 설정…
+	Describe what to draw or model…	그리거나 모델링할 내용을 설명해 주세요…
+	Stop	중지
+	Send	보내기
+	Working…	작업 중…
+	Describe what you want, in any language, and the assistant drafts and models it in this drawing.	원하는 것을 어떤 언어로든 설명하면 어시스턴트가 이 도면에 직접 작도하고 모델링합니다.
+	Thinking…	생각 중…
+	Tokens: {input} in · {output} out · {cached} cached	토큰: 입력 {input} · 출력 {output} · 캐시 {cached}
+	Built-in assistant	내장 어시스턴트
+	Provider	제공자
+	Local / custom (OpenAI-compatible)	로컬 / 사용자 지정(OpenAI 호환)
+	Server address	서버 주소
+	The address must start with http:// or https://	주소는 http:// 또는 https://로 시작해야 합니다
+	Refresh models	모델 새로 고침
+	API key	API 키
+	Thinking effort	사고 수준
+	Allow the assistant to open, save and export files	어시스턴트가 파일을 열고, 저장하고, 내보낼 수 있도록 허용
+	Custom instructions	사용자 지정 지침
+	Added to every conversation, e.g. “Units are millimetres; walls are 200 thick.”	모든 대화에 추가됩니다. 예: “단위는 밀리미터, 벽 두께는 200.”
+	Test connection	연결 테스트
+	Paste your API key	API 키를 붙여 넣으세요
+	Saved in the system keychain	시스템 키체인에 저장됨
+	Using {var} from the environment	환경 변수 {var} 사용 중
+	Not set	설정 안 됨
+	External AI apps (MCP)	외부 AI 앱(MCP)
+	Not available in the browser: AI apps connect to the desktop app.	브라우저에서는 사용할 수 없습니다. AI 앱은 데스크톱 앱에 연결됩니다.
+	Let AI apps on this computer control Cadino	이 컴퓨터의 AI 앱이 Cadino를 제어하도록 허용
+	Port	포트
+	While this is on, any program on this computer can control Cadino.	켜져 있는 동안에는 이 컴퓨터의 모든 프로그램이 Cadino를 제어할 수 있습니다.
+	cadcraft-cli was not found next to Cadino. Build or install it in the same folder for these to work.	Cadino와 같은 폴더에 cadcraft-cli가 없습니다. 아래 설정을 쓰려면 같은 폴더에 빌드하거나 설치하세요.
+	ChatGPT's app only connects to remote HTTPS servers: use Codex CLI, or the built-in assistant with OpenAI GPT.	ChatGPT 앱은 원격 HTTPS 서버에만 연결됩니다. Codex CLI를 쓰거나 내장 어시스턴트에서 OpenAI GPT를 선택하세요.
+	Listening on 127.0.0.1:{port}	127.0.0.1:{port}에서 연결 대기 중
+	Port {port} is in use	{port}번 포트가 사용 중입니다
+	Port {port} could not be opened: {error}	{port}번 포트를 열 수 없습니다: {error}
+	Draw a 1400 × 700 mm desk top in plan with R30 corners, a Ø60 cable hole and dimensions.	평면에 1400 × 700 mm 책상 상판을 그려 주세요. 모서리는 R30, Ø60 배선 구멍과 치수도 넣어 주세요.
+	Draft a 3600 × 3000 mm bedroom plan with 100 mm walls, a 900 mm door opening and dimensions.	벽 두께 100 mm, 900 mm 문 개구부가 있는 3600 × 3000 mm 침실 평면도를 치수와 함께 그려 주세요.
+	Model a 4-door wardrobe 1200 × 600 × 2000 mm with 18 mm panels, then make a cut list.	18 mm 패널로 1200 × 600 × 2000 mm 4도어 옷장을 모델링하고 재단 목록을 만들어 주세요.
+	Model a lounge chair seat lofted from three cross-sections, about 600 mm wide.	단면 세 개를 로프트해서 폭 약 600 mm의 라운지 의자 좌판을 모델링해 주세요.
+	Model a turned table leg 720 mm tall by revolving a profile.	프로파일을 회전시켜 높이 720 mm의 터닝 테이블 다리를 모델링해 주세요.
+	Make front, top and right drawings of the model with dimensions on a layout.	모델의 정면도, 평면도, 우측면도를 치수와 함께 배치에 만들어 주세요.
+	Check the current drawing: units, layers and what is in it.	현재 도면을 확인해 주세요: 단위, 도면층, 그리고 무엇이 들어 있는지.
+	Render the model from the front, the right and in iso, and tell me what looks wrong.	모델을 정면, 우측면, 등각 뷰에서 렌더링하고 이상해 보이는 점을 알려 주세요.
+@plural	{n} model	모델 {n}개

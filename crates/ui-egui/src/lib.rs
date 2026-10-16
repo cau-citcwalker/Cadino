@@ -8,7 +8,10 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+pub mod ai_settings;
 pub mod animation;
+// The AI Assistant palette.
+pub mod assistant;
 pub mod autosave;
 pub mod bedit;
 pub mod canvas;
@@ -49,7 +52,7 @@ pub mod vpscale;
 
 pub mod exchange;
 
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 
 use cadcraft_engine::Session;
 use serde::{Deserialize, Serialize};
@@ -212,6 +215,12 @@ pub struct CadApp {
     pub opening: opening::Opening,
     pub integrated_titlebar: bool,
     control_rx: Option<Receiver<ControlRequest>>,
+    /// The control server Options ▸ AI turns on for external AI apps, beside `--control`'s.
+    mcp_rx: Option<Receiver<ControlRequest>>,
+    /// The AI Assistant's own control channel: its tools' requests, served like the control
+    /// channel's ([`assistant::InApp`]).
+    assistant_tx: Sender<ControlRequest>,
+    assistant_rx: Receiver<ControlRequest>,
     pending_shots: Vec<(u64, Option<String>, std::sync::mpsc::Sender<Value>, f64)>,
     queued_shots: Vec<(u64, f64, u32)>,
     shot_token: u64,
@@ -246,10 +255,15 @@ pub struct CadApp {
     pub hatch_dlg: Option<hatchdlg::HatchDlgState>,
     /// The Edit Block Definition dialog ([`bedit`]).
     pub bedit: bedit::State,
+    /// Options ▸ AI ([`ai_settings`]).
+    pub ai: ai_settings::AiSettings,
+    /// The AI Assistant palette's chat ([`assistant`]).
+    pub assistant: assistant::Assistant,
 }
 
 impl CadApp {
     pub fn new(session: Session, services: Services) -> Self {
+        let (assistant_tx, assistant_rx) = std::sync::mpsc::channel();
         CadApp {
             system_languages: Vec::new(),
             system_animations: None,
@@ -264,6 +278,9 @@ impl CadApp {
             opening: opening::Opening::default(),
             integrated_titlebar: false,
             control_rx: None,
+            mcp_rx: None,
+            assistant_tx,
+            assistant_rx,
             pending_shots: Vec::new(),
             queued_shots: Vec::new(),
             shot_token: 0,
@@ -284,6 +301,8 @@ impl CadApp {
             gpu_notice: None,
             hatch_dlg: None,
             bedit: bedit::State::default(),
+            ai: ai_settings::AiSettings::default(),
+            assistant: assistant::Assistant::default(),
         }
     }
 
@@ -390,6 +409,10 @@ impl CadApp {
         if !self.ui.recent_files.is_empty() {
             prefs["recentFiles"] = json!(self.ui.recent_files);
         }
+        let ai = self.ai.to_json();
+        if ai != ai_settings::AiSettings::default().to_json() {
+            prefs["ai"] = ai;
+        }
         prefs.to_string()
     }
 
@@ -416,6 +439,9 @@ impl CadApp {
         }
         if let Some(files) = v.get("recentFiles").and_then(Value::as_array) {
             self.ui.recent_files = files.iter().filter_map(Value::as_str).filter(|p| !p.is_empty()).take(RECENT_FILES).map(str::to_string).collect();
+        }
+        if let Some(a) = v.get("ai") {
+            self.ai.load(a);
         }
     }
 
@@ -572,6 +598,7 @@ impl CadApp {
             animation::unsmooth_scroll(ctx);
         }
         self.drain_control(ctx);
+        self.assistant.poll();
         self.finish_opening();
         self.opening.show(ctx);
         if !self.synthetic.is_empty() {
@@ -655,8 +682,12 @@ impl CadApp {
     }
 
     fn drain_control(&mut self, ctx: &egui::Context) {
-        let Some(rx) = self.control_rx.take() else { return };
-        while let Ok(req) = rx.try_recv() {
+        // The assistant's requests, then the control channels'.
+        let mut queued: Vec<ControlRequest> = self.assistant_rx.try_iter().collect();
+        for rx in self.control_rx.iter().chain(&self.mcp_rx) {
+            queued.extend(rx.try_iter());
+        }
+        for req in queued {
             // Timed out while queued: the client was told it did not run (#345).
             if !req.begin() {
                 continue;
@@ -675,7 +706,6 @@ impl CadApp {
             }
             ctx.request_repaint();
         }
-        self.control_rx = Some(rx);
     }
 
     fn issue_screenshots(&mut self, ctx: &egui::Context) {

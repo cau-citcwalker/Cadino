@@ -4,7 +4,8 @@
 //!
 //! `--control <port>` (or `CADCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control server:
 //! `{"id":1,"method":"cmdline.input","params":{"text":"circle 0,0 5"}}` → `{"id":1,"ok":true,…}`.
-//! See `cadcraft_ui_egui::control` for the methods.
+//! See `cadcraft_ui_egui::control` for the methods. Options ▸ AI can turn on another one
+//! for external AI apps ([`control_server::Switch`]).
 //!
 //! `CADCRAFT_VSYNC=1` presents with vsync on Linux/BSD, where the default is the low-latency
 //! present mode (`CADCRAFT_VSYNC=0` selects that elsewhere); see `cadcraft_ui_egui::gpu::surface_config`.
@@ -37,6 +38,8 @@ struct App {
     system_animations: system_animations::SystemAnimations,
     workspace: workspace::Workspace,
     workspace_error: Option<String>,
+    /// The control server Options ▸ AI turns on, beside `--control`'s.
+    control_switch: control_server::Switch,
     #[cfg(target_os = "macos")]
     native_menu: Option<native_menu::NativeMenu>,
 }
@@ -77,6 +80,7 @@ impl eframe::App for App {
         }
         self.cad.system_animations = self.system_animations.current();
         self.cad.logic(ctx);
+        self.control_switch.reconcile(&mut self.cad, ctx);
         self.spacemouse.poll(&mut self.cad, ctx);
         self.persist_workspace(false);
         if std::mem::take(&mut self.cad.quit_requested) {
@@ -354,8 +358,10 @@ fn main() -> eframe::Result {
                 app.set_wgpu(rs, eframe::egui_wgpu::depth_format_from_bits(DEPTH_BITS, STENCIL_BITS));
             }
             if let Some(port) = control_port {
-                let rx = control_server::start(port, cc.egui_ctx.clone());
-                app = app.with_control(rx);
+                match control_server::start(port, cc.egui_ctx.clone()) {
+                    Ok((_server, rx)) => app = app.with_control(rx),
+                    Err(e) => log::error!("control server failed to bind 127.0.0.1:{port}: {e}"),
+                }
             }
             if sample {
                 let _ = app.run("ui.sample", serde_json::json!({}));
@@ -377,6 +383,7 @@ fn main() -> eframe::Result {
                 spacemouse: spacemouse::SpaceMouse::start(cc.egui_ctx.clone()),
                 workspace,
                 workspace_error,
+                control_switch: control_server::Switch::default(),
                 #[cfg(target_os = "macos")]
                 native_menu: None,
             }))

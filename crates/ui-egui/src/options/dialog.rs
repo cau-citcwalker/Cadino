@@ -12,13 +12,14 @@ use crate::animation::AnimationPref;
 use crate::theme::{ThemePref, Tokens};
 
 /// The tabs: (id in the dialog name, label).
-pub(super) const TABS: [(&str, &str); 6] = [
+pub(super) const TABS: [(&str, &str); 7] = [
     ("display", "Display"),
     ("files", "Open and Save"),
     ("drafting", "Drafting"),
     ("selection", "Selection"),
     ("preferences", "User Preferences"),
     ("profiles", "Profiles"),
+    ("ai", "AI"),
 ];
 
 const WIDTH: f32 = 580.0;
@@ -57,6 +58,7 @@ pub fn dialog(app: &mut CadApp, ctx: &egui::Context, name: &str, open: &mut bool
                 "selection" => selection(app, ui, &mut changes),
                 "preferences" => preferences(app, ui, &mut changes),
                 "profiles" => profiles(app, ui, &mut changes),
+                "ai" => super::ai::tab(app, ui, &mut changes),
                 _ => display(app, ui, &mut changes),
             }
             // The same height on every tab, so switching tabs doesn't move the buttons.
@@ -85,11 +87,11 @@ pub fn dialog(app: &mut CadApp, ctx: &egui::Context, name: &str, open: &mut bool
     }
 }
 
-fn grid(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn grid(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
     egui::Grid::new(id).num_columns(2).spacing(vec2(14.0, 8.0)).show(ui, add);
 }
 
-fn hint(ui: &mut egui::Ui, text: &str) {
+pub(super) fn hint(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).small().color(Tokens::get().text_dim));
 }
 
@@ -363,7 +365,7 @@ fn selection(app: &CadApp, ui: &mut egui::Ui, changes: &mut Map<String, Value>) 
 /// Whether the Visual Effect Settings window is open (egui temp data).
 const VISUAL_EFFECTS: &str = "cc_options_visual_effects";
 
-fn heading(ui: &mut egui::Ui, text: &str) {
+pub(super) fn heading(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).strong());
 }
 

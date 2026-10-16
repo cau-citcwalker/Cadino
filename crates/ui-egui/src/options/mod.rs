@@ -21,6 +21,17 @@
 //! | `modelBackground`, `paperBackground` | `"#rrggbb"`, or `null` for the default |
 //! | `selectionColor` | the colour selected objects are highlighted in: `"#rrggbb"`, or `null` for the theme's |
 //! | `snapMarkerSize` | object snap marker size in points, 5–31 |
+//! | `aiProvider` | the built-in assistant's provider: `"anthropic"`, `"openai"` or `"custom"` (an OpenAI-compatible server, usually a local model) |
+//! | `aiModel` | the chosen provider's model, e.g. `"claude-opus-5-5"`; empty: the provider's default |
+//! | `aiBaseUrl` | the custom provider's server, `"http://…"` or `"https://…"` (default Ollama's `"http://localhost:11434/v1"`) |
+//! | `aiEffort` | Claude's thinking effort: `"low"`, `"medium"`, `"high"`, `"xhigh"` or `"max"` |
+//! | `aiCustomInstructions` | added to the assistant's instructions, at most 8000 characters |
+//! | `aiAllowFiles` | let the assistant open, save and export files |
+//! | `mcpEnabled` | run the loopback control server external AI apps (MCP) connect to |
+//! | `mcpPort` | its port, 1024–65535 (default 7979) |
+//!
+//! API keys are never part of OPTIONS: Options ▸ AI saves them in the system keychain. The AI
+//! settings are kept with the interface prefs ([`crate::ai_settings`]); `reset` leaves them.
 //!
 //! SAVETIME and SAVEFILEPATH are the engine's autosave settings, kept with the autosave state
 //! rather than in the profile.
@@ -29,6 +40,7 @@
 //! [`CadApp::profile_json`] under [`PROFILE_KEY`] next to the interface prefs and restores it with
 //! [`CadApp::load_profile`].
 
+mod ai;
 mod dialog;
 
 pub use dialog::dialog;
@@ -37,6 +49,7 @@ use egui::Color32;
 use serde_json::{Map, Value, json};
 
 use crate::CadApp;
+use crate::ai_settings::{self, AiSettings};
 use crate::animation::AnimationPref;
 use crate::theme::{self, ThemePref};
 
@@ -196,6 +209,24 @@ fn parse_ui(key: &str, v: &Value, c: &mut UiChanges) -> Result<bool, String> {
     Ok(true)
 }
 
+/// An `ai…` or `mcp…` key, set on `ai` (a copy, kept only when the whole call is valid).
+fn parse_ai(key: &str, v: &Value, ai: &mut AiSettings) -> Result<bool, String> {
+    match key {
+        "aiProvider" => ai.provider = ai_settings::provider(v).ok_or("aiProvider must be anthropic, openai or custom")?,
+        "aiModel" => *ai.model_mut() = ai_settings::model(v).ok_or("aiModel must be a model name of at most 200 characters")?,
+        "aiBaseUrl" => ai.custom_base_url = ai_settings::base_url(v).ok_or("aiBaseUrl must start with http:// or https://")?,
+        "aiEffort" => ai.effort = ai_settings::effort(v).ok_or("aiEffort must be low, medium, high, xhigh or max")?,
+        "aiCustomInstructions" => {
+            ai.custom_instructions = ai_settings::instructions(v).ok_or("aiCustomInstructions must be text of at most 8000 characters")?
+        }
+        "aiAllowFiles" => ai.allow_files = v.as_bool().ok_or("aiAllowFiles must be true or false")?,
+        "mcpEnabled" => ai.mcp_enabled = v.as_bool().ok_or("mcpEnabled must be true or false")?,
+        "mcpPort" => ai.mcp_port = ai_settings::port(v).ok_or("mcpPort must be a whole number from 1024 to 65535")?,
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
 /// The interface preferences as the JSON form reports them.
 fn ui_json(app: &CadApp) -> Map<String, Value> {
     let o = &app.options;
@@ -214,6 +245,15 @@ fn ui_json(app: &CadApp) -> Map<String, Value> {
     m.insert("SAVETIME".into(), json!(cadcraft_engine::autosave::savetime()));
     m.insert("SAVEFILEPATH".into(), json!(cadcraft_engine::autosave::savefilepath()));
     m.insert("timeSensitiveRightClick".into(), json!(o.time_sensitive_right_click));
+    let ai = &app.ai;
+    m.insert("aiProvider".into(), json!(ai.provider));
+    m.insert("aiModel".into(), json!(ai.model()));
+    m.insert("aiBaseUrl".into(), json!(ai.custom_base_url));
+    m.insert("aiEffort".into(), json!(ai.effort));
+    m.insert("aiCustomInstructions".into(), json!(ai.custom_instructions));
+    m.insert("aiAllowFiles".into(), json!(ai.allow_files));
+    m.insert("mcpEnabled".into(), json!(ai.mcp_enabled));
+    m.insert("mcpPort".into(), json!(ai.mcp_port));
     m
 }
 
@@ -230,9 +270,14 @@ pub fn report(app: &CadApp) -> Value {
 fn run_json(app: &mut CadApp, params: &Value) -> Result<Value, String> {
     let Some(obj) = params.as_object() else { return Err("options: expected an object".into()) };
     let mut ui = UiChanges::default();
+    let mut ai = app.ai.clone();
+    // The provider first: aiModel sets the chosen provider's model.
+    if let Some(p) = obj.get("aiProvider") {
+        parse_ai("aiProvider", p, &mut ai)?;
+    }
     let mut engine = Map::new();
     for (k, v) in obj {
-        if !parse_ui(k, v, &mut ui)? {
+        if k != "aiProvider" && !parse_ai(k, v, &mut ai)? && !parse_ui(k, v, &mut ui)? {
             engine.insert(k.clone(), v.clone());
         }
     }
@@ -242,6 +287,7 @@ fn run_json(app: &mut CadApp, params: &Value) -> Result<Value, String> {
     if reset {
         reset_ui(app);
     }
+    app.ai = ai;
     if let Some(t) = ui.theme {
         app.ui.theme = t;
     }
@@ -371,11 +417,57 @@ mod tests {
     }
 
     #[test]
+    fn ai_options_change_together_or_not_at_all() {
+        use cadcraft_ai::ProviderKind;
+        let mut app = CadApp::new(cadcraft_engine::Session::empty(), crate::Services::default());
+        // aiModel goes to the provider chosen in the same call, whatever the key order.
+        let all = json!({
+            "aiModel": "gpt-5-mini", "aiProvider": "openai", "aiEffort": "low", "aiBaseUrl": "http://localhost:1234/v1",
+            "aiCustomInstructions": "Units are millimetres.", "aiAllowFiles": true, "mcpEnabled": true, "mcpPort": 8123,
+        });
+        let r = run_json(&mut app, &all).unwrap();
+        let ai = &app.ai;
+        assert_eq!((ai.provider, ai.openai_model.as_str(), ai.anthropic_model.as_str()), (ProviderKind::OpenAi, "gpt-5-mini", "claude-opus-5-5"));
+        assert_eq!(
+            (ai.effort.as_str(), ai.custom_base_url.as_str(), ai.custom_instructions.as_str()),
+            ("low", "http://localhost:1234/v1", "Units are millimetres.")
+        );
+        assert!(ai.allow_files && ai.mcp_enabled);
+        for (k, v) in all.as_object().unwrap() {
+            assert_eq!(&r[k], v, "{k} is reported");
+        }
+        let before = app.ai.clone();
+        for bad in [
+            json!({"aiProvider": "gemini"}),
+            json!({"aiModel": "a\nb"}),
+            json!({"aiModel": "m".repeat(201)}),
+            json!({"aiBaseUrl": "file:///etc/passwd"}),
+            json!({"aiEffort": "extreme"}),
+            json!({"aiCustomInstructions": "x".repeat(8001)}),
+            json!({"aiAllowFiles": "yes"}),
+            json!({"mcpEnabled": 1}),
+            json!({"mcpPort": 80}),
+            json!({"mcpPort": 65536}),
+            json!({"mcpPort": "7979"}),
+            json!({"apiKey": "sk-secret"}),
+            json!({"PICKBOX": "big"}),
+        ] {
+            // Beside a good change, which must not happen either.
+            let mut call = bad.clone();
+            call[if bad.get("mcpEnabled").is_some() { "aiAllowFiles" } else { "mcpEnabled" }] = json!(false);
+            assert!(run_json(&mut app, &call).is_err(), "{bad}");
+            assert_eq!(app.ai, before, "{bad} changed nothing");
+        }
+        let report = report(&app).to_string();
+        assert!(!report.contains("apiKey") && !report.contains("sk-"), "{report}");
+    }
+
+    #[test]
     fn dialog_labels_have_ukrainian_translations() {
-        let sources = [include_str!("dialog.rs")];
+        let sources = [include_str!("dialog.rs"), include_str!("ai.rs")];
         let mut missing: Vec<String> = dialog::TABS.iter().filter(|(_, l)| crate::i18n::tr("uk", l) == *l).map(|(_, l)| l.to_string()).collect();
         for source in sources {
-            for rest in source.split("crate::tl!(").skip(1) {
+            for rest in source.split("crate::tl!(").skip(1).chain(source.split("crate::tf!(").skip(1)) {
                 let Some(text) = rest.strip_prefix('"').and_then(|r| r.split('"').next()) else { continue };
                 // File format names read the same in every language.
                 if crate::i18n::tr("uk", text) == text && !["DXF", "DWG"].contains(&text) {

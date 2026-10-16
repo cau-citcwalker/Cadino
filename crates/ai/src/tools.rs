@@ -1,12 +1,19 @@
-//! MCP tool definitions and dispatch.
+//! MCP tool definitions and dispatch, shared by the MCP server and the built-in assistant.
 
 use serde_json::{Value, json};
 
-use crate::backend::Backend;
+/// Something that answers control-channel methods (`engine.execute`, `cmdline.input`,
+/// `drawing.inspect`, `ui.render`…). See `cadcraft_ui_egui::control` for the full list.
+pub trait Backend {
+    fn call(&mut self, method: &str, params: Value) -> Result<Value, String>;
+    /// True when a real UI is attached (`ui.screenshot` works).
+    fn has_ui(&self) -> bool;
+    fn describe(&self) -> String;
+}
 
 pub fn tool_definitions(has_ui: bool) -> Value {
     let mut tools = vec![
-        json!({"name": "command_line", "description": "Type one line at the CADCraft command line, exactly as a user would at an AutoCAD-style prompt. Starts commands by name or alias (LINE, L, CIRCLE, C, PLINE, RECTANG, MOVE, TRIM, OFFSET, ZOOM…) and answers the active prompt: points `x,y`, relative `@dx,dy`, polar `@dist<angle`, distances, keywords (e.g. `c` for Close), empty text = Enter. Spaces act as Enter, so `circle 0,0 5` works in one call. Returns the new prompt and command-line output, and `error` when the line was refused.",
+        json!({"name": "command_line", "description": "Type one line at the Cadino command line, exactly as a user would at an AutoCAD-style prompt. Starts commands by name or alias (LINE, L, CIRCLE, C, PLINE, RECTANG, MOVE, TRIM, OFFSET, ZOOM…) and answers the active prompt: points `x,y`, relative `@dx,dy`, polar `@dist<angle`, distances, keywords (e.g. `c` for Close), empty text = Enter. Spaces act as Enter, so `circle 0,0 5` works in one call. Returns the new prompt and command-line output, and `error` when the line was refused.",
             "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}),
         json!({"name": "script", "description": "Run a multi-line script (like an AutoCAD .scr file): one or more inputs per line, blank line = Enter.",
             "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}),
@@ -20,9 +27,10 @@ pub fn tool_definitions(has_ui: bool) -> Value {
             "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "layer": {"type": "string"},
                 "window": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}, "minItems": 2, "maxItems": 2},
                 "crossing": {"type": "boolean"}, "limit": {"type": "integer", "minimum": 0}, "offset": {"type": "integer", "minimum": 0}}}}),
-        json!({"name": "render", "description": "Render the active drawing to a PNG and return it as an image: fitted to the extents by default, or just the area `window` [[x0,y0],[x1,y1]] (drawing units), e.g. one sheet or one room of a large drawing. With a window and no size the image is 1600 px wide with the window's shape.",
+        json!({"name": "render", "description": "Render the active drawing to a PNG and return it as an image: fitted to the extents by default, or just the area `window` [[x0,y0],[x1,y1]] (drawing units), e.g. one sheet or one room of a large drawing. With a window and no size the image is 1600 px wide with the window's shape. `view` looks at model space from a named direction (plan/top, front from -Y, back, left, right, iso = south-west isometric, iso_se, iso_ne, iso_nw), shaded with edges, without changing the drawing's view; `current` (default) renders what the canvas shows.",
             "inputSchema": {"type": "object", "properties": {"width": {"type": "integer", "minimum": 16}, "height": {"type": "integer", "minimum": 16}, "fit": {"type": "boolean"},
                 "window": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}, "minItems": 2, "maxItems": 2},
+                "view": {"type": "string", "enum": ["current", "plan", "top", "front", "back", "left", "right", "iso", "iso_se", "iso_ne", "iso_nw"]},
                 "path": {"type": "string"}}}}),
         json!({"name": "find_text", "description": "Read the drawing's texts: TEXT, MTEXT (formatting removed), block attributes and multileaders, each with its text, insertion point `at`, height, rotation, style, layer and handle. Filter by `contains` (any case), `layer` and/or `window` [[x0,y0],[x1,y1]] around the insertion points; page with offset and limit (default 200). Use it to find room names, sheet titles and notes without reading all the geometry.",
             "inputSchema": {"type": "object", "properties": {"contains": {"type": "string"}, "layer": {"type": "string"},
@@ -35,7 +43,7 @@ pub fn tool_definitions(has_ui: bool) -> Value {
         json!({"name": "cancel", "description": "Press Escape: cancel the running command (or clear the selection).", "inputSchema": {"type": "object", "properties": {}}}),
     ];
     if has_ui {
-        tools.push(json!({"name": "screenshot", "description": "Screenshot the CADCraft window (PNG).", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}}}));
+        tools.push(json!({"name": "screenshot", "description": "Screenshot the Cadino window (PNG).", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}}}));
         tools.push(json!({"name": "ui_inspect", "description": "UI state: panels, canvas rect, view, cursor and snap, performance.", "inputSchema": {"type": "object", "properties": {}}}));
         tools.push(json!({"name": "ui_click", "description": "Click in the drawing area at world coordinates (or screen with space:\"screen\"). Right button = Enter.", "inputSchema": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}, "space": {"type": "string"}, "button": {"type": "string"}}, "required": ["x", "y"]}}));
     }
@@ -50,7 +58,7 @@ fn err_text(e: &str) -> Value {
     json!({"content": [{"type": "text", "text": e}], "isError": true})
 }
 
-/// Whether `v` fits the subset of JSON Schema the tool definitions use: `type`, `items`,
+/// Whether `v` fits the subset of JSON Schema the tool definitions use: `type`, `enum`, `items`,
 /// `minItems`, `maxItems` and `minimum`.
 fn fits(v: &Value, schema: &Value) -> bool {
     let typed = match schema["type"].as_str() {
@@ -65,6 +73,7 @@ fn fits(v: &Value, schema: &Value) -> bool {
     };
     let len = v.as_array().map(Vec::len);
     typed
+        && schema["enum"].as_array().is_none_or(|e| e.contains(v))
         && schema["minimum"].as_f64().is_none_or(|m| v.as_f64().is_none_or(|f| f >= m))
         && schema["minItems"].as_u64().is_none_or(|m| len.is_none_or(|n| n as u64 >= m))
         && schema["maxItems"].as_u64().is_none_or(|m| len.is_none_or(|n| n as u64 <= m))

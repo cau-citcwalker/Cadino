@@ -4,19 +4,11 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
+pub use cadcraft_ai::tools::Backend;
 use cadcraft_engine::Session;
 use serde_json::{Value, json};
 
-/// Something that answers control-channel methods (`engine.execute`, `cmdline.input`,
-/// `drawing.inspect`, `ui.render`…). See `cadcraft_ui_egui::control` for the full list.
-pub trait Backend {
-    fn call(&mut self, method: &str, params: Value) -> Result<Value, String>;
-    /// True when a real UI is attached (`ui.screenshot` works).
-    fn has_ui(&self) -> bool;
-    fn describe(&self) -> String;
-}
-
-/// A running CADCraft app reached through its loopback control port.
+/// A running Cadino app reached through its loopback control port.
 pub struct Remote {
     addr: String,
     conn: Option<(BufReader<TcpStream>, TcpStream)>,
@@ -60,7 +52,7 @@ impl Remote {
         Err(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
             format!(
-                "CADCraft was opened but its control port {} did not answer; if it was already open without the port, quit it and try again",
+                "Cadino was opened but its control port {} did not answer; if it was already open without the port, quit it and try again",
                 self.addr
             ),
         ))
@@ -126,19 +118,19 @@ fn not_open(addr: &str, e: std::io::Error) -> std::io::Error {
     std::io::Error::new(
         e.kind(),
         format!(
-            "CADCraft is not answering at {addr} ({e}). Open CADCraft with its control port (`--control PORT` or CADCRAFT_CONTROL_PORT), then try again"
+            "Cadino is not answering at {addr} ({e}). Open Cadino with its control port (`--control PORT` or CADCRAFT_CONTROL_PORT), then try again"
         ),
     )
 }
 
-/// Open the app with the control port of `addr` (macOS: `open -a CADCraft`).
+/// Open the app with the control port of `addr` (macOS: `open -a CADCraft`, the bundle's name).
 fn launch_app(addr: &str) -> std::io::Result<()> {
     let port = addr.rsplit(':').next().filter(|p| p.parse::<u16>().is_ok()).ok_or_else(|| std::io::Error::other(format!("no port in {addr}")))?;
     if cfg!(target_os = "macos") {
         let ok = std::process::Command::new("open").args(["-a", "CADCraft", "--args", "--control", port]).status()?.success();
-        if ok { Ok(()) } else { Err(std::io::Error::other("could not open CADCraft (is it in Applications?)")) }
+        if ok { Ok(()) } else { Err(std::io::Error::other("could not open Cadino (is it in Applications?)")) }
     } else {
-        Err(std::io::Error::other(format!("CADCraft is not running; start it with `cadcraft --control {port}`")))
+        Err(std::io::Error::other(format!("Cadino is not running; start it with `cadcraft --control {port}`")))
     }
 }
 
@@ -167,10 +159,10 @@ impl Backend for Remote {
             Ok(r) => r,
             // Resend only when the request cannot have been applied. After a sent mutation with no reply the outcome is unknown, and
             // resending could apply it twice (for example two circles from one call), so report that instead.
-            Err((_, sent)) if !sent || is_read_only(method) => self.roundtrip(&line).map_err(|(e, _)| format!("CADCraft at {}: {e}", self.addr))?,
+            Err((_, sent)) if !sent || is_read_only(method) => self.roundtrip(&line).map_err(|(e, _)| format!("Cadino at {}: {e}", self.addr))?,
             Err((e, _)) => {
                 return Err(format!(
-                    "CADCraft at {}: {e}; the reply was lost, so `{method}` may or may not have been applied. Inspect the drawing first",
+                    "Cadino at {}: {e}; the reply was lost, so `{method}` may or may not have been applied. Inspect the drawing first",
                     self.addr
                 ));
             }
@@ -182,7 +174,7 @@ impl Backend for Remote {
             let e = v.get("error").and_then(Value::as_str).unwrap_or("error");
             // A timeout says whether the request can still have run (#345).
             Err(match v.get("state").and_then(Value::as_str) {
-                Some("not-run") => format!("{e}: CADCraft did not start `{method}` and won't; it is safe to send again"),
+                Some("not-run") => format!("{e}: Cadino did not start `{method}` and won't; it is safe to send again"),
                 Some("may-have-run") => format!("{e}: `{method}` may or may not have been applied. Inspect the drawing first"),
                 _ => e.to_string(),
             })
@@ -192,7 +184,7 @@ impl Backend for Remote {
         true
     }
     fn describe(&self) -> String {
-        format!("connected to CADCraft at {}", self.addr)
+        format!("connected to Cadino at {}", self.addr)
     }
 }
 
@@ -206,7 +198,7 @@ const HEADLESS_METHODS: &[(&str, &str, &str)] = &[
     ("engine.execute", "{command, params}", "Run any command with JSON parameters. Never opens a dialog."),
     ("engine.commands", "", "Every command: id, label, menu path, shortcut, aliases, params doc, enabled."),
     ("drawing.inspect", "{entities?, limit?}", "Drawing summary and entities with handles and geometry."),
-    ("ui.render", "{path?, width?, height?, fit?}", "Render the drawing; replies pngBase64."),
+    ("ui.render", "{path?, width?, height?, fit?, window?, view?}", "Render the drawing (a named view shaded with edges); replies pngBase64."),
     ("app.open", "{path}", "Open a drawing."),
     ("app.save", "{path?}", "Save the drawing (Save As with a path)."),
     ("control.methods", "", "This list."),
@@ -306,20 +298,27 @@ impl Backend for Headless {
                 let h = p.get("height").and_then(Value::as_f64).unwrap_or(1000.0).clamp(16.0, 8192.0) as u32;
                 let st = s.state().map_err(|e| e.to_string())?;
                 let window = render_window(&p);
-                // Model space as the canvas shows it: its view direction and visual style.
+                // A named view looks at model space from that direction, shaded with edges;
+                // otherwise the space as the canvas shows it: its view direction and visual style.
+                let named = match str_p("view").filter(|v| !v.eq_ignore_ascii_case("current")) {
+                    Some(v) => Some(cadcraft_engine::geom::ViewDir::named(&v).ok_or_else(|| format!("unknown view `{v}`"))?),
+                    None => None,
+                };
+                let space = if named.is_some() { cadcraft_engine::doc::Space::Model } else { st.space.clone() };
                 let opts = cadcraft_render::Options {
                     view: window,
                     transparency: s.settings.transparency_display,
-                    view_dir: if st.space.is_paper() { Default::default() } else { st.view_dir },
-                    shaded: st.shaded,
+                    view_dir: named.unwrap_or(if st.space.is_paper() { Default::default() } else { st.view_dir }),
+                    shaded: named.is_some() || st.shaded,
+                    edges: named.is_some() || st.shaded_edges,
                     ..Default::default()
                 };
-                let list = cadcraft_render::build(&st.doc, &st.space, &opts);
+                let list = cadcraft_render::build(&st.doc, &space, &opts);
                 let fit = p.get("fit").and_then(Value::as_bool).unwrap_or(true);
                 let side = |k: &str| p.get(k).and_then(Value::as_f64).map(|x| x as u32);
                 let view = if let Some(win) = &window {
                     cadcraft_render::raster::View::of_window(win, side("width"), side("height"))
-                } else if fit {
+                } else if fit || named.is_some() {
                     cadcraft_render::raster::View::fit(&list.bounds, w, h, 0.05)
                 } else {
                     let v = st.view();
@@ -354,7 +353,7 @@ impl Backend for Headless {
         false
     }
     fn describe(&self) -> String {
-        "headless CADCraft session".into()
+        "headless Cadino session".into()
     }
 }
 

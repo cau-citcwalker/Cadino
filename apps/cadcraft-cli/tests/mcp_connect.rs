@@ -75,7 +75,7 @@ fn connect_with_address_routes_to_that_endpoint() {
     assert_eq!(req["method"], "ui.inspect");
     let r = replies(&out);
     let instructions = r.iter().find(|v| v["id"] == 1).and_then(|v| v["result"]["instructions"].as_str()).unwrap_or_default();
-    assert!(instructions.contains(&format!("connected to CADCraft at {addr}")), "{instructions}");
+    assert!(instructions.contains(&format!("connected to Cadino at {addr}")), "{instructions}");
     let text = r.iter().find(|v| v["id"] == 2).and_then(|v| v["result"]["content"][0]["text"].as_str()).unwrap_or_default();
     assert!(text.contains("loopback"), "{r:?}");
 }
