@@ -1,19 +1,20 @@
-//! More 3D modelling (CAD-rhino): WEDGE, PYRAMID, LOFT, SWEEP, CHAMFEREDGE, SHELL, PLANESURF and
-//! SLICE. Shapes come from [`cadcraft_kernel`] as in `solids`; a surface is a [`Solid3d`] whose
+//! More 3D modelling (CAD-rhino): WEDGE, PYRAMID, LOFT, SWEEP, CHAMFEREDGE, SHELL, PLANESURF,
+//! SLICE, and the 3D transforms 3DMOVE, 3DROTATE, MIRROR3D and 3DSCALE. Shapes come from [`cadcraft_kernel`] as in `solids`; a surface is a [`Solid3d`] whose
 //! mesh is open. As AutoCAD's default DELOBJ does, the curves a solid is made from are erased and
 //! those a surface is made from stay.
 
 use std::collections::HashSet;
 
 use cadcraft_doc::{EntityKind, Handle};
-use cadcraft_geom::{EPS, Vec2, Vec3};
+use cadcraft_geom::{EPS, Mat4, Vec2, Vec3};
 use cadcraft_kernel::{Built, Curve, MAX_PYRAMID_SIDES, Primitive, Seg};
 use serde_json::{Value, json};
 
 use super::curves::{KW, handle_param, is_locked, pick_at};
 use super::machines::{SelOutcome, SelectPhase};
 use super::solids::{
-    Ask, BOX, ProfileM, ProfileOp, Q, add, box_corners, circle_path, curve_of, kernel, locked_err, or_skip, p3_req, per_solid, placed, solid, solids,
+    Ask, BOX, ProfileM, ProfileOp, Q, add, all_or_nothing, box_corners, circle_path, curve_of, kernel, locked_err, or_skip, p3, p3_req, p3_value,
+    per_solid, placed, reshape, solid, solids,
 };
 use super::*;
 use crate::{Accept, EngineError, Input, Interactive, Prompt, Result, Session, Step};
@@ -60,6 +61,26 @@ pub fn specs() -> Vec<CommandSpec> {
             .alias(&["sl"])
             .params("{handles?, point1: [x,y], point2: [x,y] (a vertical cutting plane), keep?: \"both\" | \"side\", side?: [x,y] (on the side to keep)}")
             .interactive(|_| Ok(Box::new(SliceM::default()))),
+        CommandSpec::new("3dmove", "3D Move", run_3dmove)
+            .menu(&["Modify", "3D Operations", "3D Move"])
+            .alias(&["3m"])
+            .params("{handles?, delta: [dx,dy,dz]}")
+            .interactive(|_| Ok(Box::new(Xform3M::new(Op3::Move)))),
+        CommandSpec::new("3drotate", "3D Rotate", run_3drotate)
+            .menu(&["Modify", "3D Operations", "3D Rotate"])
+            .alias(&["3r"])
+            .params("{handles?, axis: [[x,y,z],[x,y,z]], angle (degrees, counterclockwise looking from the second point toward the first)}")
+            .interactive(|_| Ok(Box::new(Xform3M::new(Op3::Rotate)))),
+        CommandSpec::new("mirror3d", "3D Mirror", run_mirror3d)
+            .menu(&["Modify", "3D Operations", "3D Mirror"])
+            .params(
+                "{handles?, plane: \"xy\" | \"yz\" | \"zx\", point?: [x,y,z] (on the plane; default the origin) | points: [p1,p2,p3], erase?: bool (default false: keep the source)}",
+            )
+            .interactive(|_| Ok(Box::new(Xform3M::new(Op3::Mirror)))),
+        CommandSpec::new("3dscale", "3D Scale", run_3dscale)
+            .menu(&["Modify", "3D Operations", "3D Scale"])
+            .params("{handles?, base: [x,y,z], factor}")
+            .interactive(|_| Ok(Box::new(Xform3M::new(Op3::Scale)))),
     ]
 }
 
@@ -92,13 +113,15 @@ fn hexes(hs: &[Handle]) -> Vec<String> {
     hs.iter().map(|h| h.hex()).collect()
 }
 
-/// The shape made from `from`, added in its space with its layer and other properties.
+/// The shape made from `from`, added in its space with its layer and other properties (and its
+/// part, when `from` is a solid).
 fn add_like(s: &mut Session, from: Handle, b: Built) -> Result<Handle> {
     let d = s.doc_mut()?;
-    let (Some(common), Some(space)) = (d.entity(from).map(|e| e.common.clone()), d.space_of(from)) else {
+    let (Some(mut e), Some(space)) = (d.entity(from).map(|e| (**e).clone()), d.space_of(from)) else {
         return Err(EngineError::Other("no such object".into()));
     };
-    Ok(d.add(&space, common, solid(b))?)
+    reshape(&mut e, b);
+    Ok(d.add(&space, e.common, e.kind)?)
 }
 
 fn type_name(s: &Session, h: Handle) -> String {
@@ -321,7 +344,7 @@ fn run_slice(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(o) = other {
             made.push(add_like(s, h, o)?.hex());
         }
-        s.doc_mut()?.modify_entity(h, |e| e.kind = solid(keep))?;
+        s.doc_mut()?.modify_entity(h, |e| reshape(e, keep))?;
         made.push(h.hex());
     }
     Ok(json!({ "sliced": n, "missed": xs.len() - n, "handles": made, "locked": all - xs.len() }))
@@ -562,6 +585,333 @@ impl Interactive for SliceM {
             (_, Input::Point(p)) => self.run(s, json!({ "keep": "side", "side": [p.x, p.y] })),
             (2, Input::Enter) => self.run(s, json!({})),
             (2, Input::Text(t) | Input::Keyword(t)) if is_kw(&t, "both") || is_kw(&t, "keep both sides") => self.run(s, json!({})),
+            _ => Ok(Step::Continue),
+        }
+    }
+}
+
+// ---------------- 3D transforms ----------------
+
+/// Applies `m` to the objects among `hs` (to copies of them with `copy`) through
+/// [`cadcraft_doc::Entity::transform3`]: a 3D solid composes it with its transform, lines, 3D
+/// polylines and points move their points, planar objects get the moved plane. Objects on locked
+/// layers are left alone; one that can't take the transform (a dimension turned out of the
+/// horizontal …) refuses the whole command.
+fn transform3(s: &mut Session, cmd: &str, hs: &[Handle], m: &Mat4, copy: bool) -> Result<Value> {
+    if !m.m.iter().flatten().all(|v| v.is_finite()) {
+        return Err(bad(cmd, "the transform is out of range"));
+    }
+    let mut changed = Vec::new();
+    let mut locked = 0usize;
+    for h in once(hs.to_vec()) {
+        let Some(mut e) = s.doc()?.entity(h).map(|e| (**e).clone()) else { continue };
+        if is_locked(s, h) {
+            locked += 1;
+            continue;
+        }
+        if !e.transform3(m) {
+            return Err(EngineError::Other(format!(
+                "{}: a {} can't take this transform (it would leave the plane it must stay in, or lose its shape).",
+                cmd.to_ascii_uppercase(),
+                e.kind.type_name().to_lowercase()
+            )));
+        }
+        changed.push((h, e));
+    }
+    if changed.is_empty() {
+        return Err(if locked > 0 { locked_err() } else { bad(cmd, "select objects") });
+    }
+    let out = all_or_nothing(s, |s| {
+        let mut out = Vec::with_capacity(changed.len());
+        let d = s.doc_mut()?;
+        for (h, e) in changed {
+            if copy {
+                let Some(space) = d.space_of(h) else { continue };
+                out.push(d.add(&space, e.common, e.kind)?.hex());
+            } else {
+                d.modify_entity(h, |x| *x = e)?;
+                out.push(h.hex());
+            }
+        }
+        Ok(out)
+    })?;
+    Ok(json!({ "handles": out, "locked": locked }))
+}
+
+fn run_3dmove(s: &mut Session, p: &Value) -> Result<Value> {
+    let hs = targets(s, p)?;
+    let d = p3(p, "delta").ok_or_else(|| bad("3dmove", "`delta` ([dx, dy] or [dx, dy, dz]) is required"))?;
+    transform3(s, "3dmove", &hs, &Mat4::translate(d), false)
+}
+
+/// Two 3D points from `[[x,y,z],[x,y,z]]`.
+fn axis_param(cmd: &str, p: &Value) -> Result<(Vec3, Vec3)> {
+    let pts: Option<Vec<Vec3>> = p.get("axis").and_then(Value::as_array).filter(|a| a.len() == 2).and_then(|a| a.iter().map(p3_value).collect());
+    match pts.as_deref() {
+        Some([a, b]) if (*b - *a).len() > EPS * (1.0 + a.len()) => Ok((*a, *b)),
+        Some(_) => Err(bad(cmd, "the axis needs two different points")),
+        None => Err(bad(cmd, "`axis` ([[x,y,z],[x,y,z]]) is required")),
+    }
+}
+
+fn run_3drotate(s: &mut Session, p: &Value) -> Result<Value> {
+    let hs = targets(s, p)?;
+    let (a, b) = axis_param("3drotate", p)?;
+    let angle = f64_req("3drotate", p, "angle")?;
+    transform3(s, "3drotate", &hs, &Mat4::rotate_about(a, b - a, angle.to_radians()), false)
+}
+
+fn run_mirror3d(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "mirror3d";
+    let hs = targets(s, p)?;
+    let (o, n) = match (p.get("plane").filter(|v| !v.is_null()), p.get("points").filter(|v| !v.is_null())) {
+        (Some(v), _) => {
+            let n = match v.as_str().map(str::to_ascii_lowercase).as_deref() {
+                Some("xy") => Vec3::Z,
+                Some("yz") => Vec3::new(1.0, 0.0, 0.0),
+                Some("zx" | "xz") => Vec3::new(0.0, 1.0, 0.0),
+                _ => return Err(bad(CMD, format!("`plane` is \"xy\", \"yz\" or \"zx\", not {v}"))),
+            };
+            let o = match p.get("point").filter(|v| !v.is_null()) {
+                Some(v) => p3_value(v).ok_or_else(|| bad(CMD, "`point` must be [x, y] or [x, y, z]"))?,
+                None => Vec3::ZERO,
+            };
+            (o, n)
+        }
+        (None, Some(v)) => {
+            let pts: Option<Vec<Vec3>> = v.as_array().filter(|a| a.len() == 3).and_then(|a| a.iter().map(p3_value).collect());
+            let Some([a, b, c]) = pts.as_deref() else { return Err(bad(CMD, "`points` must be three points [[x,y,z],[x,y,z],[x,y,z]]")) };
+            (*a, plane_normal(*a, *b, *c).ok_or_else(|| bad(CMD, "the three points of the mirror plane are on one line"))?)
+        }
+        (None, None) => return Err(bad(CMD, "give `plane` (\"xy\", \"yz\" or \"zx\") or `points` (three points)")),
+    };
+    transform3(s, CMD, &hs, &Mat4::mirror(o, n), !bool_or(p, "erase", false))
+}
+
+/// The unit normal of the plane through three points; `None` when they are on one line.
+fn plane_normal(a: Vec3, b: Vec3, c: Vec3) -> Option<Vec3> {
+    let n = (b - a).cross(c - a);
+    let reach = (b - a).len().max((c - a).len());
+    (n.len() > 1e-12 * reach * reach).then(|| n.normalized())
+}
+
+fn run_3dscale(s: &mut Session, p: &Value) -> Result<Value> {
+    let hs = targets(s, p)?;
+    let base = p3_req("3dscale", p, "base")?;
+    let f = size_param("3dscale", p, "factor", false)?.ok_or_else(|| bad("3dscale", "`factor` (number) is required"))?;
+    transform3(s, "3dscale", &hs, &Mat4::translate(base).mul(&Mat4::scale(Vec3::new(f, f, f))).mul(&Mat4::translate(-base)), false)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Op3 {
+    Move,
+    Rotate,
+    Mirror,
+    Scale,
+}
+
+/// 3DMOVE, 3DROTATE, MIRROR3D and 3DSCALE at the command line. Picked points take the height of
+/// the 3D object they snap to (`point_z`). A bad value is asked for again at its prompt; when the
+/// command fails at the end (an object can't take the transform), it starts again from the
+/// selection.
+/// ponytail: typed points are on the XY plane (the command line reads `x,y,z` as `x,y`); 3DMOVE's
+/// Displacement option takes `dx,dy,dz`, and the axis and plane keywords cover the rest until
+/// typed points carry z.
+struct Xform3M {
+    op: Op3,
+    sel: SelectPhase,
+    hs: Vec<Handle>,
+    pts: Vec<Vec3>,
+    /// An axis (3DROTATE) or a plane (MIRROR3D) chosen by keyword: its name and direction.
+    named: Option<(&'static str, Vec3)>,
+    displacement: bool,
+}
+
+impl Xform3M {
+    fn new(op: Op3) -> Self {
+        Xform3M { op, sel: SelectPhase::default(), hs: Vec::new(), pts: Vec::new(), named: None, displacement: false }
+    }
+    fn run(&mut self, s: &mut Session, id: &str, mut p: Value) -> Result<Step> {
+        p["handles"] = json!(hexes(&self.hs));
+        let r = run_json(s, id, p);
+        if r.is_err() {
+            *self = Xform3M::new(self.op);
+        }
+        r
+    }
+    /// The rotation axis once known: two points, or a point and a named axis.
+    fn axis(&self) -> Option<(Vec3, Vec3)> {
+        match (self.pts.as_slice(), self.named) {
+            ([a], Some((_, d))) => Some((*a, *a + d)),
+            ([a, b, ..], None) => Some((*a, *b)),
+            _ => None,
+        }
+    }
+    /// Whether the mirror plane is known.
+    fn plane_known(&self) -> bool {
+        (self.named.is_some() && self.pts.len() == 1) || self.pts.len() == 3
+    }
+}
+
+fn json3(p: Vec3) -> Value {
+    json!([p.x, p.y, p.z])
+}
+
+/// `dx,dy[,dz]` typed.
+fn parse3(t: &str) -> Option<Vec3> {
+    let parts: Vec<&str> = t.trim().trim_start_matches('@').split(',').collect();
+    let n = |i: usize| parts.get(i).and_then(|v| crate::units::parse_distance(v.trim()));
+    let v = match parts.len() {
+        2 => Vec3::new(n(0)?, n(1)?, 0.0),
+        3 => Vec3::new(n(0)?, n(1)?, n(2)?),
+        _ => return None,
+    };
+    v.is_finite().then_some(v)
+}
+
+impl Interactive for Xform3M {
+    fn name(&self) -> &'static str {
+        match self.op {
+            Op3::Move => "3DMOVE",
+            Op3::Rotate => "3DROTATE",
+            Op3::Mirror => "MIRROR3D",
+            Op3::Scale => "3DSCALE",
+        }
+    }
+    fn begin(&mut self, s: &mut Session) -> Result<Step> {
+        self.sel = SelectPhase::begin(s);
+        if self.sel.done {
+            self.hs = self.sel.picked.clone();
+        }
+        Ok(Step::Continue)
+    }
+    fn prompt(&self, _s: &Session) -> Prompt {
+        if self.hs.is_empty() {
+            return self.sel.prompt();
+        }
+        let base = self.pts.first().map(|p| p.xy());
+        let name = self.named.map_or("", |n| n.0);
+        match (self.op, self.pts.len()) {
+            (Op3::Move, _) if self.displacement => Prompt::new("Specify displacement (dx,dy,dz)", Accept::TEXT).default("0,0,0"),
+            (Op3::Move, 0) => Prompt::new("Specify base point", Accept::POINT).kw(&["Displacement"]).default("Displacement"),
+            (Op3::Move, _) => Prompt::new("Specify second point", Accept::POINT).base_opt(base),
+            (Op3::Rotate, _) if self.axis().is_some() => Prompt::new("Specify rotation angle", Accept::NUMBER),
+            (Op3::Rotate, 0) if self.named.is_some() => Prompt::new(format!("Specify a point on the {name} axis"), Accept::POINT).default("0,0,0"),
+            (Op3::Rotate, 0) => Prompt::new("Specify first point on axis", Accept::POINT).kw(&["Xaxis", "Yaxis", "Zaxis"]),
+            (Op3::Rotate, _) => Prompt::new("Specify second point on axis", Accept::POINT).base_opt(base),
+            (Op3::Mirror, _) if self.plane_known() => Prompt::new("Delete source objects?", Accept::TEXT).kw(&["Yes", "No"]).default("No"),
+            (Op3::Mirror, 0) if self.named.is_some() => Prompt::new(format!("Specify point on {name} plane"), Accept::POINT).default("0,0,0"),
+            (Op3::Mirror, 0) => Prompt::new("Specify first point of mirror plane (3 points)", Accept::POINT).kw(&["XY", "YZ", "ZX"]),
+            (Op3::Mirror, 1) => Prompt::new("Specify second point on mirror plane", Accept::POINT).base_opt(base),
+            (Op3::Mirror, _) => Prompt::new("Specify third point on mirror plane", Accept::POINT).base_opt(base),
+            (Op3::Scale, 0) => Prompt::new("Specify base point", Accept::POINT),
+            (Op3::Scale, _) => Prompt::new("Specify scale factor", Accept::NUMBER).base_opt(base),
+        }
+    }
+    fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        if matches!(i, Input::Cancel) {
+            return Ok(Step::Cancel);
+        }
+        if self.hs.is_empty() {
+            return feed(&mut self.sel, &mut self.hs, s, &i);
+        }
+        let z = s.point_z.filter(|z| z.is_finite()).unwrap_or(0.0);
+        let word = match &i {
+            Input::Text(t) | Input::Keyword(t) => t.trim().to_ascii_lowercase(),
+            _ => String::new(),
+        };
+        let typed = matches!(i, Input::Text(_) | Input::Keyword(_));
+        match (self.op, i) {
+            (Op3::Move, i) if self.displacement => match i {
+                Input::Enter => Ok(Step::Done),
+                Input::Text(t) => {
+                    let d = parse3(&t).ok_or_else(|| EngineError::Other("Requires dx,dy or dx,dy,dz.".into()))?;
+                    self.run(s, "3dmove", json!({ "delta": json3(d) }))
+                }
+                _ => Ok(Step::Continue),
+            },
+            (Op3::Move, Input::Enter) if self.pts.is_empty() => {
+                self.displacement = true;
+                Ok(Step::Continue)
+            }
+            (Op3::Move, _) if typed && self.pts.is_empty() && is_kw(&word, "displacement") => {
+                self.displacement = true;
+                Ok(Step::Continue)
+            }
+            (Op3::Move, Input::Point(p)) => {
+                let p = p.to3(z);
+                match self.pts.first() {
+                    Some(a) => self.run(s, "3dmove", json!({ "delta": json3(p - *a) })),
+                    None => {
+                        self.pts.push(p);
+                        Ok(Step::Continue)
+                    }
+                }
+            }
+            (Op3::Rotate, i) if self.axis().is_some() => {
+                let Input::Text(t) = i else { return Ok(Step::Continue) };
+                let angle = super::machines::number(&t).ok_or_else(|| EngineError::Other("Requires an angle.".into()))?;
+                let (a, b) = self.axis().unwrap_or_default();
+                self.run(s, "3drotate", json!({ "axis": [json3(a), json3(b)], "angle": angle }))
+            }
+            (Op3::Rotate | Op3::Mirror, Input::Enter) if self.pts.is_empty() && self.named.is_some() => {
+                self.pts.push(Vec3::ZERO);
+                Ok(Step::Continue)
+            }
+            (Op3::Rotate, _) if typed && self.pts.is_empty() => {
+                self.named = match word.chars().next() {
+                    Some('x') => Some(("X", Vec3::new(1.0, 0.0, 0.0))),
+                    Some('y') => Some(("Y", Vec3::new(0.0, 1.0, 0.0))),
+                    Some('z') => Some(("Z", Vec3::Z)),
+                    _ => self.named,
+                };
+                Ok(Step::Continue)
+            }
+            (Op3::Mirror, i) if self.plane_known() => {
+                let erase = match i {
+                    Input::Enter => false,
+                    _ if typed && is_kw(&word, "yes") => true,
+                    _ if typed && is_kw(&word, "no") => false,
+                    _ => return Ok(Step::Continue),
+                };
+                let p = match self.named {
+                    Some((n, _)) => {
+                        json!({ "plane": n.to_ascii_lowercase(), "point": json3(self.pts.first().copied().unwrap_or_default()), "erase": erase })
+                    }
+                    None => json!({ "points": self.pts.iter().map(|p| json3(*p)).collect::<Vec<_>>(), "erase": erase }),
+                };
+                self.run(s, "mirror3d", p)
+            }
+            (Op3::Mirror, _) if typed && self.pts.is_empty() => {
+                self.named = match word.as_str() {
+                    "xy" => Some(("XY", Vec3::Z)),
+                    "yz" => Some(("YZ", Vec3::new(1.0, 0.0, 0.0))),
+                    "zx" | "xz" => Some(("ZX", Vec3::new(0.0, 1.0, 0.0))),
+                    _ => self.named,
+                };
+                Ok(Step::Continue)
+            }
+            (Op3::Scale, Input::Text(t)) if !self.pts.is_empty() => {
+                let f = super::machines::number(&t)
+                    .filter(|f| f.is_finite() && *f > 0.0)
+                    .ok_or_else(|| EngineError::Other("Requires a positive number.".into()))?;
+                let base = self.pts.first().copied().unwrap_or_default();
+                self.run(s, "3dscale", json!({ "base": json3(base), "factor": f }))
+            }
+            (Op3::Scale, Input::Point(_)) if !self.pts.is_empty() => Ok(Step::Continue),
+            (_, Input::Point(p)) => {
+                let p = p.to3(z);
+                if self.pts.iter().any(|q| (p - *q).len() <= EPS) {
+                    return Err(EngineError::Other("The points must be different.".into()));
+                }
+                if let (Op3::Mirror, [a, b]) = (self.op, self.pts.as_slice())
+                    && plane_normal(*a, *b, p).is_none()
+                {
+                    return Err(EngineError::Other("The three points are on one line: specify a third point off it.".into()));
+                }
+                self.pts.push(p);
+                Ok(Step::Continue)
+            }
             _ => Ok(Step::Continue),
         }
     }

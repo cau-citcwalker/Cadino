@@ -101,25 +101,28 @@ pub fn specs() -> Vec<CommandSpec> {
 
 pub(crate) fn transform_entities(s: &mut Session, hs: &[Handle], m: &Mat3, copy: bool) -> Result<Vec<Handle>> {
     let d = s.doc_mut()?;
-    let mut out = Vec::new();
+    // Every object transformed first (objects in tilted planes move in 3D): one that can't take
+    // the transform refuses the command before anything changes.
+    let mut done = Vec::new();
     for h in hs {
-        let Some(sp) = d.space_of(*h) else { continue };
+        let (Some(sp), Some(e)) = (d.space_of(*h), d.entity(*h)) else { continue };
+        if !copy && d.layer(&e.common.layer).is_some_and(|l| l.locked) {
+            continue;
+        }
+        done.push((sp, super::helpers::transformed(e, m)?));
+    }
+    let mut out = Vec::new();
+    for (sp, mut ne) in done {
         if copy {
-            let Some(e) = d.entity(*h).map(|e| (**e).clone()) else { continue };
-            let nh = d.new_handle();
-            let mut ne = Entity { handle: nh, ..e };
-            ne.kind.transform(m);
+            ne.handle = d.new_handle();
             if let Some(st) = d.space_mut(&sp) {
+                out.push(ne.handle);
                 st.push(ne);
-                out.push(nh);
             }
         } else {
-            let locked = d.entity(*h).and_then(|e| d.layer(&e.common.layer)).is_some_and(|l| l.locked);
-            if locked {
-                continue;
-            }
-            d.modify_entity(*h, |e| e.kind.transform(m))?;
-            out.push(*h);
+            let h = ne.handle;
+            d.modify_entity(h, |e| *e = ne)?;
+            out.push(h);
         }
     }
     Ok(out)
@@ -222,6 +225,15 @@ impl StretchArea {
 /// Move the vertices of `e` that lie inside any of the areas `wins` by `d` (STRETCH).
 fn stretch_entity(e: &mut Entity, wins: &[StretchArea], d: Vec2) {
     let inside = |p: Vec2| wins.iter().any(|a| a.contains(p));
+    // ponytail: an object in a tilted plane moves whole when its first grip (seen in plan) is
+    // inside; upgrade: move the vertices inside by the plan move taken into its plane
+    // (`Entity::plan_to_local`).
+    if e.plan_xf().is_some() {
+        if e.grips().first().is_some_and(|p| inside(*p)) {
+            e.transform(&Mat3::translate(d));
+        }
+        return;
+    }
     let mv = |p: &mut cadcraft_geom::Vec3| {
         if inside(p.xy()) {
             p.x += d.x;
@@ -254,6 +266,7 @@ fn stretch_entity(e: &mut Entity, wins: &[StretchArea], d: Vec2) {
             }
             dm.block = None;
         }
+        // In the XY plane's orientation (tilted ones returned above): plan and kind agree.
         k => {
             let g = k.grips();
             if g.first().is_some_and(|p| inside(*p)) {
@@ -544,14 +557,14 @@ impl Interactive for StretchM {
                     .iter()
                     .take(500)
                     .filter_map(|h| doc.entity(*h))
-                    .map(|e| {
+                    .flat_map(|e| {
                         let mut e = (**e).clone();
                         if self.whole.contains(&e.handle) {
-                            e.kind.transform(&m);
+                            e.transform(&m);
                         } else {
                             stretch_entity(&mut e, &self.windows, c - base);
                         }
-                        e.kind
+                        super::helpers::plan_kinds(&e)
                     })
                     .collect();
                 out.push(line(base, c));
@@ -796,13 +809,15 @@ fn edge_segments(s: &Session, edges: Edges, exclude: Handle) -> Result<Vec<Segme
         {
             continue;
         }
+        // Objects in a tilted plane cut where they show in plan, without implied runs.
         if edges.implied
+            && e.plan_xf().is_none()
             && let Some(segs) = implied_edge(&e.kind)
         {
             out.extend(segs);
             continue;
         }
-        for p in e.kind.prims() {
+        for p in e.prims() {
             out.extend(prim_to_segments(&p));
         }
     }
@@ -863,6 +878,7 @@ pub(crate) fn trim(s: &mut Session, h: Handle, pick: Vec2, edges: Edges) -> Resu
         return Err(EngineError::Other("The object is on a locked layer.".into()));
     }
     let e = s.doc()?.entity(h).map(|e| (**e).clone()).ok_or_else(|| EngineError::Other("no such object".into()))?;
+    super::helpers::level_only(&e)?;
     let cut = edge_segments(s, edges, h)?;
     let pieces: Vec<EntityKind> = match &e.kind {
         EntityKind::Line(l) => {
@@ -1055,6 +1071,7 @@ pub(crate) fn extend(s: &mut Session, h: Handle, pick: Vec2, edges: Edges) -> Re
         return Err(EngineError::Other("The object is on a locked layer.".into()));
     }
     let e = s.doc()?.entity(h).map(|e| (**e).clone()).ok_or_else(|| EngineError::Other("no such object".into()))?;
+    super::helpers::level_only(&e)?;
     let cut = edge_segments(s, edges, h)?;
     let new_kind = match &e.kind {
         EntityKind::Line(l) => {
@@ -1275,23 +1292,19 @@ pub(crate) fn explode_kind(d: &cadcraft_doc::Drawing, e: &Entity) -> Option<Vec<
                 return Some(items);
             }
             let blk = d.block(&ins.block)?;
-            let m = ins.transform(blk.base.xy());
-            Some(
-                blk.entities
-                    .iter()
-                    .map(|be| {
-                        let mut ne = (**be).clone();
-                        ne.kind.transform(&m);
-                        if ne.common.layer == "0" {
-                            ne.common.layer = e.common.layer.clone();
-                        }
-                        if ne.common.color == cadcraft_color::Color::ByBlock {
-                            ne.common.color = e.common.color;
-                        }
-                        ne
-                    })
-                    .collect(),
-            )
+            blk.entities
+                .iter()
+                .map(|be| {
+                    let mut ne = super::helpers::placed_in(e, ins, blk.base, be)?;
+                    if ne.common.layer == "0" {
+                        ne.common.layer = e.common.layer.clone();
+                    }
+                    if ne.common.color == cadcraft_color::Color::ByBlock {
+                        ne.common.color = e.common.color;
+                    }
+                    Some(ne)
+                })
+                .collect()
         }
         // A helix explodes into its spline (seen from above).
         EntityKind::Helix(h) => Some(vec![Entity { handle: Handle(0), common: e.common.clone(), kind: EntityKind::Spline(h.spline()) }]),
@@ -1437,6 +1450,7 @@ pub(crate) fn break_entity(s: &mut Session, h: Handle, p1: Vec2, p2: Vec2) -> Re
         return Err(EngineError::Other("The object is on a locked layer.".into()));
     }
     let e = s.doc()?.entity(h).map(|e| (**e).clone()).ok_or_else(|| EngineError::Other("no such object".into()))?;
+    super::helpers::level_only(&e)?;
     let pieces: Vec<EntityKind> = match &e.kind {
         EntityKind::Line(l) => {
             let ln = Line::new(l.a.xy(), l.b.xy());
@@ -1805,17 +1819,8 @@ impl SelectThen {
         match (self.ref_angle, self.ref_points, self.ref_from) {
             (Some(r), false, _) => {
                 let m = Mat3::rotate_about(base, base.angle_to(c) - r);
-                let mut out: Vec<EntityKind> = self
-                    .objs
-                    .iter()
-                    .take(500)
-                    .filter_map(|h| d.entity(*h))
-                    .map(|e| {
-                        let mut k = e.kind.clone();
-                        k.transform(&m);
-                        k
-                    })
-                    .collect();
+                let mut out: Vec<EntityKind> =
+                    self.objs.iter().take(500).filter_map(|h| d.entity(*h)).flat_map(|e| super::helpers::plan_preview(e, &m)).collect();
                 out.push(line(base, c));
                 out
             }
@@ -2055,17 +2060,8 @@ impl Interactive for SelectThen {
             _ => return Vec::new(),
         };
         let Ok(d) = s.doc() else { return Vec::new() };
-        let mut out: Vec<EntityKind> = self
-            .objs
-            .iter()
-            .take(500)
-            .filter_map(|h| d.entity(*h))
-            .map(|e| {
-                let mut k = e.kind.clone();
-                k.transform(&m);
-                k
-            })
-            .collect();
+        let mut out: Vec<EntityKind> =
+            self.objs.iter().take(500).filter_map(|h| d.entity(*h)).flat_map(|e| super::helpers::plan_preview(e, &m)).collect();
         out.push(line(base, c));
         out
     }
@@ -2097,9 +2093,7 @@ impl Interactive for SelectThen {
                 handles.push(*h);
             } else if texts < MAX_MIRROR_TEXT_PREVIEW {
                 texts += 1;
-                let mut k = e.kind.clone();
-                k.transform(&matrix);
-                extra.push(k);
+                extra.extend(super::helpers::plan_preview(e, &matrix));
             }
         }
         Some(crate::prompt::Drag { handles, matrix, extra, clipboard: false })

@@ -209,12 +209,13 @@ fn tally(d: &Drawing, scope: &Scope, nested: bool, want: Option<&str>) -> Tally 
 }
 
 /// A translation-free signature of an object's geometry: objects with equal keys are copies of
-/// each other (moved, not rotated or scaled). Coordinates are rounded to 1e-6.
-fn shape_key(k: &EntityKind) -> Option<String> {
-    let origin = k.grips().first().copied().filter(|p| p.is_finite())?;
-    let mut k = k.clone();
-    k.transform(&Mat3::translate(Vec2::ZERO - origin));
-    let mut v = serde_json::to_value(&k).ok()?;
+/// each other (moved in plan, not rotated or scaled), in the same plane's orientation.
+/// Coordinates are rounded to 1e-6.
+fn shape_key(e: &Entity) -> Option<String> {
+    let origin = e.grips().first().copied().filter(|p| p.is_finite())?;
+    let mut e = e.clone();
+    e.transform(&Mat3::translate(Vec2::ZERO - origin));
+    let mut v = serde_json::to_value((&e.kind, e.common.extrusion)).ok()?;
     round(&mut v, 0);
     Some(v.to_string())
 }
@@ -283,11 +284,11 @@ fn count_like(d: &Drawing, scope: &Scope, nested: bool, h: Handle) -> Result<Val
         return Ok(count_block(d, scope, nested, &i.block));
     }
     let ty = e.kind.type_name();
-    let key = shape_key(&e.kind).ok_or_else(|| bad("count", format!("a {ty} can't be counted by shape")))?;
+    let key = shape_key(e).ok_or_else(|| bad("count", format!("a {ty} can't be counted by shape")))?;
     let hs: Vec<Handle> = scope
         .objects(d)
         .into_iter()
-        .filter(|(_, o)| o.kind.type_name() == ty && shape_key(&o.kind).as_deref() == Some(key.as_str()))
+        .filter(|(_, o)| o.kind.type_name() == ty && shape_key(o).as_deref() == Some(key.as_str()))
         .map(|(_, o)| o.handle)
         .take(MAX_HANDLES)
         .collect();

@@ -7,16 +7,22 @@
 //! tile shows the model space view itself, so ZOOM, PAN and every pick work in it unchanged. The
 //! UI draws the tiles from [`Session::model_tiles`] and hands clicks in other tiles to
 //! [`Session::click_tile`]. In a layout -VPORTS is MVIEW.
+//!
+//! Each tile also has its own view direction and visual style ([`TileLook`]), as Rhino's
+//! viewports do: the current tile's are the model view's ([`DocState::view_dir`]), so making
+//! another tile current trades them too and every view command acts on the current tile.
+//! VIEWPORTS.RHINO lays out Rhino's four views; VIEWPORTS.SINGLE and VIEWPORTS.MAXIMIZE show
+//! the current tile alone and bring the others back.
 
 use std::sync::Arc;
 
 use cadcraft_doc::{Drawing, Space, VportConfig, VportTile};
-use cadcraft_geom::Vec2;
+use cadcraft_geom::{Vec2, Vec3, ViewDir};
 use serde_json::{Value, json};
 
 use super::super::qselect::wildcard;
 use super::super::*;
-use crate::{Accept, DocState, EngineError, Input, Interactive, ModelTile, ModelTiles, Prompt, Result, Session, Step, View};
+use crate::{Accept, DocState, EngineError, Input, Interactive, ModelTile, ModelTiles, Prompt, Result, Session, Step, TileLook, View};
 
 /// Most tiles on screen at once.
 const MAX_TILES: usize = 64;
@@ -36,6 +42,14 @@ pub fn specs() -> Vec<CommandSpec> {
             )
             .interactive(vports_factory),
         CommandSpec::new("vports.activate", "Set Current Viewport", run_activate).params("{index: tile number from 1}").noundo(),
+        CommandSpec::new("viewports.rhino", "Four Rhino Views", run_rhino)
+            .menu(&["View", "Viewports", "Four Rhino Views"])
+            .params("{} (Model tab): Top (current), Perspective (a south-west isometric, parallel projection), Front and Right, each zoomed to extents"),
+        CommandSpec::new("viewports.single", "Maximize Viewport", run_single)
+            .menu(&["View", "Viewports", "Maximize Viewport"])
+            .params("{} (Model tab): the current tile alone, with its view; VIEWPORTS.MAXIMIZE brings the others back"),
+        CommandSpec::new("viewports.maximize", "Maximize or Restore Viewport", run_maximize)
+            .params("{} (Model tab): tiled, the current tile alone (VIEWPORTS.SINGLE); one view, the tiles it replaced back, else the four Rhino views"),
     ]
 }
 
@@ -77,7 +91,7 @@ fn with_option(p: &Value, option: &str) -> Value {
 pub(in crate::cmd) fn config_tiles(s: &Session, name: &str) -> Option<Vec<VportTile>> {
     let name = name.trim();
     if name.eq_ignore_ascii_case(VportConfig::ACTIVE) {
-        return Some(live(s.state().ok()?, s.viewport_px).0);
+        return Some(live(s.state().ok()?, s.viewport_px).0.into_iter().map(|t| t.0).collect());
     }
     s.doc().ok()?.vports.iter().find(|c| !c.is_active() && c.name.eq_ignore_ascii_case(name)).map(|c| c.tiles.clone())
 }
@@ -91,6 +105,9 @@ pub(in crate::cmd) fn config_names(s: &Session) -> Vec<String> {
 
 type Rect = (Vec2, Vec2);
 
+/// A tile with its look.
+type Tile = (VportTile, TileLook);
+
 fn rect(t: &VportTile) -> Rect {
     (t.min, t.max)
 }
@@ -103,31 +120,55 @@ fn active_config(d: &Drawing) -> Option<&VportConfig> {
     d.vports.iter().find(|c| c.is_active() && c.tiles.len() > 1)
 }
 
-/// The tiles on show with their views as they are now (the current one's is the model view), and
-/// the current tile. One full tile when there is no tiling.
-fn live(st: &DocState, px: (f64, f64)) -> (Vec<VportTile>, usize) {
+/// The look this session last gave tile `t` (plan when it never showed it).
+fn seen_look(tiles: &ModelTiles, t: &VportTile) -> TileLook {
+    tiles.seen.iter().rev().find(|(k, _)| k == t).map(|(_, l)| *l).unwrap_or_default()
+}
+
+/// Remember the looks of `tiles` (see [`ModelTiles::seen`]).
+fn remember(st: &mut DocState, tiles: &[Tile]) {
+    let seen = &mut st.tiles.seen;
+    seen.retain(|(k, _)| !tiles.iter().any(|t| t.0 == *k));
+    seen.extend(tiles.iter().copied());
+    let over = seen.len().saturating_sub(ModelTiles::SEEN);
+    seen.drain(..over);
+}
+
+/// The tiles on show with their views and looks as they are now (the current one's are the
+/// model view's), and the current tile. One full tile when there is no tiling.
+fn live(st: &DocState, px: (f64, f64)) -> (Vec<Tile>, usize) {
     let now = st.views.iter().find(|(sp, _)| *sp == Space::Model).map(|(_, v)| *v).unwrap_or_default();
     let Some(cfg) = active_config(&st.doc) else {
         let aspect = px.0 / px.1.max(1.0);
-        return (vec![VportTile { min: Vec2::ZERO, max: Vec2::new(1.0, 1.0), center: now.center, height: now.height, aspect }], 0);
+        return (vec![(VportTile { min: Vec2::ZERO, max: Vec2::new(1.0, 1.0), center: now.center, height: now.height, aspect }, st.look())], 0);
     };
-    let mut tiles = cfg.tiles.clone();
-    let synced =
-        st.tiles.rects.len() == tiles.len() && st.tiles.views.len() == tiles.len() && st.tiles.rects.iter().zip(&tiles).all(|(r, t)| *r == rect(t));
-    let active = if synced { st.tiles.active.min(tiles.len() - 1) } else { 0 };
-    if synced {
-        for (t, v) in tiles.iter_mut().zip(&st.tiles.views) {
-            (t.center, t.height) = (v.center, v.height);
-        }
-    }
-    if let Some(t) = tiles.get_mut(active) {
+    let n = cfg.tiles.len();
+    let synced = st.tiles.rects.len() == n
+        && st.tiles.views.len() == n
+        && st.tiles.looks.len() == n
+        && st.tiles.rects.iter().zip(&cfg.tiles).all(|(r, t)| *r == rect(t));
+    let mut tiles: Vec<Tile> = if synced {
+        cfg.tiles
+            .iter()
+            .zip(&st.tiles.views)
+            .zip(&st.tiles.looks)
+            .map(|((t, v), l)| (VportTile { center: v.center, height: v.height, ..*t }, *l))
+            .collect()
+    } else {
+        cfg.tiles.iter().map(|t| (*t, seen_look(&st.tiles, t))).collect()
+    };
+    // Tiles put back by an undo or redo: the current one is the first that looked the way the
+    // model view does (tile 0 when none did), so no tile takes over another's look.
+    let active = if synced { st.tiles.active.min(n - 1) } else { tiles.iter().position(|t| t.1 == st.look()).unwrap_or(0) };
+    if let Some((t, l)) = tiles.get_mut(active) {
         (t.center, t.height) = (now.center, now.height);
+        *l = st.look();
     }
     // Screen aspects from the current tile's size in pixels.
-    if let Some(cur) = tiles.get(active).copied() {
+    if let Some((cur, _)) = tiles.get(active).copied() {
         let (fw, fh) = ((cur.max.x - cur.min.x).max(EPS), (cur.max.y - cur.min.y).max(EPS));
         let (w, h) = (px.0 / fw, px.1.max(1.0) / fh);
-        for t in tiles.iter_mut() {
+        for (t, _) in tiles.iter_mut() {
             t.aspect = ((t.max.x - t.min.x) * w / ((t.max.y - t.min.y) * h).max(EPS)).max(EPS);
         }
     }
@@ -135,8 +176,8 @@ fn live(st: &DocState, px: (f64, f64)) -> (Vec<VportTile>, usize) {
 }
 
 /// Show `tiles` with tile `current` current: the drawing's `*Active` configuration (one undo
-/// step with the command) and the session's views.
-fn apply(s: &mut Session, mut tiles: Vec<VportTile>, current: usize) -> Result<()> {
+/// step with the command) and the session's views and looks.
+fn apply(s: &mut Session, mut tiles: Vec<Tile>, current: usize) -> Result<()> {
     if tiles.is_empty() {
         return Err(EngineError::Other("A viewport configuration needs a viewport.".into()));
     }
@@ -145,17 +186,35 @@ fn apply(s: &mut Session, mut tiles: Vec<VportTile>, current: usize) -> Result<(
     let st = s.state_mut()?;
     let d = Arc::make_mut(&mut st.doc);
     d.vports.retain(|c| !c.is_active());
+    let seen = std::mem::take(&mut st.tiles.seen);
     if tiles.len() > 1 {
-        d.vports.insert(0, VportConfig { name: VportConfig::ACTIVE.into(), tiles: tiles.clone() });
-        st.tiles = ModelTiles { rects: tiles.iter().map(rect).collect(), views: tiles.iter().map(view_of).collect(), active: 0 };
+        d.vports.insert(0, VportConfig { name: VportConfig::ACTIVE.into(), tiles: tiles.iter().map(|t| t.0).collect() });
+        st.tiles = ModelTiles {
+            rects: tiles.iter().map(|t| rect(&t.0)).collect(),
+            views: tiles.iter().map(|t| view_of(&t.0)).collect(),
+            looks: tiles.iter().map(|t| t.1).collect(),
+            seen,
+            ..Default::default()
+        };
+        remember(st, &tiles);
     } else {
-        st.tiles = ModelTiles::default();
+        st.tiles = ModelTiles { seen, ..Default::default() };
     }
     if st.space == Space::Model && st.mspace.is_none() {
-        st.set_view_quiet(view_of(&cur));
+        st.set_view_quiet(view_of(&cur.0));
+        st.set_look(cur.1);
     }
     s.touch();
     Ok(())
+}
+
+/// A look's visual style as VSCURRENT names it.
+fn style_name(l: &TileLook) -> &'static str {
+    match (l.shaded, l.edges) {
+        (false, _) => "2dWireframe",
+        (true, false) => "Shaded",
+        (true, true) => "ShadedWithEdges",
+    }
 }
 
 fn summary(s: &Session) -> Result<Value> {
@@ -163,7 +222,11 @@ fn summary(s: &Session) -> Result<Value> {
     let rows: Vec<Value> = tiles
         .iter()
         .enumerate()
-        .map(|(i, t)| json!({ "index": i + 1, "min": [t.min.x, t.min.y], "max": [t.max.x, t.max.y], "center": [t.center.x, t.center.y], "height": t.height, "current": i == active }))
+        .map(|(i, (t, l))| {
+            let d = l.dir.dir;
+            json!({ "index": i + 1, "min": [t.min.x, t.min.y], "max": [t.max.x, t.max.y], "center": [t.center.x, t.center.y], "height": t.height,
+                "direction": [d.x, d.y, d.z], "style": style_name(l), "current": i == active })
+        })
         .collect();
     Ok(json!({ "tiles": rows }))
 }
@@ -268,14 +331,14 @@ fn run_vports(s: &mut Session, p: &Value) -> Result<Value> {
     match option.as_str() {
         "single" | "si" | "1" => {
             model_only(s)?;
-            let cur = tiles.get(current).copied().ok_or(EngineError::NoDocument)?;
-            apply(s, vec![VportTile { min: Vec2::ZERO, max: Vec2::new(1.0, 1.0), ..cur }], 0)?;
+            let (cur, look) = tiles.get(current).copied().ok_or(EngineError::NoDocument)?;
+            apply(s, vec![(VportTile { min: Vec2::ZERO, max: Vec2::new(1.0, 1.0), ..cur }, look)], 0)?;
         }
         "2" | "3" | "4" => {
             model_only(s)?;
             let count = option.parse::<usize>().unwrap_or(2);
             let display = str_param(p, "applyTo").is_some_and(|a| a.eq_ignore_ascii_case("display"));
-            let cur = tiles.get(current).copied().ok_or(EngineError::NoDocument)?;
+            let (cur, look) = tiles.get(current).copied().ok_or(EngineError::NoDocument)?;
             let area = if display { (Vec2::ZERO, Vec2::new(1.0, 1.0)) } else { rect(&cur) };
             let arrangement = str_param(p, "arrangement").unwrap_or("");
             let parts = split(area, count, arrangement)
@@ -283,13 +346,13 @@ fn run_vports(s: &mut Session, p: &Value) -> Result<Value> {
             if parts.iter().any(|r| r.1.x - r.0.x < MIN_SIDE - EPS || r.1.y - r.0.y < MIN_SIDE - EPS) {
                 return Err(EngineError::Other("The current viewport is too small to divide.".into()));
             }
-            let mut out: Vec<VportTile> =
+            let mut out: Vec<Tile> =
                 if display { Vec::new() } else { tiles.iter().enumerate().filter(|(i, _)| *i != current).map(|(_, t)| *t).collect() };
             if out.len() + parts.len() > MAX_TILES {
                 return Err(EngineError::Other(format!("At most {MAX_TILES} viewports can be shown.")));
             }
             let first = out.len();
-            out.extend(parts.into_iter().map(|(min, max)| VportTile { min, max, ..cur }));
+            out.extend(parts.into_iter().map(|(min, max)| (VportTile { min, max, ..cur }, look)));
             apply(s, out, first)?;
         }
         "join" | "j" => {
@@ -303,9 +366,9 @@ fn run_vports(s: &mut Session, p: &Value) -> Result<Value> {
                 return Err(EngineError::Other("Select a different viewport to join.".into()));
             }
             let (min, max) =
-                joined(rect(&a), rect(&b)).ok_or_else(|| EngineError::Other("The selected viewports do not form a rectangle.".into()))?;
-            let mut out: Vec<VportTile> = tiles.iter().enumerate().filter(|(i, _)| *i != dominant && *i != other).map(|(_, t)| *t).collect();
-            out.push(VportTile { min, max, ..a });
+                joined(rect(&a.0), rect(&b.0)).ok_or_else(|| EngineError::Other("The selected viewports do not form a rectangle.".into()))?;
+            let mut out: Vec<Tile> = tiles.iter().enumerate().filter(|(i, _)| *i != dominant && *i != other).map(|(_, t)| *t).collect();
+            out.push((VportTile { min, max, ..a.0 }, a.1));
             let current = out.len() - 1;
             apply(s, out, current)?;
         }
@@ -319,9 +382,11 @@ fn run_vports(s: &mut Session, p: &Value) -> Result<Value> {
             let mut saved = tiles.clone();
             let cur = saved.remove(current);
             saved.insert(0, cur);
-            let d = s.doc_mut()?;
+            let st = s.state_mut()?;
+            remember(st, &saved);
+            let d = Arc::make_mut(&mut st.doc);
             d.vports.retain(|c| !c.name.eq_ignore_ascii_case(&name));
-            d.vports.push(VportConfig { name: name.clone(), tiles: saved });
+            d.vports.push(VportConfig { name: name.clone(), tiles: saved.into_iter().map(|t| t.0).collect() });
             return Ok(json!({ "name": name, "message": format!("Viewport configuration \"{name}\" saved.") }));
         }
         "restore" | "r" => {
@@ -334,7 +399,9 @@ fn run_vports(s: &mut Session, p: &Value) -> Result<Value> {
                 .find(|c| !c.is_active() && c.name.eq_ignore_ascii_case(name))
                 .cloned()
                 .ok_or_else(|| EngineError::Other(format!("Could not find viewport configuration \"{name}\".")))?;
-            apply(s, cfg.tiles, 0)?;
+            let st = s.state()?;
+            let tiles = cfg.tiles.iter().map(|t| (*t, seen_look(&st.tiles, t))).collect();
+            apply(s, tiles, 0)?;
         }
         "delete" | "d" => {
             let pats = names(p);
@@ -355,7 +422,7 @@ fn run_vports(s: &mut Session, p: &Value) -> Result<Value> {
             let pats = if pats.is_empty() { vec!["*".to_string()] } else { pats };
             let mut lines = vec!["Current configuration:".to_string()];
             let corners = |t: &VportTile| format!("{:.4},{:.4}  {:.4},{:.4}", t.min.x, t.min.y, t.max.x, t.max.y);
-            for (i, t) in tiles.iter().enumerate() {
+            for (i, (t, _)) in tiles.iter().enumerate() {
                 lines.push(format!("  {}{}  {}", i + 1, if i == current { "*" } else { " " }, corners(t)));
             }
             let saved: Vec<&VportConfig> = s.doc()?.vports.iter().filter(|c| !c.is_active() && pats.iter().any(|q| wildcard(q, &c.name))).collect();
@@ -379,6 +446,64 @@ fn run_vports(s: &mut Session, p: &Value) -> Result<Value> {
     summary(s)
 }
 
+/// Rhino's four views (4VIEW), quadrant by quadrant as [`split`] makes them: Top, Perspective,
+/// Front, Right (directions toward the viewer).
+/// ponytail: "Perspective" is a parallel south-west isometric; a perspective camera needs a
+/// projection in `ViewDir`, the render crate and the canvas.
+const RHINO_VIEWS: [[f64; 3]; 4] = [[0.0, 0.0, 1.0], [-1.0, -1.0, 1.0], [0.0, -1.0, 0.0], [1.0, 0.0, 0.0]];
+
+fn run_rhino(s: &mut Session, _p: &Value) -> Result<Value> {
+    model_only(s)?;
+    let st = s.state()?;
+    let (tiles, current) = live(st, s.viewport_px);
+    let look = st.look();
+    let (cur, _) = tiles.get(current).copied().ok_or(EngineError::NoDocument)?;
+    // The drawing area's size in pixels, from the current tile's.
+    let (w, h) = (s.viewport_px.0 / (cur.max.x - cur.min.x).max(EPS), s.viewport_px.1.max(1.0) / (cur.max.y - cur.min.y).max(EPS));
+    let parts = split((Vec2::ZERO, Vec2::new(1.0, 1.0)), 4, "").unwrap_or_default();
+    let mut out: Vec<Tile> = Vec::with_capacity(4);
+    for ((min, max), [x, y, z]) in parts.into_iter().zip(RHINO_VIEWS) {
+        let dir = ViewDir::new(Vec3::new(x, y, z));
+        let aspect = ((max.x - min.x) * w / ((max.y - min.y) * h).max(EPS)).max(EPS);
+        let v = s.extents_frame_along(dir, aspect)?;
+        out.push((VportTile { min, max, center: v.center, height: v.height, aspect }, TileLook { dir, ..look }));
+    }
+    apply(s, out, 0)?;
+    summary(s)
+}
+
+/// The current tile alone, the others remembered for VIEWPORTS.MAXIMIZE. One view stays as it is.
+fn run_single(s: &mut Session, _p: &Value) -> Result<Value> {
+    model_only(s)?;
+    let (tiles, current) = live(s.state()?, s.viewport_px);
+    if tiles.len() < 2 {
+        return summary(s);
+    }
+    let r = run_vports(s, &json!({ "option": "single" }))?;
+    let (t, l) = tiles.into_iter().unzip();
+    s.state_mut()?.tiles.maximized = Some((t, l, current));
+    Ok(r)
+}
+
+/// Tiled: VIEWPORTS.SINGLE. One view: the tiles VIEWPORTS.SINGLE replaced, the current one
+/// showing the view as it is now; with none remembered, the four Rhino views.
+fn run_maximize(s: &mut Session, p: &Value) -> Result<Value> {
+    model_only(s)?;
+    let st = s.state()?;
+    if active_config(&st.doc).is_some() {
+        return run_single(s, p);
+    }
+    let Some((tiles, looks, current)) = st.tiles.maximized.clone() else { return run_rhino(s, p) };
+    let now = st.views.iter().find(|(sp, _)| *sp == Space::Model).map(|(_, v)| *v).unwrap_or_default();
+    let mut out: Vec<Tile> = tiles.into_iter().zip(looks).collect();
+    if let Some((t, l)) = out.get_mut(current) {
+        (t.center, t.height) = (now.center, now.height);
+        *l = st.look();
+    }
+    apply(s, out, current)?;
+    summary(s)
+}
+
 fn run_activate(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.state()?;
     let n = active_config(&st.doc).map_or(1, |c| c.tiles.len());
@@ -395,7 +520,7 @@ impl Session {
             return Vec::new();
         }
         let (tiles, active) = live(st, self.viewport_px);
-        tiles.iter().enumerate().map(|(i, t)| ModelTile { min: t.min, max: t.max, view: view_of(t), active: i == active }).collect()
+        tiles.iter().enumerate().map(|(i, (t, l))| ModelTile { min: t.min, max: t.max, view: view_of(t), look: *l, active: i == active }).collect()
     }
 
     /// Make tile `index` (from 0, in [`Session::model_tiles`] order) the current one: the views
@@ -409,21 +534,35 @@ impl Session {
             return Ok(());
         }
         let st = self.state_mut()?;
-        st.tiles = ModelTiles { rects: tiles.iter().map(rect).collect(), views: tiles.iter().map(view_of).collect(), active: index };
-        if let Some(t) = tiles.get(index) {
+        st.tiles = ModelTiles {
+            rects: tiles.iter().map(|t| rect(&t.0)).collect(),
+            views: tiles.iter().map(|t| view_of(&t.0)).collect(),
+            looks: tiles.iter().map(|t| t.1).collect(),
+            active: index,
+            seen: std::mem::take(&mut st.tiles.seen),
+            maximized: st.tiles.maximized.take(),
+        };
+        if let Some((t, l)) = tiles.get(index) {
             st.set_view_quiet(view_of(t));
+            st.set_look(*l);
         }
-        self.touch();
+        // No new revision: the drawing is as it was, so the canvas keeps every tile's display
+        // list and only trades them (a revision would rebuild them all).
         Ok(())
     }
 
-    /// A click in tile `index` outside the current one: it answers a -VPORTS Join prompt, else
-    /// makes the tile current (also in the middle of a command, as in AutoCAD).
+    /// A click in tile `index` (or on its title): it answers a -VPORTS Join prompt, else makes
+    /// the tile current (also in the middle of a command, as in AutoCAD).
     pub fn click_tile(&mut self, index: usize) -> Result<()> {
-        if self.current_prompt().is_some_and(|p| p.message == DOMINANT_PROMPT || p.message == JOIN_PROMPT) {
+        if self.prompts_for_tile() {
             return self.input(Input::Text((index + 1).to_string()));
         }
         self.activate_tile(index)
+    }
+
+    /// Whether -VPORTS Join is asking for a viewport (a click in a tile answers it).
+    pub fn prompts_for_tile(&self) -> bool {
+        self.current_prompt().is_some_and(|p| p.message == DOMINANT_PROMPT || p.message == JOIN_PROMPT)
     }
 }
 

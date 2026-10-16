@@ -153,7 +153,7 @@ impl Curve {
     }
 
     /// Moved: `f` takes each point, `r` each direction.
-    pub(crate) fn map(&self, f: &impl Fn(Vec3) -> Vec3, r: &impl Fn(Vec3) -> Vec3) -> Curve {
+    pub fn map(&self, f: &impl Fn(Vec3) -> Vec3, r: &impl Fn(Vec3) -> Vec3) -> Curve {
         match self {
             Curve::Segs(s) => Curve::Segs(
                 s.iter()

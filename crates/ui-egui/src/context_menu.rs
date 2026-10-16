@@ -43,6 +43,8 @@ pub const RECENT: usize = 8;
 /// How long the right button must be held while a command runs to open the command menu instead
 /// of acting as Enter (AutoCAD's time-sensitive right-click; 250 ms there by default).
 pub const HOLD_SECS: f64 = 0.25;
+/// How far (points) the right button may move while held and still be a click.
+pub(crate) const DRAG_PX: f32 = 6.0;
 
 /// Item ids that are not commands: keys, typed text and snap menu items.
 pub const ENTER: &str = "key:enter";
@@ -316,19 +318,29 @@ pub fn in_command(app: &mut CadApp, ui: &egui::Ui, inside: bool, right_clicked: 
     let press_id = egui::Id::new("cc_command_menu_press");
     let popup_id = egui::Id::new("cc_command_menu");
     let secondary = egui::PointerButton::Secondary;
-    let (pressed, released, now, pos) =
-        ctx.input(|i| (i.pointer.button_pressed(secondary), i.pointer.button_released(secondary), i.time, i.pointer.interact_pos()));
+    let (pressed, down, released, now, pos) = ctx.input(|i| {
+        let p = &i.pointer;
+        (p.button_pressed(secondary), p.button_down(secondary), p.button_released(secondary), i.time, p.interact_pos())
+    });
     if pressed
         && inside
         && let Some(p) = pos
     {
         ctx.data_mut(|d| d.insert_temp(press_id, Press(now, p)));
     }
+    // A drag isn't a click, even one that comes back to where it started (a Rhino orbit in a 3D
+    // view): once the pointer has wandered off, letting go asks for nothing.
+    if down
+        && let Some(p) = pos
+        && ctx.data(|d| d.get_temp::<Press>(press_id)).is_some_and(|Press(_, p0)| p.distance(p0) > DRAG_PX)
+    {
+        ctx.data_mut(|d| d.remove_temp::<Press>(press_id));
+    }
     let running = app.session.prompting() && !app.canvas.snap_menu;
     let mut open = false;
     if released && let Some(Press(t0, p0)) = ctx.data_mut(|d| d.remove_temp::<Press>(press_id)) {
-        // A drag isn't a click; a click held long enough asks for the menu.
-        let still = pos.is_some_and(|p| p.distance(p0) <= 6.0);
+        // A click held long enough asks for the menu.
+        let still = pos.is_some_and(|p| p.distance(p0) <= DRAG_PX);
         let held = now - t0 >= HOLD_SECS || !app.options.time_sensitive_right_click;
         open = running && still && held;
     }

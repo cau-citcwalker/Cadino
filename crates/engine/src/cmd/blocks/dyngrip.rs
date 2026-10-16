@@ -63,11 +63,7 @@ fn drawn(d: &Drawing, h: Handle) -> Vec<EntityKind> {
         .filter(|e| e.common.visible && !matches!(&e.kind, EntityKind::AttDef(_) | EntityKind::Wipeout(_)))
         .filter(|e| !matches!(&e.kind, EntityKind::Hatch(h) if h.solid))
         .take(MAX_PREVIEW)
-        .map(|e| {
-            let mut k = e.kind.clone();
-            k.transform(&m);
-            k
-        })
+        .flat_map(|e| super::super::helpers::plan_preview(e, &m))
         .collect();
     out.extend(ins.attribs.iter().filter(|a| !a.invisible).map(|a| EntityKind::Text(a.text.clone())));
     out

@@ -543,7 +543,10 @@ mod tests {
                 }
                 _ => {
                     let (dx, dy) = (r.r(-20.0, 20.0), r.r(-20.0, 20.0));
-                    d.modify_entity(h, |e| e.kind.transform(&cadcraft_geom::Mat3::translate(Vec2::new(dx, dy)))).unwrap();
+                    d.modify_entity(h, |e| {
+                        e.transform(&cadcraft_geom::Mat3::translate(Vec2::new(dx, dy)));
+                    })
+                    .unwrap();
                 }
             }
             let inc = SpatialIndex::build_from(&d, &d.model, Some(&prev));

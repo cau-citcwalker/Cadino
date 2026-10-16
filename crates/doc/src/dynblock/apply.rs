@@ -394,7 +394,10 @@ fn move_entity(e: &mut Entity, vertices: Option<&[i32]>, v: Vec2) {
                 }
             }
         }
-        _ => e.kind.transform(&Mat3::translate(v)),
+        // A translation is a similarity: it moves an object in any plane.
+        _ => {
+            e.transform(&Mat3::translate(v));
+        }
     }
 }
 

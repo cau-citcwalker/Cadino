@@ -94,17 +94,44 @@ pub struct ModelTiles {
     pub rects: Vec<(Vec2, Vec2)>,
     /// Each tile's view; the current tile shows the model space view itself.
     pub views: Vec<View>,
+    /// Each tile's direction and visual style; the current tile's are [`DocState::view_dir`],
+    /// [`DocState::shaded`] and [`DocState::shaded_edges`] themselves.
+    pub looks: Vec<TileLook>,
     /// The current tile.
     pub active: usize,
+    /// The look of every tile this session put in a configuration, by tile: the drawing keeps no
+    /// view directions, so undo and Restore find them here (the last [`Self::SEEN`]).
+    /// ponytail: session memory only; a reopened file's tiles look in plan until the VPORT table
+    /// keeps VIEWDIR and the visual style.
+    pub seen: Vec<(cadcraft_doc::VportTile, TileLook)>,
+    /// The tiles `viewports.single` replaced, with their looks and the current one, for
+    /// `viewports.maximize` to bring back.
+    pub maximized: Option<(Vec<cadcraft_doc::VportTile>, Vec<TileLook>, usize)>,
+}
+
+impl ModelTiles {
+    /// How many tile looks [`Self::seen`] remembers.
+    pub const SEEN: usize = 256;
+}
+
+/// How a model tile shows the model: its view direction and visual style (VSCURRENT).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TileLook {
+    pub dir: ViewDir,
+    pub shaded: bool,
+    /// Shaded with edges.
+    pub edges: bool,
 }
 
 /// One tile of the model space drawing area, for the UI ([`Session::model_tiles`]): its corners
-/// as fractions of the drawing area (0,0 lower left) and its view.
+/// as fractions of the drawing area (0,0 lower left), its view (centre in its own view plane)
+/// and look.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModelTile {
     pub min: Vec2,
     pub max: Vec2,
     pub view: View,
+    pub look: TileLook,
     pub active: bool,
 }
 
@@ -188,6 +215,18 @@ impl DocState {
             orbit_center: None,
             orbit_target: None,
         }
+    }
+    /// The current tile's look: the model view's direction and visual style.
+    pub fn look(&self) -> TileLook {
+        TileLook { dir: self.view_dir, shaded: self.shaded, edges: self.shaded_edges }
+    }
+    /// Show the model along `l`'s direction in its visual style (the view centre must already be
+    /// in that direction's view plane).
+    pub fn set_look(&mut self, l: TileLook) {
+        if self.view_dir != l.dir {
+            self.orbit_target = None;
+        }
+        (self.view_dir, self.shaded, self.shaded_edges) = (l.dir, l.shaded, l.edges);
     }
     /// The drawing has changes not saved to its file, or the Block Editor has changes not yet
     /// saved into its block.
@@ -1747,6 +1786,11 @@ impl Session {
     /// The limits of the space being edited: the sheet in paper space, else LIMMIN/LIMMAX (as a
     /// 3D model view shows them).
     pub fn zoom_limits(&self) -> Result<Bounds2> {
+        self.limits_along(self.state()?.screen_dir())
+    }
+
+    /// [`Self::zoom_limits`] as a view along `dir` shows them.
+    fn limits_along(&self, dir: ViewDir) -> Result<Bounds2> {
         let d = self.doc()?;
         if let Space::Paper(name) = self.space()
             && let Some(sheet) = cadcraft_render::sheet(d, &name)
@@ -1755,7 +1799,7 @@ impl Session {
         }
         let lo = d.header.point("LIMMIN").map(|p| p.xy()).unwrap_or(Vec2::ZERO);
         let hi = d.header.point("LIMMAX").map(|p| p.xy()).unwrap_or(Vec2::new(12.0, 9.0));
-        let m = self.state()?.screen_dir().plane_xf();
+        let m = dir.plane_xf();
         Ok(Bounds2::from_points(Bounds2::new(lo, hi).corners().map(|c| m.apply(c))))
     }
 
@@ -1768,11 +1812,16 @@ impl Session {
     /// The view ZOOM Extents sets (see [`DocState::zoom_frame`]): the extents, or the limits of
     /// an empty drawing.
     pub(crate) fn extents_frame(&self) -> Result<View> {
-        let space = self.space();
-        let ext = self.view_extents(&space)?;
         let (w, h) = self.viewport_px;
-        let ext = if ext.is_empty() { self.zoom_limits()? } else { ext };
-        let aspect = self.state()?.zoom_aspect(w / h.max(1.0));
+        let st = self.state()?;
+        self.extents_frame_along(st.screen_dir(), st.zoom_aspect(w / h.max(1.0)))
+    }
+
+    /// The view ZOOM Extents sets looking along `dir` into an area `aspect` times as wide as it
+    /// is high (its centre in that direction's view plane).
+    pub(crate) fn extents_frame_along(&self, dir: ViewDir, aspect: f64) -> Result<View> {
+        let ext = self.extents_along(&self.space(), dir)?;
+        let ext = if ext.is_empty() { self.limits_along(dir)? } else { ext };
         let height = ext.height().max(ext.width() / aspect.max(1e-6)).max(1e-6) * 1.05;
         Ok(View { center: ext.center(), height })
     }
@@ -1780,8 +1829,12 @@ impl Session {
     /// The extents of `space` in its view plane: the drawing's extents, or in a 3D model view
     /// the bounds of what that view draws.
     pub fn view_extents(&self, space: &Space) -> Result<Bounds2> {
+        self.extents_along(space, self.state()?.screen_dir())
+    }
+
+    /// [`Self::view_extents`] looking along `dir`.
+    fn extents_along(&self, space: &Space, dir: ViewDir) -> Result<Bounds2> {
         let st = self.state()?;
-        let dir = st.screen_dir();
         if *space != Space::Model || dir.is_plan() {
             return Ok(st.doc.extents(space));
         }

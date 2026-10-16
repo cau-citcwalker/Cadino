@@ -7,7 +7,7 @@ mod viewport;
 
 pub use viewport::ViewportPoint;
 
-use cadcraft_doc::{Drawing, EntityKind, Insert, MAX_BLOCK_DEPTH, Prim, Space};
+use cadcraft_doc::{Drawing, Entity, EntityKind, Insert, MAX_BLOCK_DEPTH, Prim, Space};
 use cadcraft_geom::{Bounds2, Circle, EPS, Ellipse, Mat3, PI, Segment, Vec2, intersect_ext};
 use serde::Serialize;
 
@@ -377,29 +377,32 @@ fn gather_in(
         if count > 2000 {
             break;
         }
+        // An object in a tilted plane: its points seen from above.
+        let plan = e.plan_xf();
         if osmode & mode::INS != 0 {
+            let at = |p: Vec2| (mode::INS, plan.map_or(p, |a| a.apply(p)));
             match &e.kind {
-                EntityKind::Text(t) => cands.push((mode::INS, t.justify_point())),
-                EntityKind::MText(t) => cands.push((mode::INS, t.insert.xy())),
-                EntityKind::Tolerance(t) => cands.push((mode::INS, t.insert.xy())),
+                EntityKind::Text(t) => cands.push(at(t.justify_point())),
+                EntityKind::MText(t) => cands.push(at(t.insert.xy())),
+                EntityKind::Tolerance(t) => cands.push(at(t.insert.xy())),
                 EntityKind::Insert(i) => {
-                    cands.push((mode::INS, i.insert.xy()));
-                    cands.extend(i.attribs.iter().filter(|a| !a.invisible).map(|a| (mode::INS, a.text.justify_point())));
+                    cands.push(at(i.insert.xy()));
+                    cands.extend(i.attribs.iter().filter(|a| !a.invisible).map(|a| at(a.text.justify_point())));
                 }
-                EntityKind::AttDef(a) => cands.push((mode::INS, a.text.justify_point())),
+                EntityKind::AttDef(a) => cands.push(at(a.text.justify_point())),
                 // A multileader: its text's insertion point, or its block content's.
                 EntityKind::MLeader(m) => {
-                    cands.extend(m.text.iter().map(|t| (mode::INS, t.insert.xy())));
-                    cands.extend(m.block.iter().map(|b| (mode::INS, b.insert.xy())));
+                    cands.extend(m.text.iter().map(|t| at(t.insert.xy())));
+                    cands.extend(m.block.iter().map(|b| at(b.insert.xy())));
                 }
                 _ => {}
             }
         }
         let mut sink = Sink { osmode, aperture, probe, cands: &mut cands, near: &mut near_prims };
-        sink.object(&e.kind, None);
-        // A block reference snaps to the objects inside it, placed by its transform.
+        sink.object(e, None);
+        // A block reference snaps to the objects inside it, placed by its transform (and plane).
         if let EntityKind::Insert(ins) = &e.kind {
-            block_leaves(d, ins, &Mat3::IDENTITY, 0, &mut budget, frozen, &mut |k, m| sink.object(k, Some(m)));
+            block_leaves(d, ins, &plan.unwrap_or(Mat3::IDENTITY), 0, &mut budget, frozen, &mut |k, m| sink.object(k, Some(m)));
         }
         if let EntityKind::Dimension(dm) = &e.kind {
             sink.dimension(d, dm, &mut budget, frozen);
@@ -503,9 +506,12 @@ struct Sink<'a> {
 }
 
 impl Sink<'_> {
-    /// The snap points of one object; `xf` places an object from inside a block reference
-    /// (whose primitives far from the cursor are skipped).
-    fn object(&mut self, kind: &EntityKind, xf: Option<&Mat3>) {
+    /// The snap points of one object as plan view shows it (one in a tilted plane seen from
+    /// above); `xf` places an object from inside a block reference (whose primitives far from the
+    /// cursor are skipped).
+    fn object(&mut self, e: &Entity, xf: Option<&Mat3>) {
+        let kind = &e.kind;
+        let plan = e.plan_xf();
         let osmode = self.osmode;
         // OSNAPHATCH = 0: hatches are left out; so are solids in a 3D view.
         if osmode & mode::HATCH == 0 && matches!(kind, EntityKind::Hatch(_))
@@ -513,13 +519,28 @@ impl Sink<'_> {
         {
             return;
         }
-        let at = |p: Vec2| xf.map_or(p, |m| m.apply(p));
+        let at = |p: Vec2| {
+            let p = plan.map_or(p, |a| a.apply(p));
+            xf.map_or(p, |m| m.apply(p))
+        };
         if osmode & mode::END != 0
             && let EntityKind::Solid(s) | EntityKind::Trace(s) = kind
         {
             self.cands.extend(s.corners.iter().map(|c| (mode::END, at(c.xy()))));
         }
-        for p in kind.prims() {
+        // Seen edge-on in plan a circle, arc or ellipse is a segment: its centre still snaps.
+        if osmode & mode::CEN != 0
+            && plan.is_some()
+            && let Some(c) = match kind {
+                EntityKind::Circle(c) => Some(c.center.xy()),
+                EntityKind::Arc(a) => Some(a.center.xy()),
+                EntityKind::Ellipse(el) => Some(el.center.xy()),
+                _ => None,
+            }
+        {
+            self.cands.push((mode::CEN, at(c)));
+        }
+        for p in e.prims() {
             let p = match xf {
                 Some(m) => {
                     let p = xform_prim(&p, m);
@@ -693,7 +714,10 @@ fn dim_def_points(dm: &cadcraft_doc::Dimension) -> Vec<Vec2> {
 /// Calls `f` with each object drawn by a block reference and the transform placing it, nested
 /// references expanded (within [`MAX_BLOCK_DEPTH`] levels and `budget` objects); objects that
 /// aren't drawn (hidden, on a layer that is off or frozen, attribute definitions) are left out.
-fn block_leaves(d: &Drawing, ins: &Insert, m: &Mat3, depth: usize, budget: &mut usize, frozen: &[String], f: &mut dyn FnMut(&EntityKind, &Mat3)) {
+/// ponytail: block contents are placed in plan by 2D transforms, so heights inside a reference in
+/// a tilted plane (raised or 3D contents) don't move their snaps; upgrade: carry each leaf's
+/// 3D transform (`Insert::transform3` through `Entity::plane`) and project it.
+fn block_leaves(d: &Drawing, ins: &Insert, m: &Mat3, depth: usize, budget: &mut usize, frozen: &[String], f: &mut dyn FnMut(&Entity, &Mat3)) {
     if depth >= MAX_BLOCK_DEPTH {
         return;
     }
@@ -724,8 +748,12 @@ fn block_leaves(d: &Drawing, ins: &Insert, m: &Mat3, depth: usize, budget: &mut 
                 }
                 match &be.kind {
                     EntityKind::AttDef(_) => {}
-                    EntityKind::Insert(inner) => block_leaves(d, inner, &mm, depth + 1, budget, frozen, f),
-                    k => f(k, &mm),
+                    // A nested reference in a tilted plane: its plan view inside the block first.
+                    EntityKind::Insert(inner) => {
+                        let inner_m = be.plan_xf().map_or(mm, |a| mm.then_before(a));
+                        block_leaves(d, inner, &inner_m, depth + 1, budget, frozen, f)
+                    }
+                    _ => f(be, &mm),
                 }
             }
         }

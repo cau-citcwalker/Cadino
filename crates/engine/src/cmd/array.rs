@@ -125,9 +125,10 @@ pub(crate) fn make_assoc(s: &mut Session, objs: &[Handle], base: Vec2, mut p: Ar
     let src_name = d.anonymous_block_name("*U");
     let mut src = Block::new(&src_name);
     let to_local = Mat3::translate(-base);
-    for mut e in ents {
+    for e in ents {
+        // A translation moves an object in any plane.
+        let mut e = super::helpers::transformed(&e, &to_local)?;
         e.handle = d.new_handle();
-        e.kind.transform(&to_local);
         src.entities.push(e);
     }
     d.blocks.insert(src_name.clone(), Arc::new(src));
@@ -177,27 +178,30 @@ pub(crate) fn explode_array(d: &Drawing, e: &Entity) -> Option<Vec<Entity>> {
     let EntityKind::Insert(ins) = &e.kind else { return None };
     let p = d.array_params(e)?;
     let blk = d.block(&ins.block)?;
-    let m = ins.transform(blk.base.xy());
     let mut out = Vec::new();
     for item in blk.entities.iter() {
-        let item = placed(e, item, &m);
+        let item = placed(e, ins, blk.base, item)?;
         let source = match &item.kind {
-            EntityKind::Insert(i) if i.block.eq_ignore_ascii_case(&p.source) => d.block(&i.block).map(|b| (i.transform(b.base.xy()), b)),
+            EntityKind::Insert(i) if i.block.eq_ignore_ascii_case(&p.source) => d.block(&i.block).map(|b| (i.clone(), b)),
             _ => None,
         };
         match source {
-            Some((im, b)) => out.extend(b.entities.iter().map(|se| placed(&item, se, &im))),
+            Some((i, b)) => {
+                for se in b.entities.iter() {
+                    out.push(placed(&item, &i, b.base, se)?);
+                }
+            }
             None => out.push(item),
         }
     }
     Some(out)
 }
 
-/// `child` of a block referenced by `parent`, moved by `m`, with layer 0 and ByBlock properties
-/// taken from the reference (as EXPLODE does).
-fn placed(parent: &Entity, child: &Entity, m: &Mat3) -> Entity {
-    let mut ne = child.clone();
-    ne.kind.transform(m);
+/// `child` of block reference `parent` (`ins`, block base point `base`) where the reference shows
+/// it ([`super::helpers::placed_in`]), with layer 0 and ByBlock properties taken from the
+/// reference (as EXPLODE does).
+fn placed(parent: &Entity, ins: &Insert, base: Vec3, child: &Entity) -> Option<Entity> {
+    let mut ne = super::helpers::placed_in(parent, ins, base, child)?;
     if ne.common.layer == "0" {
         ne.common.layer = parent.common.layer.clone();
     }
@@ -210,7 +214,7 @@ fn placed(parent: &Entity, child: &Entity, m: &Mat3) -> Entity {
     if ne.common.lineweight == cadcraft_doc::Lineweight::ByBlock {
         ne.common.lineweight = parent.common.lineweight;
     }
-    ne
+    Some(ne)
 }
 
 fn bounds(d: &Drawing, hs: &[Handle]) -> Bounds2 {
@@ -251,19 +255,17 @@ fn copy_all(s: &mut Session, hs: &[Handle], mats: impl Iterator<Item = Mat3>) ->
 /// The objects transformed by each matrix, for the preview.
 fn preview_copies(s: &Session, hs: &[Handle], mats: impl Iterator<Item = Mat3>) -> Vec<EntityKind> {
     let Ok(d) = s.doc() else { return Vec::new() };
-    let src: Vec<EntityKind> = hs.iter().take(PREVIEW_LIMIT).filter_map(|h| d.entity(*h)).map(|e| e.kind.clone()).collect();
+    let src: Vec<&Entity> = hs.iter().take(PREVIEW_LIMIT).filter_map(|h| d.entity(*h).map(|e| &**e)).collect();
     if src.is_empty() {
         return Vec::new();
     }
     let mut out = Vec::new();
     for m in mats {
-        for k in &src {
+        for e in &src {
             if out.len() >= PREVIEW_LIMIT {
                 return out;
             }
-            let mut k = k.clone();
-            k.transform(&m);
-            out.push(k);
+            out.extend(super::helpers::plan_preview(e, &m));
         }
     }
     out

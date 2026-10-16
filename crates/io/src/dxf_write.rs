@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use cadcraft_color::Color;
 use cadcraft_doc::*;
 use cadcraft_dxf::{Tag, Version};
-use cadcraft_geom::{Bounds2, Vec2, Vec3};
+use cadcraft_geom::{Bounds2, Mat4, Vec2, Vec3};
 
 use crate::dxf_ext::{self, DimVal, K};
 
@@ -421,13 +421,15 @@ fn attrib_common(d: &Drawing, e: &Entity, ins: &Insert, a: &Attrib) -> (Common, 
 /// A multiline attribute's groups after its own (DXF 2007 and later): attribute type 2 (ATTRIB)
 /// or 4 (ATTDEF), its alignment point, then its text as embedded MTEXT (`101 Embedded Object`).
 /// Only what differs from unrotated text goes in the embedded object, as AutoCAD writes it.
-fn multiline_tags(w: &mut W, a: &Attrib, attdef: bool) {
+fn multiline_tags(w: &mut W, a: &Attrib, attdef: bool, ext: Option<Vec3>) {
     let Some(m) = a.multiline_text() else { return };
     w.i(71, if attdef { 4 } else { 2 });
     w.i(72, if attdef { 0 } else { 1 });
     w.p(11, a.text.align_pt.unwrap_or(a.text.insert));
     w.s(101, "Embedded Object");
-    w.p(10, m.insert);
+    // The embedded text's point and direction are WCS: out of a tilted plane.
+    let f = ext.map(Mat4::ocs);
+    w.p(10, f.map_or(m.insert, |f| f.apply(m.insert)));
     w.f(40, m.height);
     w.f(41, m.width);
     w.f(46, 0.0);
@@ -443,8 +445,9 @@ fn multiline_tags(w: &mut W, a: &Attrib, attdef: bool) {
         w.s(1, "");
     }
     w.s(7, &m.style);
-    if m.rotation != 0.0 {
-        w.p(11, Vec3::new(m.rotation.cos(), m.rotation.sin(), 0.0));
+    if m.rotation != 0.0 || f.is_some() {
+        let d = Vec3::new(m.rotation.cos(), m.rotation.sin(), 0.0);
+        w.p(11, f.map_or(d, |f| f.apply_vec(d)));
     }
     w.i(73, if m.line_spacing_exact { 2 } else { 1 });
     w.f(44, m.line_spacing);
@@ -458,7 +461,7 @@ fn attrib_flags(a: &Attrib) -> i64 {
 /// A TEXT's groups, or an attribute's (`attrib`, in a file of version `target`) with its
 /// subclass: the subclass version (`280 0`, 2010 and later), prompt, tag, flags and alignment,
 /// then Lock position (`280`, 2007 and later; readers take the 280 after the tag as it).
-fn text_tags(w: &mut W, t: &Text, attrib: Option<(&Attrib, Version)>, attdef_prompt: Option<&str>) {
+fn text_tags(w: &mut W, t: &Text, attrib: Option<(&Attrib, Version)>, attdef_prompt: Option<&str>, ext: Option<Vec3>) {
     w.p(10, t.insert);
     w.f(40, t.height);
     w.s(1, &t.value);
@@ -491,6 +494,9 @@ fn text_tags(w: &mut W, t: &Text, attrib: Option<(&Attrib, Version)>, attdef_pro
     }
     if let Some(a) = t.align_pt {
         w.p(11, a);
+    }
+    if let Some(n) = ext {
+        w.p(210, n);
     }
     match attrib {
         Some((a, target)) => {
@@ -527,6 +533,7 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
             thickness(w, e);
             w.p(10, l.a);
             w.p(11, l.b);
+            extrusion(w, e);
         }
         EntityKind::Point(p) => {
             w.s(0, "POINT");
@@ -536,6 +543,7 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
             if p.angle != 0.0 {
                 w.f(50, p.angle.to_degrees());
             }
+            extrusion(w, e);
         }
         EntityKind::Circle(c) => {
             w.s(0, "CIRCLE");
@@ -543,6 +551,7 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
             thickness(w, e);
             w.p(10, c.center);
             w.f(40, c.radius);
+            extrusion(w, e);
         }
         EntityKind::Arc(a) => {
             w.s(0, "ARC");
@@ -553,12 +562,16 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
             w.s(100, "AcDbArc");
             w.f(50, a.start.to_degrees());
             w.f(51, a.end.to_degrees());
+            extrusion(w, e);
         }
         EntityKind::Ellipse(el) => {
             w.s(0, "ELLIPSE");
             common(w, e, owner, paper, "AcDbEllipse");
-            w.p(10, el.center);
-            w.p(11, el.major);
+            // The file keeps WCS points: out of a tilted plane.
+            let f = tilted(e).map(Mat4::ocs);
+            w.p(10, f.map_or(el.center, |f| f.apply(el.center)));
+            w.p(11, f.map_or(el.major, |f| f.apply_vec(Vec3::new(el.major.x, el.major.y, 0.0))));
+            extrusion(w, e);
             w.f(40, el.ratio);
             w.f(41, el.start);
             w.f(42, el.end);
@@ -585,11 +598,12 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
                     w.f(42, v.bulge);
                 }
             }
+            extrusion(w, e);
         }
         EntityKind::MLine(m) => {
             w.s(0, "MLINE");
             common(w, e, owner, paper, "AcDbMline");
-            w.t.extend(crate::dxf_mline::entity_tags(m, &cx.mlines.handle(&m.style)));
+            w.t.extend(crate::dxf_mline::entity_tags(m, &cx.mlines.handle(&m.style), tilted(e).unwrap_or(Vec3::Z)));
         }
         EntityKind::Polyline3d(p) => {
             w.s(0, "POLYLINE");
@@ -626,29 +640,33 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
             w.i(72, s.knots.len() as i64);
             w.i(73, s.control.len() as i64);
             w.i(74, s.fit.len() as i64);
+            // The file keeps WCS points: at the elevation, out of a tilted plane.
+            let f = tilted(e).map(Mat4::ocs);
+            let (pt, dir) = (|p: Vec3| f.map_or(p, |f| f.apply(p)), |v: Vec3| f.map_or(v, |f| f.apply_vec(v)));
+            extrusion(w, e);
             w.f(42, 1e-10);
             w.f(43, 1e-10);
             // Fit data: tolerance and end tangents (the knot parametrisation is implied by the knots).
             if !s.fit.is_empty() {
                 w.f(44, s.fit_opts.tolerance);
                 if let Some(t) = s.fit_opts.start_tangent {
-                    w.p(12, t.to3(0.0));
+                    w.p(12, dir(t.to3(0.0)));
                 }
                 if let Some(t) = s.fit_opts.end_tangent {
-                    w.p(13, t.to3(0.0));
+                    w.p(13, dir(t.to3(0.0)));
                 }
             }
             for k in &s.knots {
                 w.f(40, *k);
             }
             for (i, c) in s.control.iter().enumerate() {
-                w.p(10, c.to3(0.0));
+                w.p(10, pt(c.to3(s.elevation)));
                 if let Some(wt) = s.weights.get(i) {
                     w.f(41, *wt);
                 }
             }
-            for f in &s.fit {
-                w.p(11, f.to3(0.0));
+            for p in &s.fit {
+                w.p(11, pt(p.to3(s.elevation)));
             }
         }
         EntityKind::Helix(h) => {
@@ -692,7 +710,7 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
             w.s(0, "TEXT");
             common(w, e, owner, paper, "AcDbText");
             thickness(w, e);
-            text_tags(w, t, None, None);
+            text_tags(w, t, None, None, tilted(e));
         }
         EntityKind::Solid3d(s) => {
             w.s(0, "3DSOLID");
@@ -717,15 +735,17 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
         EntityKind::AttDef(a) => {
             w.s(0, "ATTDEF");
             common(w, e, owner, paper, "AcDbText");
-            text_tags(w, &a.text, Some((a, cx.target)), Some(&a.prompt));
+            text_tags(w, &a.text, Some((a, cx.target)), Some(&a.prompt), tilted(e));
             if cx.target >= Version::R2007 {
-                multiline_tags(w, a, true);
+                multiline_tags(w, a, true, tilted(e));
             }
         }
         EntityKind::MText(t) => {
             w.s(0, "MTEXT");
             common(w, e, owner, paper, "AcDbMText");
-            w.p(10, t.insert);
+            // The file keeps a WCS insertion point and direction: out of a tilted plane.
+            let f = tilted(e).map(Mat4::ocs);
+            w.p(10, f.map_or(t.insert, |f| f.apply(t.insert)));
             w.f(40, t.height);
             w.f(41, t.width);
             w.i(71, i64::from(t.attach));
@@ -741,8 +761,13 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
                 w.s(1, "");
             }
             w.s(7, &t.style);
-            if t.rotation != 0.0 {
-                w.f(50, t.rotation.to_degrees());
+            match f {
+                Some(f) => {
+                    extrusion(w, e);
+                    w.p(11, f.apply_vec(Vec3::new(t.rotation.cos(), t.rotation.sin(), 0.0)));
+                }
+                None if t.rotation != 0.0 => w.f(50, t.rotation.to_degrees()),
+                None => {}
             }
             // Line spacing style: 1 = at least, 2 = exactly.
             w.i(73, if t.line_spacing_exact { 2 } else { 1 });
@@ -767,6 +792,7 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
                 w.f(44, i.col_spacing);
                 w.f(45, i.row_spacing);
             }
+            extrusion(w, e);
             if !i.attribs.is_empty() {
                 for a in &i.attribs {
                     let ah = w.h();
@@ -781,9 +807,9 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
                         w.i(60, 1);
                     }
                     w.s(100, "AcDbText");
-                    text_tags(w, &a.text, Some((a, cx.target)), None);
+                    text_tags(w, &a.text, Some((a, cx.target)), None, tilted(e));
                     if cx.target >= Version::R2007 {
-                        multiline_tags(w, a, false);
+                        multiline_tags(w, a, false, tilted(e));
                     }
                 }
                 let sh = w.h();
@@ -820,6 +846,8 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
             if !dm.text.is_empty() {
                 w.s(1, &dm.text);
             }
+            // A tilted extrusion read from a file goes back (the dimension itself stays level).
+            extrusion(w, e);
             w.s(3, &dm.style);
             if dm.text_rotation != 0.0 {
                 w.f(53, dm.text_rotation.to_degrees());
@@ -960,6 +988,7 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
             for v in &l.vertices {
                 w.p(10, *v);
             }
+            extrusion(w, e);
         }
         EntityKind::Image(i) => {
             // Every image has its IMAGEDEF (planned in `write`); the fallback never happens.
@@ -977,6 +1006,7 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
             w.p(12, s.corners[2]);
             w.p(13, s.corners[3]);
             thickness(w, e);
+            extrusion(w, e);
         }
         EntityKind::Face3d(f) => {
             w.s(0, "3DFACE");
@@ -991,7 +1021,7 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
             w.s(0, "HATCH");
             common(w, e, owner, paper, "AcDbHatch");
             w.p(10, Vec3::new(0.0, 0.0, h.elevation));
-            w.p(210, Vec3::Z);
+            w.p(210, tilted(e).unwrap_or(Vec3::Z));
             w.s(2, &h.pattern);
             w.i(70, i64::from(h.solid));
             w.i(71, i64::from(h.associative));
@@ -1129,6 +1159,7 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
             w.s(3, &t.style);
             w.p(10, t.insert);
             w.s(1, &t.text);
+            extrusion(w, e);
             w.p(11, t.dir);
         }
         // Entity types CADCraft doesn't model aren't written; the save command reports them.
@@ -1199,6 +1230,18 @@ fn gradient(w: &mut W, g: &Gradient) {
     w.i(1070, i64::from(g.centered));
     w.s(1000, g.color1.name());
     w.s(1000, g.color2.name());
+}
+
+/// The extrusion of an object whose plane is not the XY plane's (its OCS isn't the WCS).
+fn tilted(e: &Entity) -> Option<Vec3> {
+    (Mat4::ocs(e.common.extrusion) != Mat4::IDENTITY).then_some(e.common.extrusion)
+}
+
+/// Group 210 (extrusion) of an object out of the XY plane's orientation; only then.
+fn extrusion(w: &mut W, e: &Entity) {
+    if let Some(n) = tilted(e) {
+        w.p(210, n);
+    }
 }
 
 /// Group 39 (thickness) of the entities whose DXF Reference record has one; only when set.
@@ -1290,11 +1333,13 @@ fn dim_block_entities(d: &Drawing, dm: &Dimension, layer: &str) -> Vec<Entity> {
     let style = d.dim_style(&dm.style).cloned().unwrap_or_default().with_overrides(&dm.overrides);
     let g = cadcraft_render::dimension_in(d, dm);
     let mut out = Vec::new();
+    // At the dimension's elevation, as AutoCAD's *D blocks hold it (drawn without raising again).
+    let z = if dm.defpt.z.is_finite() { dm.defpt.z } else { 0.0 };
     let c = Common { layer: layer.into(), color: Color::ByBlock, ..Common::default() };
     for l in &g.lines {
         for seg in l.windows(2) {
             if let [a, b] = seg {
-                out.push(Entity { handle: Handle(0), common: c.clone(), kind: EntityKind::Line(Line { a: a.to3(0.0), b: b.to3(0.0) }) });
+                out.push(Entity { handle: Handle(0), common: c.clone(), kind: EntityKind::Line(Line { a: a.to3(z), b: b.to3(z) }) });
             }
         }
     }
@@ -1303,7 +1348,7 @@ fn dim_block_entities(d: &Drawing, dm: &Dimension, layer: &str) -> Vec<Entity> {
             out.push(Entity {
                 handle: Handle(0),
                 common: c.clone(),
-                kind: EntityKind::Solid(Solid { corners: [a.to3(0.0), b.to3(0.0), cc.to3(0.0), cc.to3(0.0)] }),
+                kind: EntityKind::Solid(Solid { corners: [a.to3(z), b.to3(z), cc.to3(z), cc.to3(z)] }),
             });
         }
     }
@@ -1312,7 +1357,7 @@ fn dim_block_entities(d: &Drawing, dm: &Dimension, layer: &str) -> Vec<Entity> {
             handle: Handle(0),
             common: c,
             kind: EntityKind::MText(MText {
-                insert: g.text_pos.to3(0.0),
+                insert: g.text_pos.to3(z),
                 height: g.text_height,
                 width: 0.0,
                 attach: 5,

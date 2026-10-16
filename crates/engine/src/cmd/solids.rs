@@ -11,7 +11,7 @@ use std::f64::consts::{PI, TAU};
 use std::path::Path;
 use std::sync::Arc;
 
-use cadcraft_doc::{EntityKind, Handle, Helix, Solid3d};
+use cadcraft_doc::{Entity, EntityKind, Handle, Helix, Part, Solid3d};
 use cadcraft_geom::{EPS, Mat4, PolyVertex, Polyline, Spline, Vec2, Vec3};
 use cadcraft_kernel::{BoolOp, Built, Curve, MAX_SPLINE_POINTS, Placed, Primitive, Seg};
 use serde_json::{Map, Value, json};
@@ -95,6 +95,28 @@ pub(super) fn solid(b: Built) -> EntityKind {
     EntityKind::Solid3d(Solid3d { brep: Arc::from(b.brep), mesh: Arc::new(b.mesh), xform: Mat4::IDENTITY, ..Default::default() })
 }
 
+/// `b` as the shape of the solid `e`, keeping its part name and material.
+pub(super) fn reshape(e: &mut Entity, b: Built) {
+    let part = match &e.kind {
+        EntityKind::Solid3d(x) => x.part.clone(),
+        _ => Part::default(),
+    };
+    e.kind = solid(b);
+    if let EntityKind::Solid3d(x) = &mut e.kind {
+        x.part = part;
+    }
+}
+
+/// Runs `f`, putting the drawing back as it was when `f` fails part way (no partial result).
+pub(super) fn all_or_nothing<T>(s: &mut Session, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
+    let before = s.state()?.doc.clone();
+    let r = f(s);
+    if r.is_err() {
+        s.state_mut()?.doc = before;
+    }
+    r
+}
+
 pub(super) fn add(s: &mut Session, b: Built) -> Result<Value> {
     let h = s.add_entity(solid(b))?;
     Ok(json!({ "handle": h.hex() }))
@@ -102,7 +124,11 @@ pub(super) fn add(s: &mut Session, b: Built) -> Result<Value> {
 
 /// A point as `[x, y]` or `[x, y, z]` (z = 0 when left out; `None` when z is not a number).
 pub(super) fn p3(p: &Value, key: &str) -> Option<Vec3> {
-    let v = p.get(key)?;
+    p3_value(p.get(key)?)
+}
+
+/// [`p3`] of a value.
+pub(super) fn p3_value(v: &Value) -> Option<Vec3> {
     let z = match v.as_array().and_then(|a| a.get(2)) {
         Some(z) => z.as_f64()?,
         None => 0.0,
@@ -329,7 +355,7 @@ fn helix_curve(h: &Helix) -> Curve {
 
 /// A curve object as a kernel profile of lines and arcs (closed or, unless `closed_only`, open);
 /// `None` for other objects (splines and helices too: a profile is lines and arcs).
-fn profile(k: &EntityKind, closed_only: bool) -> Result<Option<Vec<Seg>>> {
+pub(super) fn profile(k: &EntityKind, closed_only: bool) -> Result<Option<Vec<Seg>>> {
     let open = match k {
         EntityKind::Line(_) | EntityKind::Arc(_) => true,
         EntityKind::LwPolyline(p) => !p.closed,
@@ -471,7 +497,7 @@ pub(super) fn per_solid(s: &mut Session, cmd: &str, hs: &[Handle], op: impl Fn(P
     let n = built.len();
     let d = s.doc_mut()?;
     for (h, b) in built {
-        d.modify_entity(h, |e| e.kind = solid(b))?;
+        d.modify_entity(h, |e| reshape(e, b))?;
     }
     Ok((n, all - n))
 }
@@ -523,12 +549,19 @@ fn combine(a: &Solid3d, b: &Solid3d, op: BoolOp) -> Result<Solid3d> {
     Ok(Solid3d { brep: Arc::from(r.brep), mesh: Arc::new(r.mesh), xform: Mat4::IDENTITY, ..Default::default() })
 }
 
+/// The result replaces the first solid, which keeps its properties and part.
 fn finish(s: &mut Session, keep: Handle, r: Solid3d, all: &[Handle]) -> Result<Option<Value>> {
     let d = s.doc_mut()?;
     for h in all.iter().filter(|h| **h != keep) {
         d.remove_entity(*h);
     }
-    d.modify_entity(keep, |e| e.kind = EntityKind::Solid3d(r))?;
+    d.modify_entity(keep, |e| {
+        let part = match &e.kind {
+            EntityKind::Solid3d(x) => x.part.clone(),
+            _ => Part::default(),
+        };
+        e.kind = EntityKind::Solid3d(Solid3d { part, ..r });
+    })?;
     Ok(Some(json!({ "handle": keep.hex(), "message": "" })))
 }
 

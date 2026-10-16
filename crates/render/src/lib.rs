@@ -17,6 +17,7 @@ mod mline;
 mod outline;
 pub mod paper;
 pub mod pen;
+mod plane;
 mod plotstyle;
 mod point;
 pub mod raster;
@@ -28,7 +29,7 @@ mod wide;
 
 use cadcraft_color::{Color, Rgb};
 use cadcraft_doc::{Drawing, Entity, EntityKind, Handle, Lineweight, Prim, Space};
-use cadcraft_geom::{Bounds2, Mat3, Polyline, Vec2, ViewDir};
+use cadcraft_geom::{Bounds2, Mat3, Mat4, Polyline, Vec2, ViewDir};
 use pen::Pen;
 
 pub use dim::{ArrowGeom, Arrowhead, DimGeometry, DimText, LineRole, arrowhead, dimension_geometry, dimension_geometry_with, format_linear_value};
@@ -100,7 +101,7 @@ pub struct DisplayList {
     /// are "use object"), turned into geometry by [`pen::apply`].
     pub pens: Vec<Pen>,
     /// Shaded model space ([`Options::shaded`]): how far toward the viewer each vertex of `verts`
-    /// and `tris` is (`ViewDir::depth` of its world point; 2D objects lie on z = 0), parallel to
+    /// and `tris` is (`ViewDir::depth` of its world point; 2D objects lie in their own planes), parallel to
     /// them. Empty for other lists, whose vertices all share one depth. A depth-buffered canvas
     /// hides what is behind shaded faces with it; the CPU raster keeps painter order.
     pub vert_depth: Vec<f64>,
@@ -301,6 +302,11 @@ fn max_scale(m: &Mat3) -> f64 {
 struct Ctx<'a> {
     d: &'a Drawing,
     xf: Mat3,
+    /// `xf` in 3D: local points (block, then the object's own plane) → view-plane x and y and
+    /// the depth toward the viewer; `xf` is what it does to the local XY plane.
+    xf3: Mat4,
+    /// The depth of the local XY plane at view-plane point `q`: `g[0] q.x + g[1] q.y + g[2]`.
+    grad: [f64; 3],
     /// `xf` without the view's projection: the block references' transforms (and a viewport's
     /// model → paper transform), which `xf` then projects with `opts.view_dir.plane_xf()`.
     /// Sizes in drawing units (tolerance, dashes, relative points) are measured by this, so a
@@ -326,6 +332,10 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    /// Heights don't show: local z moves nothing in the view plane (plan view, layouts).
+    fn flat(&self) -> bool {
+        self.xf3.m[0][2] == 0.0 && self.xf3.m[1][2] == 0.0
+    }
     /// A layer's colour, honouring the viewport's override.
     fn layer_color(&self, name: &str) -> Option<Color> {
         if let Some((_, c)) = self.vp_colors.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)) {
@@ -391,8 +401,9 @@ impl Builder<'_> {
     }
     /// Record the depth of vertex `q` (view plane) when the list keeps depths: `z` for a 3D
     /// point, else the depth of the XY plane there.
-    fn depth_of(&self, q: Vec2, z: Option<f64>) -> Option<f64> {
-        self.depth.map(|g| z.unwrap_or(g[0] * q.x + g[1] * q.y))
+    fn depth_of(&self, ctx: &Ctx, q: Vec2, z: Option<f64>) -> Option<f64> {
+        let g = ctx.grad;
+        self.depth.map(|_| z.unwrap_or(g[0] * q.x + g[1] * q.y + g[2]))
     }
     fn polyline(&mut self, ctx: &Ctx, color: Ink, lw: f32, pts: &[Vec2]) {
         self.polyline_at(ctx, color, lw, pts, ctx.xf, &[]);
@@ -410,7 +421,7 @@ impl Builder<'_> {
             let q = xf.apply(*p);
             self.list.bounds.add(q);
             self.list.verts.push(q);
-            if let Some(d) = self.depth_of(q, z.get(i).copied()) {
+            if let Some(d) = self.depth_of(ctx, q, z.get(i).copied()) {
                 self.list.vert_depth.push(d);
             }
         }
@@ -440,7 +451,7 @@ impl Builder<'_> {
             let q = xf.apply(*p);
             self.list.bounds.add(q);
             self.list.tris.push(q);
-            if let Some(d) = self.depth_of(q, z.get(i).copied()) {
+            if let Some(d) = self.depth_of(ctx, q, z.get(i).copied()) {
                 self.list.tri_depth.push(d);
             }
         }
@@ -499,12 +510,15 @@ impl Builder<'_> {
         }
     }
     fn point(&mut self, ctx: &Ctx, color: Ink, p: Vec2) {
+        self.point_at(ctx, color, ctx.xf.apply(p), None);
+    }
+    /// A point marker at view-plane point `q`, at depth `z` (a 3D point) or on the local plane.
+    fn point_at(&mut self, ctx: &Ctx, color: Ink, q: Vec2, z: Option<f64>) {
         let (color, _) = self.styled(color, 0.0);
-        let q = ctx.xf.apply(p);
         self.list.bounds.add(q);
         let start = self.list.verts.len() as u32;
         self.list.verts.push(q);
-        if let Some(d) = self.depth_of(q, None) {
+        if let Some(d) = self.depth_of(ctx, q, z) {
             self.list.vert_depth.push(d);
         }
         self.list.prims.push(DPrim {
@@ -519,13 +533,17 @@ impl Builder<'_> {
         });
     }
     fn infinite(&mut self, ctx: &Ctx, color: Ink, base: Vec2, dir: Vec2, ray: bool) {
+        self.infinite_at(ctx, color, ctx.xf.apply(base), ctx.xf.apply_vec(dir).normalized(), ray, None);
+    }
+    /// An infinite line or ray through view-plane point `q` along unit `dir`, `z` as for
+    /// [`Builder::point_at`].
+    fn infinite_at(&mut self, ctx: &Ctx, color: Ink, q: Vec2, dir: Vec2, ray: bool, z: Option<f64>) {
         let (color, _) = self.styled(color, 0.0);
         let start = self.list.verts.len() as u32;
-        let q = ctx.xf.apply(base);
         self.list.verts.push(q);
-        self.list.verts.push(ctx.xf.apply_vec(dir).normalized());
+        self.list.verts.push(dir);
         // The direction has no depth of its own: both at the base's.
-        if let Some(d) = self.depth_of(q, None) {
+        if let Some(d) = self.depth_of(ctx, q, z) {
             self.list.vert_depth.extend([d, d]);
         }
         self.list.prims.push(DPrim {
@@ -560,10 +578,13 @@ pub fn build_plot(d: &Drawing, space: &Space, opts: &Options) -> DisplayList {
     build_space(d, space, opts, true)
 }
 
-fn top_ctx<'a>(d: &'a Drawing, xf: Mat3, top: Handle, frozen: &'a [String], vp_colors: &'a [(String, Color)]) -> Ctx<'a> {
+/// The context of a top-level object drawn by `xf3` (see [`Ctx::xf3`]).
+fn top_ctx<'a>(d: &'a Drawing, xf3: Mat4, top: Handle, frozen: &'a [String], vp_colors: &'a [(String, Color)]) -> Ctx<'a> {
     Ctx {
         d,
-        xf,
+        xf: xf3.plane_xy(),
+        xf3,
+        grad: plane::depth_gradient(&xf3),
         plan: Mat3::IDENTITY,
         block_color: Color::Index(7),
         block_layer: None,
@@ -615,7 +636,7 @@ fn build_space(d: &Drawing, space: &Space, opts: &Options, plotting: bool) -> Di
                 }
                 continue;
             }
-            entity(&mut b, &top_ctx(d, opts.view_dir.plane_xf(), e.handle, &[], &[]), e);
+            entity(&mut b, &top_ctx(d, opts.view_dir.rotation(), e.handle, &[], &[]), e);
         }
     }
     // A layout is drawn in paper units, so its pens become geometry now.
@@ -654,7 +675,7 @@ fn build_parallel(b: &mut Builder, d: &Drawing, store: &cadcraft_doc::EntityStor
                 depth,
             };
             for e in chunk {
-                entity(&mut part, &top_ctx(d, opts.view_dir.plane_xf(), e.handle, &[], &[]), e);
+                entity(&mut part, &top_ctx(d, opts.view_dir.rotation(), e.handle, &[], &[]), e);
             }
             part.list
         })
@@ -742,7 +763,7 @@ fn viewport(b: &mut Builder, d: &Drawing, e: &Entity, vp: &cadcraft_doc::Viewpor
     let poly = viewport_clip(d, e.handle, vp);
     // Border (on the viewport's layer; layer off hides only the border).
     if poly.is_none() {
-        entity(b, &top_ctx(d, Mat3::IDENTITY, e.handle, &[], &[]), e);
+        entity(b, &top_ctx(d, Mat4::IDENTITY, e.handle, &[], &[]), e);
     }
     if b.opts.skip_viewport == Some(e.handle) {
         return;
@@ -827,7 +848,7 @@ fn contents(b: &mut Builder, d: &Drawing, vp: &cadcraft_doc::Viewport, area: Bou
     // PSLTSCALE on: model-space dashes are scaled so they measure the same on paper as in
     // paper space, whatever the viewport scale.
     let lt_factor = if d.header.i64("PSLTSCALE", 1) != 0 { 1.0 / s } else { 1.0 };
-    let ctx = || Ctx { lt_factor, plan: xf, ..top_ctx(d, xf, VIEWPORT_CONTENT, &vp.frozen_layers, &vp.layer_colors) };
+    let ctx = || Ctx { lt_factor, plan: xf, ..top_ctx(d, plane::lift(&xf), VIEWPORT_CONTENT, &vp.frozen_layers, &vp.layer_colors) };
     let seen = |me: &Entity| {
         if matches!(me.kind, EntityKind::Viewport(_)) {
             return false;
@@ -1030,7 +1051,7 @@ pub fn build_entities<'a, I: IntoIterator<Item = &'a Entity>>(d: &Drawing, ents:
     };
     b.list.plane_slope = b.depth.unwrap_or_default();
     for e in ents {
-        entity(&mut b, &top_ctx(d, opts.view_dir.plane_xf(), e.handle, &[], &[]), e);
+        entity(&mut b, &top_ctx(d, opts.view_dir.rotation(), e.handle, &[], &[]), e);
     }
     b.list
 }
@@ -1191,6 +1212,20 @@ fn entity_parts(b: &mut Builder, ctx: &Ctx, e: &Entity) {
     };
     let tol = b.opts.tolerance / ctx.plan.scale_factor().max(1e-12);
     let lw = if b.opts.lineweights { lw } else { 0.0 };
+    // Drawn where it is in 3D: a planar object in its own plane, a 3D one by its points (seen
+    // from straight above, both are what they always were).
+    // ponytail: thickness (DXF 39) isn't drawn: no extruded sides or top; upgrade: stroke the
+    // outline again moved by thickness × extrusion and join the vertices in non-plan views.
+    let outer = ctx;
+    let own;
+    let ctx = match plane::draw_plane(e) {
+        Some(p) if p != Mat4::IDENTITY => {
+            own = plane::with_plane(ctx, &p);
+            &own
+        }
+        None if !ctx.flat() => return plane::free(b, ctx, e, rgb, lw, lt.as_ref(), ltscale, tol),
+        _ => ctx,
+    };
     // Stroke a polyline with the entity's linetype.
     let stroke = |b: &mut Builder, pts: &[Vec2]| match &lt {
         Some(lt) => {
@@ -1236,7 +1271,9 @@ fn entity_parts(b: &mut Builder, ctx: &Ctx, e: &Entity) {
             if let Some(blk) = dm.block.as_ref().and_then(|n| ctx.d.block(n))
                 && ctx.depth < cadcraft_doc::MAX_BLOCK_DEPTH
             {
-                let sub = Ctx { block_pstyle: b.named, block_transparency: b.transparency, ..sub_ctx(ctx, e, Mat3::IDENTITY) };
+                // The block (AutoCAD's *D1…) holds the geometry where it is, at the dimension's
+                // elevation: drawn from the context outside the dimension's own level plane.
+                let sub = Ctx { block_pstyle: b.named, block_transparency: b.transparency, ..sub_ctx(outer, e, Mat3::IDENTITY, Mat4::IDENTITY) };
                 for be in blk.entities.iter() {
                     if !b.expand() {
                         break;
@@ -1593,7 +1630,9 @@ fn align(h: cadcraft_doc::HAlign, v: cadcraft_doc::VAlign) -> (cadcraft_fonts::A
     (ha, va)
 }
 
-fn sub_ctx<'a>(ctx: &Ctx<'a>, e: &Entity, m: Mat3) -> Ctx<'a> {
+/// The context inside block reference (or dimension block) `e` placed by `m`, which is `m3` in
+/// 3D (block z included).
+fn sub_ctx<'a>(ctx: &Ctx<'a>, e: &Entity, m: Mat3, m3: Mat4) -> Ctx<'a> {
     let layer = if e.common.layer == "0" { ctx.block_layer.clone() } else { Some(e.common.layer.clone()) };
     let color = match e.common.color {
         Color::ByBlock => ctx.block_color,
@@ -1610,9 +1649,12 @@ fn sub_ctx<'a>(ctx: &Ctx<'a>, e: &Entity, m: Mat3) -> Ctx<'a> {
         "bylayer" => ctx.d.layer(layer.as_deref().unwrap_or("0")).map(|l| l.linetype.clone()).unwrap_or_else(|| "Continuous".into()),
         _ => e.common.linetype.clone(),
     };
+    let xf3 = ctx.xf3.mul(&m3);
     Ctx {
         d: ctx.d,
         xf: ctx.xf.then_before(m),
+        xf3,
+        grad: plane::depth_gradient(&xf3),
         plan: ctx.plan.then_before(m),
         block_color: color,
         block_layer: layer,
@@ -1643,7 +1685,8 @@ fn insert(b: &mut Builder, ctx: &Ctx, e: &Entity, ins: &cadcraft_doc::Insert, rg
                 }
                 let off = Vec2::new(ins.col_spacing * f64::from(c), ins.row_spacing * f64::from(r)).rotate(ins.rotation);
                 let m = Mat3::translate(off).then_before(ins.transform(blk.base.xy()));
-                let sub = Ctx { block_pstyle: b.named, block_transparency: b.transparency, ..sub_ctx(ctx, e, m) };
+                // In 3D the block's z takes the reference's z scale about the base point's height.
+                let sub = Ctx { block_pstyle: b.named, block_transparency: b.transparency, ..sub_ctx(ctx, e, m, ins.lift(&m, blk.base)) };
                 for be in blk.entities.iter() {
                     // Constant/visible attribute definitions inside blocks are not drawn; attribs are.
                     if matches!(be.kind, EntityKind::AttDef(_)) {
@@ -1677,7 +1720,7 @@ fn insert(b: &mut Builder, ctx: &Ctx, e: &Entity, ins: &cadcraft_doc::Insert, rg
                 (None, true) => (rgb, resolve(ctx, e, b.plotting).1, true, reference),
                 (def, _) => {
                     let c = a.props.over(&def.map(|d| d.common.clone()).unwrap_or_else(by_block));
-                    let (ink, lw, _, _, shown, layer_t) = resolve_common(&sub_ctx(ctx, e, Mat3::IDENTITY), &c, b.plotting);
+                    let (ink, lw, _, _, shown, layer_t) = resolve_common(&sub_ctx(ctx, e, Mat3::IDENTITY, Mat4::IDENTITY), &c, b.plotting);
                     let t = if b.opts.transparency { transparency(c.transparency, layer_t, reference) } else { 0 };
                     (ink, lw, shown, t)
                 }
@@ -1721,3 +1764,6 @@ fn leader_scale(d: &Drawing, st: Option<&cadcraft_doc::DimStyle>) -> f64 {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod plane_tests;

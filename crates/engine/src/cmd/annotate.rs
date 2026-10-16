@@ -233,7 +233,8 @@ fn run_aligned(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Centre and radius of a circle/arc entity.
 fn circle_of(s: &Session, h: Handle) -> Option<(Vec2, f64)> {
-    match &s.doc().ok()?.entity(h)?.kind {
+    // In a tilted plane a circle shows in plan as an ellipse or a line: nothing to measure.
+    match &s.doc().ok()?.entity(h).filter(|e| e.plan_xf().is_none())?.kind {
         EntityKind::Circle(c) => Some((c.center.xy(), c.radius)),
         EntityKind::Arc(a) => Some((a.center.xy(), a.radius)),
         _ => None,
@@ -561,7 +562,7 @@ fn object_extent(s: &Session, h: Handle) -> Option<(Vec2, Vec2)> {
     if let Some((c, r)) = circle_of(s, h).filter(|_| matches!(e.kind, EntityKind::Circle(_))) {
         return Some((c - Vec2::X * r, c + Vec2::X * r));
     }
-    e.kind.prims().into_iter().find_map(|pr| match pr {
+    e.prims().into_iter().find_map(|pr| match pr {
         Prim::Seg(sg @ (Segment::Line(_) | Segment::Arc { .. })) => Some((sg.start(), sg.end())),
         _ => None,
     })
@@ -1026,8 +1027,7 @@ impl Interactive for LinearM {
                     s.echo("*Invalid selection*");
                     return Ok(Step::Continue);
                 };
-                let seg =
-                    s.doc()?.entity(h).and_then(|e| e.kind.prims().into_iter().find_map(|pr| if let Prim::Seg(sg) = pr { Some(sg) } else { None }));
+                let seg = s.doc()?.entity(h).and_then(|e| e.prims().into_iter().find_map(|pr| if let Prim::Seg(sg) = pr { Some(sg) } else { None }));
                 match seg {
                     Some(sg @ Segment::Line(_)) | Some(sg @ Segment::Arc { .. }) => {
                         self.pts = vec![sg.start(), sg.end()];

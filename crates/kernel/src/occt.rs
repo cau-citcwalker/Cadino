@@ -19,7 +19,7 @@ use opencascade::mesh::Mesher;
 use opencascade::primitives::{Compound, Edge, Face, Shape, ShapeType, Shell, Solid, Wire};
 
 use crate::curve::{Cut, Run, closed, unit};
-use crate::{BoolOp, Built, Curve, KernelError, Placed, Primitive, Result, Seg, similarity};
+use crate::{BoolOp, Built, Curve, Imported, KernelError, Placed, Primitive, Result, Seg, similarity};
 
 fn dv(p: Vec3) -> DVec3 {
     dvec3(p.x, p.y, p.z)
@@ -271,6 +271,7 @@ pub fn tessellate(brep: &str) -> Result<Mesh3> {
 
 pub fn export_step(solids: &[Placed], path: &Path) -> Result<()> {
     let shapes = solids.iter().map(|s| placed(*s)).collect::<Result<Vec<_>>>()?;
+    let _one = exchanging();
     Shape::write_all_step(&shapes, path).map_err(failed("STEP export"))
 }
 
@@ -281,7 +282,239 @@ pub fn export_stl(solids: &[Placed], path: &Path) -> Result<()> {
 }
 
 pub fn import_step(path: &Path) -> Result<Built> {
-    built(Shape::read_step(path).map_err(failed("STEP import"))?)
+    let shape = {
+        let _one = exchanging();
+        Shape::read_step(path).map_err(failed("STEP import"))?
+    };
+    built(shape)
+}
+
+/// One STEP or IGES file at a time in this process: OpenCASCADE's data exchange keeps global
+/// state (two at once crash). The apps run each in a worker process of its own anyway.
+fn exchanging() -> std::sync::MutexGuard<'static, ()> {
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Solids (as trimmed surfaces: OpenCASCADE's default IGES mode, in millimetres) and curves.
+pub fn export_iges(solids: &[Placed], curves: &[Curve], path: &Path) -> Result<()> {
+    let mut shapes = solids.iter().map(|s| placed(*s)).collect::<Result<Vec<_>>>()?;
+    shapes.extend(curves.iter().map(|c| Shape::from(wire(c))));
+    let all: Shape = Compound::from_shapes(&shapes).into();
+    let _one = exchanging();
+    all.write_iges(path).map_err(failed("IGES export"))
+}
+
+/// Most points the free curves of one IGES file may come back with (hostile files).
+const MAX_CURVE_POINTS: usize = 1_000_000;
+
+/// The faces in lumps, and the free edges chained into polylines. A lump is one object as
+/// OpenCASCADE read it (a solid, a shell, or a group of faces: IGES writers group each solid's
+/// trimmed surfaces), so objects that touch along a whole face stay apart and whole ([`objects`]).
+/// ponytail: opencascade 0.3 has no sewing and no sub-shape iterator, so the grouping is read
+/// from the shape's own B-rep text, and a lump is a compound of faces (booleans on it may fail).
+/// Faces a file leaves ungrouped are joined along edges whose ends match that exactly two of them
+/// share, so ungrouped objects that touch along a face come in split. Free edges that meet end
+/// to end are joined into one polyline, even when the file kept them as separate curves. Upgrade
+/// path: TopoDS_Iterator and BRepBuilderAPI_Sewing in the bindings.
+pub fn import_iges(path: &Path) -> Result<Imported> {
+    let shape = {
+        let _one = exchanging();
+        Shape::read_iges(path).map_err(failed("IGES import"))?
+    };
+    // Points this close are one (a hundred-thousandth of the model's size): faces written as
+    // trimmed surfaces each have their own copy of a shared edge.
+    let q = deflection(&shape) * 0.02;
+    let key = |p: Vec3| ((p.x / q).round() as i64, (p.y / q).round() as i64, (p.z / q).round() as i64);
+    let ends = |e: &Edge| {
+        let (a, b) = (key(v3(e.start_point())), key(v3(e.end_point())));
+        (a.min(b), a.max(b))
+    };
+    let faces: Vec<Face> = shape.faces().collect();
+    // Each face's edges by their ends.
+    let mut bounding: HashMap<_, Vec<(usize, Edge)>> = HashMap::new();
+    for (i, f) in faces.iter().enumerate() {
+        for e in f.edges() {
+            bounding.entry(ends(&e)).or_default().push((i, e));
+        }
+    }
+    // The objects the file grouped are one lump each (their first face is the lump's root).
+    let owner = write_brep(&shape).ok().and_then(|t| objects(&t, faces.len())).unwrap_or_else(|| vec![None; faces.len()]);
+    let mut lump: Vec<usize> = (0..faces.len()).collect();
+    let mut first: HashMap<usize, usize> = HashMap::new();
+    for (i, o) in owner.iter().enumerate() {
+        if let (Some(o), Some(l)) = (o, lump.get_mut(i)) {
+            *l = *first.entry(*o).or_insert(i);
+        }
+    }
+    // Ungrouped faces meeting along an edge two of them share are one lump; an edge more share
+    // (two panels butted flush) joins none of them.
+    let loose = |f: &usize| owner.get(*f).is_some_and(Option::is_none);
+    for on in bounding.values() {
+        let on: Vec<usize> = on.iter().map(|(f, _)| *f).filter(loose).collect();
+        if let [a, rest @ ..] = on.as_slice()
+            && let Some(b) = rest.iter().find(|b| *b != a)
+            && on.iter().all(|f| f == a || f == b)
+        {
+            let (ra, rb) = (root(&mut lump, *a), root(&mut lump, *b));
+            if let Some(r) = lump.get_mut(ra) {
+                *r = rb;
+            }
+        }
+    }
+    let mut groups: Vec<Vec<Shape>> = Vec::new();
+    let mut slot: HashMap<usize, usize> = HashMap::new();
+    for (i, f) in faces.iter().enumerate() {
+        let n = *slot.entry(root(&mut lump, i)).or_insert_with(|| {
+            groups.push(Vec::new());
+            groups.len() - 1
+        });
+        if let Some(g) = groups.get_mut(n) {
+            g.push(Shape::from(f));
+        }
+    }
+    let shapes = groups.into_iter().map(|g| built(Compound::from_shapes(&g).into())).collect::<Result<Vec<_>>>()?;
+    // The free edges: every edge, less one per face's edge with the same ends; where a free edge
+    // has the ends of a face's edge (an arc drawn corner to corner over a panel), by its points.
+    let points = |e: &Edge| -> Vec<Vec3> { e.approximation_segments().map(v3).collect() };
+    let shape_of = |e: &Edge| {
+        let mut k: Vec<_> = points(e).into_iter().map(key).collect();
+        k.sort_unstable();
+        k
+    };
+    let all: Vec<Edge> = shape.edges().collect();
+    let mut count: HashMap<_, usize> = HashMap::new();
+    for e in &all {
+        *count.entry(ends(e)).or_default() += 1;
+    }
+    let mut left: HashMap<_, Vec<Vec<(i64, i64, i64)>>> = HashMap::new();
+    let (mut segs, mut total) = (Vec::new(), 0usize);
+    for e in all {
+        let k = ends(&e);
+        let on_faces = bounding.get(&k).map_or(&[][..], Vec::as_slice);
+        if !on_faces.is_empty() {
+            if count.get(&k).copied().unwrap_or(0) <= on_faces.len() {
+                continue;
+            }
+            let shapes_left = left.entry(k).or_insert_with(|| on_faces.iter().map(|(_, f)| shape_of(f)).collect());
+            let mine = shape_of(&e);
+            if let Some(i) = shapes_left.iter().position(|s| *s == mine) {
+                shapes_left.swap_remove(i);
+                continue;
+            }
+        }
+        let pts = points(&e);
+        total = total.saturating_add(pts.len());
+        if total > MAX_CURVE_POINTS {
+            return Err(KernelError::Invalid("the file's curves are too large to import".into()));
+        }
+        segs.extend(pts.windows(2).filter_map(|w| match *w {
+            [a, b] if key(a) != key(b) => Some((a, b)),
+            _ => None,
+        }));
+    }
+    let mut curves = chain(&segs, key, &HashSet::new());
+    // A closed one ends exactly where it starts.
+    for c in &mut curves {
+        let long = c.len() > 2;
+        if let (Some(a), Some(b)) = (c.first().copied(), c.last_mut())
+            && long
+            && key(a) == key(*b)
+        {
+            *b = a;
+        }
+    }
+    if shapes.is_empty() && curves.is_empty() {
+        return Err(KernelError::Invalid("the file has no surfaces or curves".into()));
+    }
+    Ok(Imported { shapes, curves })
+}
+
+/// The lump `i` is in (see [`import_iges`]), halving the path there as it goes.
+fn root(lump: &mut [usize], mut i: usize) -> usize {
+    // Each step goes to a different entry; a cycle can't form, but stop after every entry anyway.
+    for _ in 0..lump.len() {
+        let Some(&p) = lump.get(i) else { break };
+        if p == i {
+            break;
+        }
+        let up = lump.get(p).copied().unwrap_or(p);
+        if let Some(l) = lump.get_mut(i) {
+            *l = up;
+        }
+        i = up;
+    }
+    i
+}
+
+/// Which object each of a shape's `faces` faces (in [`Shape::faces`] order) is in, read from the
+/// shape's B-rep text (its shape table lists every sub-shape with its children, in the order the
+/// face explorer walks them): `Some(n)` for the n-th solid, shell or compound of faces under the
+/// top of the shape (single-child compounds round it unwrapped), `None` for a face on its own.
+/// `None` when the text doesn't read that way or doesn't account for exactly `faces` faces.
+fn objects(text: &str, faces: usize) -> Option<Vec<Option<usize>>> {
+    const KINDS: [&str; 8] = ["Ve", "Ed", "Wi", "Fa", "Sh", "So", "CS", "Co"];
+    let mut lines = text.lines().map(str::trim);
+    let n: usize = lines.find_map(|l| l.strip_prefix("TShapes"))?.trim().parse().ok()?;
+    // A reference counts back from the end of the table (1 is the last shape written).
+    let at = |r: &str, done: usize| -> Option<usize> {
+        let k: usize = r.trim_start_matches(['+', '-', 'i', 'e']).parse().ok()?;
+        n.checked_sub(k).filter(|p| *p < done)
+    };
+    // Each shape: its kind, then its geometry up to a blank line, its flags, and its children
+    // (written before it) up to `*`. Hostile sizes: every shape takes a few bytes of the text.
+    let mut recs: Vec<(&str, Vec<usize>)> = Vec::with_capacity(n.min(text.len() / 8));
+    for _ in 0..n {
+        let kind = lines.next().filter(|k| KINDS.contains(k))?;
+        lines.find(|l| l.is_empty())?;
+        lines.next()?;
+        let mut kids = Vec::new();
+        'kids: loop {
+            let mut toks = lines.next()?.split_whitespace();
+            while let Some(t) = toks.next() {
+                if t == "*" {
+                    break 'kids;
+                }
+                kids.push(at(t, recs.len())?);
+                toks.next()?;
+            }
+        }
+        recs.push((kind, kids));
+    }
+    let top = lines.find(|l| !l.is_empty())?.split_whitespace().next()?;
+    let mut top = at(top, recs.len())?;
+    // Faces under each shape, counted as the explorer meets them (a shared one each time).
+    let mut count: Vec<usize> = Vec::with_capacity(recs.len());
+    for (kind, kids) in &recs {
+        let c = if *kind == "Fa" { 1 } else { kids.iter().fold(0usize, |a, k| a.saturating_add(count.get(*k).copied().unwrap_or(0))) };
+        count.push(c);
+    }
+    // Children come before their parent, so this ends.
+    while let Some(("Co", [kid])) = recs.get(top).map(|(k, v)| (*k, v.as_slice()))
+        && recs.get(*kid).is_some_and(|(k, _)| *k != "Fa")
+    {
+        top = *kid;
+    }
+    let parts = match recs.get(top)? {
+        ("Co", kids) => kids.clone(),
+        _ => vec![top],
+    };
+    if parts.iter().fold(0usize, |a, p| a.saturating_add(count.get(*p).copied().unwrap_or(0))) != faces {
+        return None;
+    }
+    let mut out = Vec::with_capacity(faces);
+    let mut object = 0;
+    for p in parts {
+        match (recs.get(p)?.0, count.get(p).copied().unwrap_or(0)) {
+            (_, 0) => {}
+            ("Fa", _) => out.push(None),
+            (_, c) => {
+                out.extend(std::iter::repeat_n(Some(object), c));
+                object += 1;
+            }
+        }
+    }
+    Some(out)
 }
 
 /// B-rep text first (written before meshing, so it carries no triangles), then the mesh.
@@ -298,12 +531,13 @@ fn placed(p: Placed) -> Result<Shape> {
     let s = read_brep(p.brep)?;
     let t = similarity(p.xform)
         .ok_or_else(|| KernelError::Invalid("the solid has a transform the kernel can't apply (only move, rotate, scale and mirror)".into()))?;
-    let mut s = if t.mirror { s.scaled(DVec3::ZERO, -1.0).rotated(DVec3::Y, std::f64::consts::PI) } else { s };
+    // Mirrored across the XZ plane: through the origin, then half a turn about Y.
+    let mut s = if t.mirror { s.scaled(DVec3::ZERO, -1.0).rotated(DVec3::Y, PI) } else { s };
     if (t.scale - 1.0).abs() > 1e-12 {
         s = s.scaled(DVec3::ZERO, t.scale);
     }
-    if t.rotation.abs() > 1e-15 {
-        s = s.rotated(DVec3::Z, t.rotation);
+    if t.angle.abs() > 1e-15 {
+        s = s.rotated(dv(t.axis), t.angle);
     }
     if t.offset != Vec3::ZERO {
         s = s.translated(dv(t.offset));
@@ -864,5 +1098,175 @@ mod modelling_tests {
         // A plane that misses leaves one side empty.
         let [plus, minus] = crate::slice(placed(&b), v(20.0, 0.0, 0.0), v(1.0, 0.0, 0.0)).unwrap();
         assert!(plus.is_none() && minus.is_some());
+    }
+}
+
+/// Placing solids under any similarity, and IGES out and in (in-process).
+#[cfg(test)]
+mod exchange_tests {
+    use cadcraft_geom::{Mat4, Vec3};
+
+    use crate::tests::xform;
+    use crate::{Built, Curve, KernelError, Placed, Primitive, Seg};
+
+    fn v(x: f64, y: f64, z: f64) -> Vec3 {
+        Vec3::new(x, y, z)
+    }
+
+    fn bounds(pts: &[Vec3]) -> (Vec3, Vec3) {
+        pts.iter().fold((v(f64::MAX, f64::MAX, f64::MAX), v(f64::MIN, f64::MIN, f64::MIN)), |(lo, hi), p| {
+            (v(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z)), v(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z)))
+        })
+    }
+
+    fn cube() -> Built {
+        crate::primitive(&Primitive::Box { a: v(1.0, 2.0, 3.0), b: v(11.0, 22.0, 33.0) }).unwrap()
+    }
+
+    /// The box placed by the kernel has the corners of its mesh transformed in Rust.
+    fn check_placed(b: &Built, x: &Mat4) {
+        let m = super::mesh(&super::placed(Placed { brep: &b.brep, xform: x }).unwrap()).unwrap();
+        let want: Vec<Vec3> = b.mesh.verts.iter().map(|p| x.apply(*p)).collect();
+        let ((lo, hi), (wlo, whi)) = (bounds(&m.verts), bounds(&want));
+        assert!((lo - wlo).len() < 1e-6 && (hi - whi).len() < 1e-6, "{lo:?} {hi:?} vs {wlo:?} {whi:?}");
+        for p in &want {
+            assert!(m.verts.iter().any(|q| (*q - *p).len() < 1e-6), "corner {p:?} missing");
+        }
+    }
+
+    #[test]
+    fn placed_applies_any_similarity() {
+        use std::f64::consts::{FRAC_PI_2, PI};
+        let b = cube();
+        let off = v(-4.0, 9.0, 2.5);
+        check_placed(&b, &xform(v(1.0, 0.0, 0.0), FRAC_PI_2, 1.0, false, off));
+        check_placed(&b, &xform(v(1.0, -2.0, 3.0), 1.1, 1.0, false, off));
+        check_placed(&b, &xform(v(1.0, -2.0, 3.0), 2.4, 1.0, true, off));
+        check_placed(&b, &xform(v(0.0, 1.0, 1.0), PI, 2.5, false, off));
+        check_placed(&b, &xform(v(0.3, 0.2, -1.0), 0.0, 0.5, true, Vec3::ZERO));
+        // A box turned a quarter about X stands its 20-long side up the Z axis.
+        let m = super::mesh(&super::placed(Placed { brep: &b.brep, xform: &xform(v(1.0, 0.0, 0.0), FRAC_PI_2, 1.0, false, Vec3::ZERO) }).unwrap())
+            .unwrap();
+        let (lo, hi) = bounds(&m.verts);
+        assert!((hi - lo - v(10.0, 30.0, 20.0)).len() < 1e-6, "{lo:?} {hi:?}");
+        // Shear is still refused.
+        let mut shear = Mat4::IDENTITY;
+        shear.m[0][2] = 0.5;
+        assert!(matches!(super::placed(Placed { brep: &b.brep, xform: &shear }), Err(KernelError::Invalid(_))));
+    }
+
+    fn temp(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("cadrhino-test-{}-{name}", std::process::id()))
+    }
+
+    #[test]
+    fn iges_round_trips_solids_and_curves() {
+        let b = cube();
+        let turned = xform(v(0.0, 0.0, 1.0), 0.5, 1.0, false, v(100.0, 0.0, 0.0));
+        let line = Curve::Segs(vec![Seg::Line { a: v(0.0, 0.0, 0.0), b: v(0.0, 50.0, 5.0) }]);
+        let arc = Curve::Segs(vec![Seg::Arc { a: v(-10.0, 0.0, 0.0), mid: v(-20.0, 10.0, 0.0), b: v(-30.0, 0.0, 0.0) }]);
+        // A rectangle comes back as one closed polyline.
+        let r = [v(0.0, -10.0, 0.0), v(40.0, -10.0, 0.0), v(40.0, -30.0, 0.0), v(0.0, -30.0, 0.0)];
+        let rect = Curve::Segs((0..4).map(|i| Seg::Line { a: r[i], b: r[(i + 1) % 4] }).collect());
+        // An arc from corner to corner over the box's bottom face: free, though its ends are a face edge's.
+        let over = Curve::Segs(vec![Seg::Arc { a: v(1.0, 2.0, 3.0), mid: v(6.0, 0.0, 3.0), b: v(11.0, 2.0, 3.0) }]);
+        let too_small = Curve::Segs(vec![Seg::Line { a: Vec3::ZERO, b: Vec3::ZERO }]);
+        let path = temp("round.igs");
+        let solids = [Placed { brep: &b.brep, xform: &Mat4::IDENTITY }, Placed { brep: &b.brep, xform: &turned }];
+        let written = crate::export_iges(&solids, &[line, arc, rect, over, too_small], &path).unwrap();
+        assert_eq!(written, 4, "the zero-length line is left out");
+        let got = crate::import_iges(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        // Two boxes, each a lump of six faces, closed.
+        assert_eq!(got.shapes.len(), 2, "{} shapes", got.shapes.len());
+        for s in &got.shapes {
+            assert_eq!(s.mesh.tris.len(), 12);
+            assert!(!s.mesh.open);
+        }
+        let (lo, hi) = bounds(&got.shapes[0].mesh.verts);
+        assert!((lo - v(1.0, 2.0, 3.0)).len() < 1e-6 && (hi - v(11.0, 22.0, 33.0)).len() < 1e-6, "{lo:?} {hi:?}");
+        let want: Vec<Vec3> = b.mesh.verts.iter().map(|p| turned.apply(*p)).collect();
+        let (wlo, whi) = bounds(&want);
+        let (lo, hi) = bounds(&got.shapes[1].mesh.verts);
+        assert!((lo - wlo).len() < 1e-6 && (hi - whi).len() < 1e-6, "{lo:?} {hi:?}");
+        // The curves: the line, the arc, the closed rectangle and the arc over the face.
+        assert_eq!(got.curves.len(), 4, "{:?}", got.curves);
+        let has = |a: Vec3, b: Vec3| {
+            got.curves.iter().find(|c| {
+                let (f, l) = (c[0], c[c.len() - 1]);
+                ((f - a).len() < 1e-6 && (l - b).len() < 1e-6) || ((f - b).len() < 1e-6 && (l - a).len() < 1e-6)
+            })
+        };
+        assert_eq!(has(v(0.0, 0.0, 0.0), v(0.0, 50.0, 5.0)).map(Vec::len), Some(2), "the line");
+        let arc = has(v(-10.0, 0.0, 0.0), v(-30.0, 0.0, 0.0)).expect("the arc");
+        assert!(arc.len() > 5 && arc.iter().all(|p| ((*p - v(-20.0, 0.0, 0.0)).len() - 10.0).abs() < 1e-6), "{arc:?}");
+        let over = has(v(1.0, 2.0, 3.0), v(11.0, 2.0, 3.0)).expect("the arc over the face");
+        assert!(over.iter().any(|p| p.y < 1.0), "an arc, not the face's edge: {over:?}");
+        let rect = got.curves.iter().find(|c| c.len() == 5 && c[0] == c[4]).expect("the closed rectangle");
+        assert!(r.iter().all(|p| rect.iter().any(|q| (*q - *p).len() < 1e-6)), "{rect:?}");
+    }
+
+    /// Cabinets side by side: objects touching along a whole face come back whole and apart.
+    #[test]
+    fn iges_objects_touching_face_to_face_stay_whole() {
+        let boxes: Vec<Built> = [(0.0, 10.0), (10.0, 20.0), (20.0, 30.0)]
+            .iter()
+            .map(|(a, b)| crate::primitive(&Primitive::Box { a: v(*a, 0.0, 0.0), b: v(*b, 20.0, 30.0) }).unwrap())
+            .collect();
+        let path = temp("touching.igs");
+        let solids: Vec<Placed> = boxes.iter().map(|b| Placed { brep: &b.brep, xform: &Mat4::IDENTITY }).collect();
+        crate::export_iges(&solids, &[], &path).unwrap();
+        let got = crate::import_iges(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(got.shapes.len(), 3, "{} shapes", got.shapes.len());
+        for (i, s) in got.shapes.iter().enumerate() {
+            assert_eq!(s.mesh.tris.len(), 12, "box {i}");
+            assert!(!s.mesh.open, "box {i} is closed");
+            let (lo, hi) = bounds(&s.mesh.verts);
+            let x = 10.0 * i as f64;
+            assert!((lo - v(x, 0.0, 0.0)).len() < 1e-6 && (hi - v(x + 10.0, 20.0, 30.0)).len() < 1e-6, "box {i}: {lo:?} {hi:?}");
+        }
+        assert!(got.curves.is_empty(), "{:?}", got.curves);
+    }
+
+    /// The grouping read from B-rep text: a solid, a compound of faces, and text that isn't a
+    /// shape table (or doesn't account for the faces) gives no grouping.
+    #[test]
+    fn objects_are_read_from_the_shape_table() {
+        let b = cube();
+        let text = super::write_brep(&super::read_brep(&b.brep).unwrap()).unwrap();
+        assert_eq!(super::objects(&text, 6), Some(vec![Some(0); 6]));
+        assert_eq!(super::objects(&text, 7), None);
+        let cut = &text[..text.len() / 2];
+        for bad in ["", "TShapes 3\nZz\n", "TShapes 99999999999\nCo\n\n1\n*\n", "TShapes 1\nCo\n\n1100000\n+5 0 *\n\n+1 0\n", cut] {
+            assert_eq!(super::objects(bad, 6), None, "{bad:?}");
+        }
+        // A loose face, a group of one face and another loose face under a compound, itself the
+        // only child of the top compound.
+        let fa = |i: usize| format!("Fa\n0 1e-07 {i} 0\n\n0111000\n*\n");
+        let t =
+            format!("TShapes 6\n{}{}{}Co\n\n0100000\n+4 0 *\nCo\n\n0100000\n+6 0 +3 0 +5 0 *\nCo\n\n1100000\n+2 0 *\n\n+1 0\n", fa(1), fa(2), fa(3));
+        assert_eq!(super::objects(&t, 3), Some(vec![None, Some(0), None]));
+    }
+
+    #[test]
+    fn iges_curves_alone_and_bad_files() {
+        let path = temp("curves.igs");
+        let circle = Curve::Segs(vec![Seg::Circle { center: v(5.0, 5.0, 2.0), radius: 3.0, normal: Vec3::Z }]);
+        let spline = Curve::Spline { points: vec![v(0.0, 0.0, 0.0), v(5.0, 3.0, 1.0), v(10.0, 0.0, 2.0)], tangents: None };
+        assert_eq!(crate::export_iges(&[], &[circle, spline], &path).unwrap(), 2);
+        let got = crate::import_iges(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(got.shapes.is_empty());
+        assert_eq!(got.curves.len(), 2, "{:?}", got.curves);
+        let circle = got.curves.iter().find(|c| c.first() == c.last()).expect("the circle, closed");
+        assert!(circle.iter().all(|p| (p.z - 2.0).abs() < 1e-9 && ((*p - v(5.0, 5.0, 2.0)).len() - 3.0).abs() < 1e-6));
+        // Nothing to write; nothing to read; not IGES.
+        assert!(matches!(crate::export_iges(&[], &[], &path), Err(KernelError::Invalid(_))));
+        assert!(crate::import_iges(&temp("missing.igs")).is_err());
+        let junk = temp("junk.igs");
+        std::fs::write(&junk, "not an IGES file\n\0\u{1}garbage").unwrap();
+        assert!(crate::import_iges(&junk).is_err());
+        let _ = std::fs::remove_file(&junk);
     }
 }

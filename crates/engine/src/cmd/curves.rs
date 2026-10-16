@@ -511,9 +511,10 @@ pub fn seg_param(s: &Segment, p: Vec2) -> f64 {
     }
 }
 
-/// Distance from `p` to an entity's geometry (prims; text and blocks by insertion point).
-pub fn kind_distance(k: &EntityKind, p: Vec2) -> f64 {
-    k.prims()
+/// Distance from `p` to an object's geometry as plan view shows it (prims; text and blocks by
+/// insertion point).
+pub fn prims_distance(e: &Entity, p: Vec2) -> f64 {
+    e.prims()
         .iter()
         .map(|pr| match pr {
             Prim::Seg(s) => s.closest(p).dist(p),

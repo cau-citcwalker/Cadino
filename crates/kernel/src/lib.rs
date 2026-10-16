@@ -603,6 +603,32 @@ pub fn import_step(path: &Path) -> Result<Built> {
     run(Request::ImportStep(path.to_owned()))?.built()
 }
 
+/// Solids, surfaces and curves to one IGES file (as Rhino reads them). Curves the kernel can't
+/// make (too small, pieces that don't meet) are left out. How many curves were written.
+pub fn export_iges(solids: &[Placed], curves: &[Curve], path: &Path) -> Result<usize> {
+    let ss = solids.iter().map(|s| check_brep(s.brep).map(|_| Solid::of(*s))).collect::<Result<Vec<_>>>()?;
+    let cs: Vec<Curve> = curves.iter().filter(|c| check_curve(c).is_ok()).cloned().collect();
+    if ss.is_empty() && cs.is_empty() {
+        return Err(KernelError::Invalid("no 3D solids or curves to export".into()));
+    }
+    let n = cs.len();
+    run(Request::ExportIges(ss, cs, path.to_owned()))?.done()?;
+    Ok(n)
+}
+
+/// What an IGES file holds: its surfaces and solids, one shape per object the file groups (faces
+/// it leaves loose joined along their edges), and its free curves (on no face) as 3D polylines; a
+/// closed one ends exactly where it starts.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Imported {
+    pub shapes: Vec<Built>,
+    pub curves: Vec<Vec<Vec3>>,
+}
+
+pub fn import_iges(path: &Path) -> Result<Imported> {
+    run(Request::ImportIges(path.to_owned()))?.imported()
+}
+
 /// One kernel operation with its data, as the worker process receives it.
 #[derive(Serialize, Deserialize)]
 enum Request {
@@ -622,6 +648,8 @@ enum Request {
     ExportStep(Vec<Solid>, PathBuf),
     ExportStl(Vec<Solid>, PathBuf),
     ImportStep(PathBuf),
+    ExportIges(Vec<Solid>, Vec<Curve>, PathBuf),
+    ImportIges(PathBuf),
 }
 
 /// [`Placed`], owning its data.
@@ -648,6 +676,7 @@ enum Reply {
     Meshes(Vec<std::result::Result<Mesh3, String>>),
     /// The two pieces of [`Request::Slice`], each `None` where the shape has nothing.
     Pieces(Vec<Option<Built>>),
+    Imported(Imported),
     Done,
 }
 
@@ -672,6 +701,8 @@ impl Request {
             Request::ExportStep(..) => "writing STEP",
             Request::ExportStl(..) => "writing STL",
             Request::ImportStep(_) => "reading STEP",
+            Request::ExportIges(..) => "writing IGES",
+            Request::ImportIges(_) => "reading IGES",
         }
     }
 
@@ -697,6 +728,8 @@ impl Request {
             Request::ExportStep(ss, path) => backend::export_step(&placed(ss), path).map(|_| Reply::Done),
             Request::ExportStl(ss, path) => backend::export_stl(&placed(ss), path).map(|_| Reply::Done),
             Request::ImportStep(path) => backend::import_step(path).map(Reply::Built),
+            Request::ExportIges(ss, cs, path) => backend::export_iges(&placed(ss), cs, path).map(|_| Reply::Done),
+            Request::ImportIges(path) => backend::import_iges(path).map(Reply::Imported),
         }
     }
 }
@@ -713,6 +746,9 @@ impl Reply {
     }
     fn pieces(self) -> Result<Vec<Option<Built>>> {
         if let Reply::Pieces(p) = self { Ok(p) } else { Err(mismatch()) }
+    }
+    fn imported(self) -> Result<Imported> {
+        if let Reply::Imported(i) = self { Ok(i) } else { Err(mismatch()) }
     }
     fn done(self) -> Result<()> {
         if let Reply::Done = self { Ok(()) } else { Err(mismatch()) }
@@ -732,38 +768,70 @@ fn run(req: Request) -> Result<Reply> {
     req.serve()
 }
 
-/// The transform as uniform scale, rotation about Z, optional mirror across the XZ plane and
-/// translation: the transforms MOVE, ROTATE, SCALE and MIRROR make. `None` for anything else.
+/// The transform as uniform scale, any rotation, optional mirror across the XZ plane and
+/// translation: what MOVE, ROTATE, 3DROTATE, SCALE, MIRROR and MIRROR3D make. `None` for
+/// anything else (shear, non-uniform scale, perspective).
 pub fn similarity(m: &Mat4) -> Option<Similarity> {
     let r = &m.m;
-    let (a, b, c, d) = (r[0][0], r[1][0], r[0][1], r[1][1]);
-    let det = a * d - b * c;
-    if !det.is_finite() || det.abs() < 1e-24 {
+    let affine = r[3] == [0.0, 0.0, 0.0, 1.0];
+    // Where the axes go.
+    let (x, y, z) = (Vec3::new(r[0][0], r[1][0], r[2][0]), Vec3::new(r[0][1], r[1][1], r[2][1]), Vec3::new(r[0][2], r[1][2], r[2][2]));
+    let det = x.dot(y.cross(z));
+    if !affine || !det.is_finite() || det.abs() < 1e-36 {
         return None;
     }
-    let scale = det.abs().sqrt();
+    let scale = det.abs().cbrt();
     let mirror = det < 0.0;
-    let rotation = b.atan2(a);
-    // The second column must be the first turned by +90° (or -90° when mirrored).
-    let (ec, ed) = if mirror { (rotation.sin() * scale, -rotation.cos() * scale) } else { (-rotation.sin() * scale, rotation.cos() * scale) };
-    let tol = 1e-9 * scale.max(1.0);
-    let planar = r[0][2].abs() < tol && r[1][2].abs() < tol && r[2][0].abs() < tol && r[2][1].abs() < tol;
-    let uniform = (r[2][2] - scale).abs() < tol && (c - ec).abs() < tol && (d - ed).abs() < tol;
-    let affine = r[3][0] == 0.0 && r[3][1] == 0.0 && r[3][2] == 0.0 && r[3][3] == 1.0;
-    (planar && uniform && affine).then_some(Similarity { scale, rotation, mirror, offset: Vec3::new(r[0][3], r[1][3], r[2][3]) })
+    // The rotation's columns: mirrored, y → -y comes first, so the y column turns back.
+    let (qx, qy, qz) = (x * (1.0 / scale), y * (if mirror { -1.0 } else { 1.0 } / scale), z * (1.0 / scale));
+    let tol = 1e-9;
+    let orthonormal = [qx.dot(qx) - 1.0, qy.dot(qy) - 1.0, qz.dot(qz) - 1.0, qx.dot(qy), qx.dot(qz), qy.dot(qz)].iter().all(|e| e.abs() < tol);
+    if !orthonormal {
+        return None;
+    }
+    let (axis, angle) = axis_angle(qx, qy, qz);
+    Some(Similarity { scale, mirror, axis, angle, offset: Vec3::new(r[0][3], r[1][3], r[2][3]) })
 }
 
-/// See [`similarity`]: applied as mirror (y → -y), then scale, then rotation, then offset.
+/// The rotation with these columns as a unit axis and a right-handed angle in [0, π] (Rodrigues).
+fn axis_angle(qx: Vec3, qy: Vec3, qz: Vec3) -> (Vec3, f64) {
+    // Twice sin(angle) along the axis, from the antisymmetric part.
+    let v = Vec3::new(qy.z - qz.y, qz.x - qx.z, qx.y - qy.x);
+    let c = ((qx.x + qy.y + qz.z - 1.0) / 2.0).clamp(-1.0, 1.0);
+    let angle = (v.len() / 2.0).atan2(c);
+    let axis = if c < 0.0 {
+        // Past a quarter turn v loses precision (it vanishes at π): the symmetric part is
+        // cos·I + (1 − cos)·k kᵀ, so its row with the largest diagonal, less cos, is along k.
+        let row = if qx.x >= qy.y && qx.x >= qz.z {
+            Vec3::new(qx.x - c, (qy.x + qx.y) / 2.0, (qz.x + qx.z) / 2.0)
+        } else if qy.y >= qz.z {
+            Vec3::new((qx.y + qy.x) / 2.0, qy.y - c, (qz.y + qy.z) / 2.0)
+        } else {
+            Vec3::new((qx.z + qz.x) / 2.0, (qy.z + qz.y) / 2.0, qz.z - c)
+        };
+        unit(row).map(|k| if k.dot(v) < 0.0 { -k } else { k })
+    } else {
+        unit(v)
+    };
+    match axis {
+        Some(k) => (k, angle),
+        None => (Vec3::Z, 0.0),
+    }
+}
+
+/// See [`similarity`]: applied as mirror (y → -y), then scale, then rotation by `angle` about the
+/// unit `axis` through the origin (right-handed), then offset.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Similarity {
     pub scale: f64,
-    pub rotation: f64,
     pub mirror: bool,
+    pub axis: Vec3,
+    pub angle: f64,
     pub offset: Vec3,
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use cadcraft_geom::{Mat3, Vec2};
 
@@ -773,20 +841,74 @@ mod tests {
         x
     }
 
+    /// Mirror (y → -y) when asked, scale, turn by `angle` about `axis`, then move by `offset`.
+    pub(crate) fn xform(axis: Vec3, angle: f64, scale: f64, mirror: bool, offset: Vec3) -> Mat4 {
+        let r = curve::Rot::about(unit(axis).unwrap(), angle);
+        let col = |v: Vec3| r.apply(v) * scale;
+        let (x, y, z) = (col(Vec3::new(1.0, 0.0, 0.0)), col(Vec3::new(0.0, if mirror { -1.0 } else { 1.0 }, 0.0)), col(Vec3::Z));
+        Mat4 { m: [[x.x, y.x, z.x, offset.x], [x.y, y.y, z.y, offset.y], [x.z, y.z, z.z, offset.z], [0.0, 0.0, 0.0, 1.0]] }
+    }
+
+    /// The similarity's parts applied to `p` as the kernel applies them.
+    fn rebuilt(s: &Similarity, p: Vec3) -> Vec3 {
+        let q = Vec3::new(p.x, if s.mirror { -p.y } else { p.y }, p.z) * s.scale;
+        curve::Rot::about(s.axis, s.angle).apply(q) + s.offset
+    }
+
+    fn round_trips(x: &Mat4) -> Similarity {
+        let s = similarity(x).unwrap_or_else(|| panic!("not a similarity: {x:?}"));
+        assert!((s.axis.len() - 1.0).abs() < 1e-12 && (0.0..=std::f64::consts::PI).contains(&s.angle), "{s:?}");
+        for p in [Vec3::new(1.25, -0.5, 4.0), Vec3::new(-3.0, 7.0, 0.5), Vec3::new(0.0, 0.0, -9.0)] {
+            assert!((rebuilt(&s, p) - x.apply(p)).len() < 1e-9 * s.scale.max(1.0) * 10.0, "{s:?} at {p:?}: {:?} vs {:?}", rebuilt(&s, p), x.apply(p));
+        }
+        s
+    }
+
     #[test]
     fn similarity_round_trips_modify_transforms() {
         let m = Mat3::rotate_about(Vec2::new(3.0, 1.0), 0.7)
             .then(Mat3::scale_about(Vec2::new(-2.0, 5.0), 2.5))
             .then(Mat3::mirror(Vec2::new(0.0, 0.0), Vec2::new(1.0, 2.0)));
-        let x = solid_xform(&m);
-        let s = similarity(&x).unwrap();
+        let s = round_trips(&solid_xform(&m));
         assert!(s.mirror && (s.scale - 2.5).abs() < 1e-12);
-        // Rebuild the transform from the parts and compare on a point.
-        let p = Vec3::new(1.25, -0.5, 4.0);
-        let q = Vec3::new(p.x, if s.mirror { -p.y } else { p.y }, p.z) * s.scale;
-        let (sn, cs) = s.rotation.sin_cos();
-        let q = Vec3::new(cs * q.x - sn * q.y, sn * q.x + cs * q.y, q.z) + s.offset;
-        assert!((q - x.apply(p)).len() < 1e-9);
+    }
+
+    #[test]
+    fn similarity_takes_any_rotation_mirror_and_scale() {
+        use std::f64::consts::{FRAC_PI_2, PI};
+        let v = Vec3::new;
+        let oblique = v(1.0, -2.0, 3.0);
+        let off = v(5.0, -6.0, 7.0);
+        let s = round_trips(&xform(v(1.0, 0.0, 0.0), FRAC_PI_2, 1.0, false, off));
+        assert!((s.axis - v(1.0, 0.0, 0.0)).len() < 1e-12 && (s.angle - FRAC_PI_2).abs() < 1e-12, "{s:?}");
+        round_trips(&xform(oblique, 1.1, 1.0, false, off));
+        let s = round_trips(&xform(oblique, 2.0, 3.5, true, off));
+        assert!(s.mirror && (s.scale - 3.5).abs() < 1e-12);
+        round_trips(&xform(oblique, 0.4, 1e-3, true, Vec3::ZERO));
+        // Past half a turn it comes back as the shorter turn the other way.
+        let s = round_trips(&xform(oblique, 4.0, 1.0, false, off));
+        assert!((s.angle - (std::f64::consts::TAU - 4.0)).abs() < 1e-12 && s.axis.dot(oblique) < 0.0, "{s:?}");
+        // Near no turn and near half a turn, where the axis is hard to read.
+        for a in [0.0, 1e-12, 1e-7, PI - 1e-7, PI - 1e-12, PI] {
+            for axis in [oblique, v(0.0, 0.0, 1.0), v(0.0, -1.0, 0.0), v(1.0, 1e-9, 0.0)] {
+                round_trips(&xform(axis, a, 2.0, false, off));
+                round_trips(&xform(axis, a, 1.0, true, off));
+            }
+        }
+        assert_eq!(similarity(&Mat4::IDENTITY).map(|s| (s.angle, s.scale, s.mirror)), Some((0.0, 1.0, false)));
+    }
+
+    #[test]
+    fn non_uniform_scale_is_not_a_similarity() {
+        let mut x = Mat4::IDENTITY;
+        x.m[2][2] = 2.0;
+        assert!(similarity(&x).is_none());
+        let mut x = xform(Vec3::new(1.0, 2.0, 3.0), 0.5, 1.0, false, Vec3::ZERO);
+        x.m[0][0] *= 1.001;
+        assert!(similarity(&x).is_none());
+        x.m[0][0] = f64::NAN;
+        assert!(similarity(&x).is_none());
+        assert!(similarity(&Mat4 { m: [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, 0.0, 0.0, 1.0]] }).is_none());
     }
 
     #[test]

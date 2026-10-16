@@ -114,7 +114,7 @@ impl GripEdit {
                 continue;
             }
             let Some(e) = d.entity(h) else { continue };
-            let gs = e.kind.grips();
+            let gs = e.grips();
             // The nearest grip of this object within the tolerance.
             let best = gs
                 .iter()
@@ -445,20 +445,16 @@ impl Interactive for GripEdit {
         };
         let Ok(d) = s.doc() else { return Vec::new() };
         let mut out: Vec<EntityKind> = if self.mode == GripMode::Stretch {
-            super::gripcmds::stretched(s, &self.hot, &self.targets, c - base).into_iter().take(500).map(|(_, k)| k).collect()
+            // Each stretched shape in its object's plane, as plan view shows it.
+            super::gripcmds::stretched(s, &self.hot, &self.targets, c - base)
+                .into_iter()
+                .take(500)
+                .filter_map(|(h, kind)| d.entity(h).map(|e| cadcraft_doc::Entity { kind, ..(**e).clone() }))
+                .flat_map(|e| super::helpers::plan_kinds(&e))
+                .collect()
         } else {
             match self.matrix(c) {
-                Some(m) => self
-                    .targets
-                    .iter()
-                    .take(500)
-                    .filter_map(|h| d.entity(*h))
-                    .map(|e| {
-                        let mut k = e.kind.clone();
-                        k.transform(&m);
-                        k
-                    })
-                    .collect(),
+                Some(m) => self.targets.iter().take(500).filter_map(|h| d.entity(*h)).flat_map(|e| super::helpers::plan_preview(e, &m)).collect(),
                 None => Vec::new(),
             }
         };

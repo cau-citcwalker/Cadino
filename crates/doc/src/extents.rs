@@ -94,6 +94,20 @@ pub fn entity_bounds(d: &Drawing, e: &Entity, depth: usize) -> Bounds2 {
 /// depth). The depth is part of the key because [`MAX_BLOCK_DEPTH`] cuts a deep visit short: its
 /// bounds must not stand in for a shallower reference to the same block (#706).
 fn bounds_in<'a>(d: &'a Drawing, e: &Entity, depth: usize, blocks: &mut HashMap<(&'a str, usize), Bounds2>) -> Bounds2 {
+    let b = bounds_own(d, e, depth, blocks);
+    // An object in a tilted or standing plane: its box in the plane, seen from above.
+    // ponytail: a tilted block reference's box is its contents' 2D box at block z = 0, so
+    // contents raised or in 3D inside it (seen along the tilted normal) can reach past it and
+    // ZOOM Extents may clip them; upgrade: cache a z range with each block's bounds and take
+    // the box's corners at both heights through the plane.
+    match e.plan_xf() {
+        Some(a) if !b.is_empty() => Bounds2::from_points(b.corners().map(|c| a.apply(c))),
+        _ => b,
+    }
+}
+
+/// [`bounds_in`] in the object's own plane (its 2D coordinates).
+fn bounds_own<'a>(d: &'a Drawing, e: &Entity, depth: usize, blocks: &mut HashMap<(&'a str, usize), Bounds2>) -> Bounds2 {
     match &e.kind {
         EntityKind::Table(t) if t.is_broken() => t.bounds(),
         EntityKind::Text(t) if blank(&t.value) => Bounds2::EMPTY,

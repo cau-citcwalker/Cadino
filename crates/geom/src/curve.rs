@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{Bounds2, EPS, PI, TAU, Vec2, angle_in_sweep, arc_segments, ccw_sweep, norm_angle};
+use crate::{Bounds2, EPS, Mat3, PI, TAU, Vec2, angle_in_sweep, arc_segments, ccw_sweep, norm_angle};
 
 /// A straight segment.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -285,6 +285,27 @@ impl Ellipse {
         let mut pts = Vec::new();
         self.tessellate(self.major.len() * 1e-3, &mut pts);
         nearest_on_polyline(&pts, p).unwrap_or(self.center)
+    }
+    /// The ellipse (arc) after the affine map `m`, which takes any ellipse to an ellipse: the
+    /// images of the major and minor axes are conjugate semi-diameters, turned to the principal
+    /// axes. `None` when it collapses to a segment or a point (ratio under 1e-9).
+    pub fn transformed(&self, m: &Mat3) -> Option<Ellipse> {
+        let (u, v) = (m.apply_vec(self.major), m.apply_vec(self.minor()));
+        // c + u cos t + v sin t = c + M cos(t - θ) + N sin(t - θ) with M ⟂ N, M the longer.
+        let th = 0.5 * (2.0 * u.dot(v)).atan2(u.len2() - v.len2());
+        let (s, c) = th.sin_cos();
+        let (mj, mn) = (u * c + v * s, v * c - u * s);
+        let (lm, ln) = (mj.len(), mn.len());
+        let ratio = ln / lm;
+        if !(ratio.is_finite() && ratio >= 1e-9 && lm > EPS) {
+            return None;
+        }
+        let center = m.apply(self.center);
+        let full = self.is_full();
+        // Mirrored, the minor axis points the other way: the parameter runs backwards.
+        let (start, end) = if mj.cross(mn) >= 0.0 { (self.start - th, self.end - th) } else { (th - self.end, th - self.start) };
+        let (start, end) = if full { (0.0, TAU) } else { (norm_angle(start), norm_angle(end)) };
+        Some(Ellipse { center, major: mj, ratio: ratio.min(1.0), start, end })
     }
 }
 

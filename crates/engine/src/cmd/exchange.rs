@@ -159,7 +159,8 @@ fn import_drawing(s: &mut Session, src: &Drawing, at: Vec2, scale: f64, file: &s
     for e in src.model.iter() {
         let mut e = adopt(d, e, &renames);
         if moved {
-            e.kind.transform(&m);
+            // A uniform scale and a move: objects in any plane take it.
+            e.transform(&m);
         }
         d.ensure_layer(&e.common.layer);
         handles.push(e.handle);

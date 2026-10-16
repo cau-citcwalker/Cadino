@@ -202,4 +202,12 @@ mod tests {
         assert!(!wants_cpu("?webgl&sample"));
         assert!(!wants_cpu("?gpucpu"));
     }
+
+    /// The browser tab and the loading text name the app Cadino.
+    #[test]
+    fn the_page_is_named_cadino() {
+        let page = include_str!("../index.html");
+        assert!(page.contains("<title>Cadino</title>") && page.contains("Loading Cadino"));
+        assert!(!page.contains("CADCraft"));
+    }
 }

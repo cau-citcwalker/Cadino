@@ -38,7 +38,8 @@ pub fn hit_polylines(d: &Drawing, e: &Entity, tol: f64) -> Vec<Vec<Vec2>> {
         }
         kind => {
             let mut out = Vec::new();
-            for p in kind.prims() {
+            // As plan view shows it: an object in a tilted plane seen from above.
+            for p in e.prims() {
                 let mut pts = Vec::new();
                 match p {
                     Prim::Seg(s) => s.tessellate(tol, &mut pts),
@@ -94,15 +95,21 @@ pub fn entity_distance(d: &Drawing, e: &Entity, p: Vec2, tol: f64) -> f64 {
         best = 0.0;
     }
     // A solid hatch fills its loops with odd parity under its island style, as it is drawn, not
-    // its bounding rectangle.
+    // its bounding rectangle (in a tilted plane: the point of its plane under `p`; seen edge-on
+    // it fills nothing).
+    let local = match e.plan_xf() {
+        None => Some(p),
+        Some(a) => a.inverse().map(|i| i.apply(p)),
+    };
     if let EntityKind::Hatch(h) = &e.kind
         && h.solid
-        && cadcraft_render::hatch_fill_loops(h, tol).iter().filter(|l| point_in_polygon(l, p)).count() % 2 == 1
+        && let Some(q) = local
+        && cadcraft_render::hatch_fill_loops(h, tol).iter().filter(|l| point_in_polygon(l, q)).count() % 2 == 1
     {
         best = 0.0;
     }
     // A SOLID fills its polygon, not its bounding rectangle (half of which is empty for a triangle).
-    if matches!(e.kind, EntityKind::Solid(_)) && e.kind.prims().iter().any(|prim| matches!(prim, Prim::Fill(poly) if point_in_polygon(poly, p))) {
+    if matches!(e.kind, EntityKind::Solid(_)) && e.prims().iter().any(|prim| matches!(prim, Prim::Fill(poly) if point_in_polygon(poly, p))) {
         best = 0.0;
     }
     best
@@ -274,7 +281,7 @@ pub(crate) fn in_window(d: &Drawing, e: &Entity, known: Option<Bounds2>, bx: &Bo
     // the polygon, not just its bounding rectangle (which can cover empty
     // space around triangular solids).
     if matches!(e.kind, EntityKind::Solid(_) | EntityKind::Trace(_)) && eb.contains_box(bx) {
-        return e.kind.prims().iter().any(|prim| match prim {
+        return e.prims().iter().any(|prim| match prim {
             Prim::Fill(poly) => bx.corners().iter().all(|p| cadcraft_geom::point_in_polygon(poly, *p)),
             _ => false,
         });

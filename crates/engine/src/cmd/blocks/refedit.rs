@@ -63,7 +63,8 @@ fn active(s: &Session, cmd: &str) -> Result<RefEdit> {
 fn to_host(to_world: &Mat3, e: &Entity, h: Handle, ghost: bool) -> Entity {
     let mut c = e.clone();
     c.handle = h;
-    c.kind.transform(to_world);
+    // A similarity (REFEDIT refuses other references): objects in any plane take it.
+    c.transform(to_world);
     if ghost {
         c.common.transparency = Transparency::Percent(GHOST_FADE);
     }
@@ -74,7 +75,8 @@ fn to_host(to_world: &Mat3, e: &Entity, h: Handle, ghost: bool) -> Entity {
 fn to_block(inv: &Mat3, e: &Entity, h: Handle) -> Entity {
     let mut c = e.clone();
     c.handle = h;
-    c.kind.transform(inv);
+    // The inverse of a similarity: see `to_host`.
+    c.transform(inv);
     c
 }
 
@@ -109,6 +111,11 @@ fn run_refedit(s: &mut Session, p: &Value) -> Result<Value> {
         Some(cadcraft_doc::EntityKind::Insert(i)) => (i.clone(), d.space_of(ih).ok_or_else(|| bad("refedit", "the reference is in no space"))?),
         _ => return Err(bad("refedit", "select a block reference")),
     };
+    // ponytail: the objects are edited in plan through the reference's 2D transform, so a
+    // reference in a tilted plane is refused; upgrade: show them through its 3D transform.
+    if d.entity(ih).is_some_and(|e| e.plan_xf().is_some()) {
+        return Err(bad("refedit", "the reference is in a tilted plane; it can't be edited in place in plan"));
+    }
     let blk = d.block(&ins.block).cloned().ok_or_else(|| bad("refedit", format!("block \"{}\" not found", ins.block)))?;
     if blk.xref_path.is_some() {
         return Err(bad(

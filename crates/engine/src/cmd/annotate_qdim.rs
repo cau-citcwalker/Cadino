@@ -54,7 +54,7 @@ fn geometry(s: &Session, hs: &[Handle]) -> Result<(Vec<Vec2>, Vec<(Vec2, f64)>)>
     let mut circles = Vec::new();
     for h in hs {
         let Some(e) = d.entity(*h) else { continue };
-        for pr in e.kind.prims() {
+        for pr in e.prims() {
             match pr {
                 Prim::Seg(seg) => {
                     pts.extend([seg.start(), seg.end()]);

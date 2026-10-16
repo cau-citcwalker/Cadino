@@ -1,7 +1,7 @@
 //! Shared geometry helpers for commands.
 
-use cadcraft_doc::{EntityKind, Line};
-use cadcraft_geom::{PolyVertex, Vec2, Vec3};
+use cadcraft_doc::{Entity, EntityKind, Line, Prim};
+use cadcraft_geom::{Mat3, PolyVertex, Segment, Vec2, Vec3};
 
 pub fn v3(p: Vec2) -> Vec3 {
     p.to3(0.0)
@@ -139,4 +139,75 @@ fn read_support_file(cmd: &str, path: &str) -> crate::Result<String> {
 #[cfg(target_arch = "wasm32")]
 fn read_support_file(cmd: &str, _path: &str) -> crate::Result<String> {
     Err(super::bad(cmd, "paths are not available on the web; pass the file's contents"))
+}
+
+/// `e` after the plan transform `m` ([`Entity::transform`]: an object in a tilted plane moves in
+/// 3D). An error when that can't be represented (a non-uniform scale of a circle, arc, text or
+/// block in a tilted plane), for the command to leave the drawing as it was.
+pub fn transformed(e: &Entity, m: &Mat3) -> crate::Result<Entity> {
+    let mut ne = e.clone();
+    if ne.transform(m) {
+        Ok(ne)
+    } else {
+        Err(crate::EngineError::Other(format!("A {} in a tilted plane can't be scaled unevenly.", e.kind.type_name().to_ascii_lowercase())))
+    }
+}
+
+/// How `e` shows in plan, as kinds for a rubber-band preview (a preview carries no plane): its
+/// own kind, or for an object in a tilted plane what it looks like from above.
+pub fn plan_kinds(e: &Entity) -> Vec<EntityKind> {
+    if e.plan_xf().is_none() {
+        return vec![e.kind.clone()];
+    }
+    e.prims()
+        .into_iter()
+        .map(|p| match p {
+            Prim::Seg(Segment::Line(l)) => line(l.a, l.b),
+            Prim::Seg(Segment::Arc { arc: a, .. }) => arc(&a),
+            Prim::Circle(c) => circle(c.center, c.radius),
+            Prim::Ellipse(el) => EntityKind::Ellipse(cadcraft_doc::Ellipse {
+                center: v3(el.center),
+                major: v3(el.major),
+                ratio: el.ratio,
+                start: el.start,
+                end: el.end,
+            }),
+            Prim::Spline(sp) => EntityKind::Spline(sp),
+            Prim::Point(q) => EntityKind::Point(cadcraft_doc::Point { p: v3(q), angle: 0.0 }),
+            Prim::Infinite { base, dir, ray } => {
+                let r = cadcraft_doc::RayLine { base: v3(base), dir: v3(dir) };
+                if ray { EntityKind::Ray(r) } else { EntityKind::XLine(r) }
+            }
+            Prim::Fill(pts) => lwpoly(pts.into_iter().map(PolyVertex::new).collect(), true),
+        })
+        .collect()
+}
+
+/// [`plan_kinds`] of `e` after the plan transform `m` (nothing when it can't take it).
+pub fn plan_preview(e: &Entity, m: &Mat3) -> Vec<EntityKind> {
+    transformed(e, m).map(|t| plan_kinds(&t)).unwrap_or_default()
+}
+
+/// Refuse a 2D shape edit (TRIM, EXTEND, BREAK) of an object in a tilted plane, whose own
+/// coordinates aren't what plan view shows. ponytail: refused, not edited; upgrade: take the
+/// picked and cutting geometry into its plane (`Entity::plan_to_local`) and edit there.
+pub fn level_only(e: &Entity) -> crate::Result<()> {
+    match e.plan_xf() {
+        Some(_) => Err(crate::EngineError::Other(format!(
+            "The {} is in a tilted plane: it can only be moved, rotated, scaled, mirrored or grip-edited in plan.",
+            e.kind.type_name().to_ascii_lowercase()
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// Block object `child` placed where block reference `parent` (`ins`, block base point `base`)
+/// shows it, as EXPLODE leaves it: through the reference's plane in 3D (elevation, z scale and
+/// base point height included), or, for a reference in the XY plane's orientation, by its 2D
+/// transform where 3D can't represent the result (a circle under a non-uniform scale becomes a
+/// circle of the mean radius, as 2D EXPLODE always did). `None` when neither can.
+pub fn placed_in(parent: &Entity, ins: &cadcraft_doc::Insert, base: Vec3, child: &Entity) -> Option<Entity> {
+    let m3 = parent.plane().unwrap_or(cadcraft_geom::Mat4::IDENTITY).mul(&ins.transform3(base));
+    let mut ne = child.clone();
+    (ne.transform3(&m3) || (parent.plan_xf().is_none() && ne.transform(&ins.transform(base.xy())))).then_some(ne)
 }

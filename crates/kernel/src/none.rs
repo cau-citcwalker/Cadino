@@ -5,7 +5,7 @@ use std::path::Path;
 use cadcraft_geom::{Mesh3, Vec3};
 
 use crate::curve::Run;
-use crate::{BoolOp, Built, Curve, KernelError, Placed, Primitive, Result, Seg};
+use crate::{BoolOp, Built, Curve, Imported, KernelError, Placed, Primitive, Result, Seg};
 
 pub fn primitive(_: &Primitive) -> Result<Built> {
     Err(KernelError::Unavailable)
@@ -50,5 +50,11 @@ pub fn export_stl(_: &[Placed], _: &Path) -> Result<()> {
     Err(KernelError::Unavailable)
 }
 pub fn import_step(_: &Path) -> Result<Built> {
+    Err(KernelError::Unavailable)
+}
+pub fn export_iges(_: &[Placed], _: &[Curve], _: &Path) -> Result<()> {
+    Err(KernelError::Unavailable)
+}
+pub fn import_iges(_: &Path) -> Result<Imported> {
     Err(KernelError::Unavailable)
 }

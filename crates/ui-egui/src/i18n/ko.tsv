@@ -1274,3 +1274,25 @@ menu	Modify	수정
 	Surfaces	곡면
 	Wedge	쐐기
 	Shaded with Edges	모서리 포함 음영처리
+	Wireframe	와이어프레임
+	Maximize	최대화
+	Restore Viewports	뷰포트 복원
+	Four Views	4개 뷰
+	Four Rhino Views	Rhino 4개 뷰
+	Maximize Viewport	뷰포트 최대화
+	Maximize or Restore Viewport	뷰포트 최대화/복원
+	3D Mirror	3D 대칭
+	3D Move	3D 이동
+	3D Rotate	3D 회전
+	3D Scale	3D 축척
+	Base View	기준 뷰
+	Cut List	재단 목록
+	Drawing Views	도면 뷰
+	Export IGES	IGES 내보내기
+	Export for Rhino	Rhino용 내보내기
+	IGES	IGES
+	Import IGES	IGES 가져오기
+	Mirror 3D	3D 대칭
+	Panel	패널
+	Part	부품
+	Rhino (IGES + STEP)	Rhino (IGES + STEP)

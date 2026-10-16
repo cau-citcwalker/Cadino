@@ -1894,7 +1894,8 @@ fn mirrored_insert_extrusion_maps_to_negative_x_scale() {
     let d = read(text.as_bytes(), "m.dxf").unwrap();
     let ins = first(&d, |k| if let EntityKind::Insert(i) = k { Some(i.clone()) } else { None });
     assert!((ins.insert.x - 10.0).abs() < 1e-9 && (ins.insert.y - 5.0).abs() < 1e-9, "{:?}", ins.insert);
-    assert_eq!((ins.scale.x, ins.scale.y), (-1.0, 1.0));
+    // OCS z runs down too: the block's z is mirrored with it.
+    assert_eq!((ins.scale.x, ins.scale.y, ins.scale.z), (-1.0, 1.0, -1.0));
     assert!((ins.rotation + std::f64::consts::FRAC_PI_2).abs() < 1e-12, "{}", ins.rotation);
     // In the OCS the line (0,0)-(2,0) turned by 90° runs from (-10,5) to (-10,7); mirrored into the WCS
     // that is (10,5)-(10,7). The same follows from T(10,5)·R(-90°)·S(-1,1): (2,0) → (-2,0) → (0,2) → (10,7).

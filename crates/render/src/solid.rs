@@ -4,9 +4,9 @@
 //! [`crate::DisplayList::faces`]), for a depth-buffered canvas.
 //!
 //! A solid in a block reference is placed in the world as EXPLODE places it: the references'
-//! transform (`ctx.plan`) lifted to 3D with z scaled by the square root of its determinant (see
-//! [`Solid3d::transform`]). Culling, depth and shading use those world points, which the view
-//! then projects.
+//! transform lifted to 3D with z scaled by the square root of its determinant (see
+//! [`Solid3d::transform`]), in the reference's own plane. Culling, depth and shading use those
+//! points in view space (`Ctx::xf3`).
 
 use cadcraft_color::Rgb;
 use cadcraft_doc::Solid3d;
@@ -26,13 +26,12 @@ const FRONT: f64 = 1e-9;
 const EDGE_LEVEL: f64 = 0.25;
 
 pub(crate) fn draw(b: &mut Builder, ctx: &Ctx, s: &Solid3d, color: Ink, lw: f32) {
-    let (right, up, toward) = b.opts.view_dir.axes();
-    let proj = |w: Vec3| Vec2::new(right.dot(w), up.dot(w));
-    // ponytail: the 2D block transform carries no insert z, base z or z scale (EXPLODE drops
-    // them too); carry a Mat4 in Ctx if elevated references to solids matter.
-    let mut lift = Mat4::from_mat3(&ctx.plan);
-    lift.m[2][2] = ctx.plan.det().abs().sqrt();
-    let xf = lift.mul(&s.xform);
+    // Everything happens in view space (`ctx.xf3`: x right, y up, z toward the viewer), where the
+    // view direction is +Z. Block references place solids with their plane, elevation, z scale
+    // and base point (`Insert::lift`).
+    let (right, up, toward) = (Vec3::X, Vec3::Y, Vec3::Z);
+    let proj = |w: Vec3| Vec2::new(w.x, w.y);
+    let xf = ctx.xf3.mul(&s.xform);
     // A mirroring transform turns the outward winding inward.
     let out = if det3(&xf) < 0.0 { -1.0 } else { 1.0 };
     let world: Vec<Vec3> = s.mesh.verts.iter().map(|p| xf.apply(*p)).collect();
@@ -302,14 +301,16 @@ mod tests {
     }
 
     #[test]
-    fn solids_in_block_references_face_and_scale_as_exploded() {
+    fn solids_in_block_references_face_and_scale_with_the_reference() {
         // Mirrored in X: the sides still face up, so plan shows them, not the base.
         let d = in_block(pyramid(), Vec3::new(-1.0, 1.0, 1.0));
         assert_eq!(build(&d, &Space::Model, &view(Vec3::Z, true)).tris.len(), 12);
-        // Scaled 2: twice as tall too.
-        let d = in_block(cube(), Vec3::new(2.0, 2.0, 1.0));
-        let list = build(&d, &Space::Model, &view(Vec3::new(0.0, -1.0, 0.0), false));
-        assert!((list.bounds.max.y - 2.0).abs() < 1e-12, "{:?}", list.bounds);
+        // Height follows the z scale (DXF 43): scaled 2 in z, twice as tall; 1 in z, as tall.
+        let tall = |sz: f64| {
+            let d = in_block(cube(), Vec3::new(2.0, 2.0, sz));
+            build(&d, &Space::Model, &view(Vec3::new(0.0, -1.0, 0.0), false)).bounds.max.y
+        };
+        assert!((tall(2.0) - 2.0).abs() < 1e-12 && (tall(1.0) - 1.0).abs() < 1e-12, "{} {}", tall(2.0), tall(1.0));
     }
 
     #[test]

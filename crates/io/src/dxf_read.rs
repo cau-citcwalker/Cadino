@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use cadcraft_color::{Color, Rgb};
 use cadcraft_doc::*;
 use cadcraft_dxf::{Tag, records, sections};
-use cadcraft_geom::{PolyVertex, Spline, Vec2, Vec3};
+use cadcraft_geom::{Mat4, PolyVertex, Spline, Vec2, Vec3};
 
 use crate::{IoError, Result};
 
@@ -88,6 +88,62 @@ fn ocs(c: &Common, p: Vec3) -> Vec3 {
     ocs_n(c.extrusion, p)
 }
 
+/// How an object's extrusion (DXF 210) is read.
+#[derive(Clone, Copy, PartialEq)]
+enum Ext {
+    /// The default (or noise of up to 1e-3 off it).
+    Up,
+    /// Straight down, as AutoCAD's MIRROR leaves 2D objects: their OCS points become WCS ones (a
+    /// mirror in the XY plane) and the extrusion the default, so 2D editing sees them as drawn.
+    Down,
+    /// A tilted or standing plane: OCS points are kept with the extrusion (the object's plane).
+    Tilted,
+}
+
+fn ext_of(n: Vec3) -> Ext {
+    if !n.is_finite() || n.len() <= 1e-12 {
+        Ext::Up
+    } else if n.x.hypot(n.y) > 1e-3 * n.z.abs() {
+        Ext::Tilted
+    } else if n.z > 0.0 {
+        Ext::Up
+    } else {
+        Ext::Down
+    }
+}
+
+/// A 2D object's OCS point as stored: in the WCS unless its plane is tilted.
+fn plane_pt(c: &Common, p: Vec3) -> Vec3 {
+    if ext_of(c.extrusion) == Ext::Tilted { p } else { ocs(c, p) }
+}
+
+/// After an object is read: the extrusion of an upright or mirrored one becomes the default (its
+/// points are WCS now, heights pointing down for a mirrored one); a tilted ELLIPSE, whose file
+/// points are WCS, takes its points into its OCS (MTEXT and SPLINE do as they are read).
+fn settle(c: &mut Common, k: &mut EntityKind) {
+    match ext_of(c.extrusion) {
+        Ext::Up => c.extrusion = Vec3::Z,
+        Ext::Down => {
+            c.extrusion = Vec3::Z;
+            c.thickness = -c.thickness;
+            match k {
+                EntityKind::LwPolyline(p) => p.elevation = -p.elevation,
+                EntityKind::Hatch(h) => h.elevation = -h.elevation,
+                _ => {}
+            }
+        }
+        Ext::Tilted => {
+            if let EntityKind::Ellipse(e) = k
+                && let Some(inv) = Mat4::ocs(c.extrusion).inverse()
+            {
+                e.center = inv.apply(e.center);
+                e.major = inv.apply_vec(e.major);
+                e.major.z = 0.0;
+            }
+        }
+    }
+}
+
 fn ocs_n(n: Vec3, p: Vec3) -> Vec3 {
     if (n.z - 1.0).abs() < 1e-12 && n.x.abs() < 1e-12 && n.y.abs() < 1e-12 { p } else { cadcraft_geom::Mat4::ocs(n).apply(p) }
 }
@@ -145,12 +201,15 @@ fn mtext_from(tags: &[Tag], c: &Common) -> MText {
     // The direction comes from the MTEXT's own groups only: in an R2018+ embedded object
     // (group 101), 11 is the insertion point, not the X-axis direction (#667, as in #834).
     let own = T(mtext_dxf::before_columns(tags));
-    let mut rotation = match (own.f(11), own.f(21)) {
-        (Some(x), Some(y)) if x != 0.0 || y != 0.0 => Vec2::new(x, y).angle(),
+    // The direction is WCS: in a tilted plane, its angle in the OCS.
+    let tilt = (ext_of(c.extrusion) == Ext::Tilted).then(|| Mat4::ocs(c.extrusion).inverse()).flatten();
+    let mut rotation = match (own.f(11), own.f(21), &tilt) {
+        (Some(_), Some(_), Some(inv)) => inv.apply_vec(own.p(11)).xy().angle(),
+        (Some(x), Some(y), None) if x != 0.0 || y != 0.0 => Vec2::new(x, y).angle(),
         _ => own.fd(50, 0.0).to_radians(),
     };
     let mut attach = t.i(71).unwrap_or(1).clamp(1, 9) as u8;
-    if c.extrusion.z < 0.0 {
+    if ext_of(c.extrusion) == Ext::Down {
         // Insertion point and direction are WCS, but the line height runs along extrusion ×
         // direction: under (0,0,-1) the glyphs are mirrored. Drawn readable (MIRRTEXT = 0) with
         // the same footprint, the text turns round and left/right attachment swap.
@@ -162,7 +221,7 @@ fn mtext_from(tags: &[Tag], c: &Common) -> MText {
         };
     }
     MText {
-        insert: t.p(10),
+        insert: tilt.as_ref().map_or(t.p(10), |inv| inv.apply(t.p(10))),
         height: t.fd(40, 0.2).max(1e-9),
         width: match &columns {
             Some((_, w)) if t.fd(41, 0.0) <= 0.0 => *w,
@@ -207,7 +266,7 @@ fn text_from(t: &T) -> Text {
         valign: v,
     };
     let n = Vec3::new(t.fd(210, 0.0), t.fd(220, 0.0), t.fd(230, 1.0));
-    if n.z < 0.0 {
+    if ext_of(n) == Ext::Down {
         mirror_text(&mut text, align.map(|a| ocs_n(n, a)), ocs_n(n, t.p(10)));
     }
     text
@@ -254,11 +313,15 @@ fn entity(kind: &str, tags: &[Tag]) -> Option<(Common, EntityKind)> {
     let k = match kind {
         "LINE" => EntityKind::Line(Line { a: t.p(10), b: t.p(11) }),
         "POINT" => EntityKind::Point(Point { p: t.p(10), angle: t.fd(50, 0.0).to_radians() }),
-        "CIRCLE" => EntityKind::Circle(Circle { center: ocs(&c, t.p(10)), radius: t.fd(40, 1.0).abs() }),
+        "CIRCLE" => EntityKind::Circle(Circle { center: plane_pt(&c, t.p(10)), radius: t.fd(40, 1.0).abs() }),
         "ARC" => {
-            let mut a =
-                Arc { center: ocs(&c, t.p(10)), radius: t.fd(40, 1.0).abs(), start: t.fd(50, 0.0).to_radians(), end: t.fd(51, 360.0).to_radians() };
-            if c.extrusion.z < 0.0 {
+            let mut a = Arc {
+                center: plane_pt(&c, t.p(10)),
+                radius: t.fd(40, 1.0).abs(),
+                start: t.fd(50, 0.0).to_radians(),
+                end: t.fd(51, 360.0).to_radians(),
+            };
+            if ext_of(c.extrusion) == Ext::Down {
                 // Mirrored OCS: angles run the other way.
                 let (s, e) = (std::f64::consts::PI - a.end, std::f64::consts::PI - a.start);
                 a.start = cadcraft_geom::norm_angle(s);
@@ -274,7 +337,7 @@ fn entity(kind: &str, tags: &[Tag]) -> Option<(Common, EntityKind)> {
                 start: t.fd(41, 0.0),
                 end: t.fd(42, std::f64::consts::TAU),
             };
-            if c.extrusion.z < 0.0 && (cadcraft_geom::ccw_sweep(e.start, e.end) - std::f64::consts::TAU).abs() > 1e-9 {
+            if ext_of(c.extrusion) == Ext::Down && (cadcraft_geom::ccw_sweep(e.start, e.end) - std::f64::consts::TAU).abs() > 1e-9 {
                 // Centre and major axis are WCS, but the minor axis is extrusion × major: with (0,0,-1)
                 // it points the other way, so parameter t lands where -t does in the XY plane. A full
                 // ellipse is symmetric and stays as it is.
@@ -320,7 +383,7 @@ fn entity(kind: &str, tags: &[Tag]) -> Option<(Common, EntityKind)> {
             }
             verts.extend(cur);
             let flags = t.i(70).unwrap_or(0);
-            if c.extrusion.z < 0.0 {
+            if ext_of(c.extrusion) == Ext::Down {
                 for v in &mut verts {
                     v.p.x = -v.p.x;
                     v.bulge = -v.bulge;
@@ -339,10 +402,22 @@ fn entity(kind: &str, tags: &[Tag]) -> Option<(Common, EntityKind)> {
         "SPLINE" => {
             let degree = t.i(71).unwrap_or(3).clamp(1, 10) as usize;
             let knots = t.all_f(40);
-            let control = t.pts(10);
             let weights = t.all_f(41);
-            let fit = t.pts(11);
-            let tangent = |c: i32| t.f(c).map(|_| t.p(c).xy());
+            // The points are WCS: in a tilted plane, into its OCS. Their height is the elevation.
+            let tilt = (ext_of(c.extrusion) == Ext::Tilted).then(|| Mat4::ocs(c.extrusion).inverse()).flatten();
+            let to_plane = |p: Vec3| tilt.as_ref().map_or(p, |inv| inv.apply(p));
+            let pts3 = |code: i32| -> Vec<Vec3> {
+                t.pts(code).into_iter().zip(t.all_f(code + 20).into_iter().chain(std::iter::repeat(0.0))).map(|(p, z)| to_plane(p.to3(z))).collect()
+            };
+            let (control3, fit3) = (pts3(10), pts3(11));
+            // ponytail: a spline is planar here: a non-planar SPLINE (control points at several
+            // heights in its OCS) is flattened onto its first point's height; upgrade: read it
+            // as a 3D curve (a Polyline3d-like kind or 3D control points on Spline).
+            let elevation = control3.first().or(fit3.first()).map_or(0.0, |p| p.z);
+            let elevation = if elevation.is_finite() { elevation } else { 0.0 };
+            let control: Vec<Vec2> = control3.iter().map(|p| p.xy()).collect();
+            let fit: Vec<Vec2> = fit3.iter().map(|p| p.xy()).collect();
+            let tangent = |c: i32| t.f(c).map(|_| tilt.as_ref().map_or(t.p(c), |inv| inv.apply_vec(t.p(c))).xy());
             let fit_opts = cadcraft_geom::FitOptions {
                 knots: Default::default(),
                 start_tangent: tangent(12),
@@ -351,11 +426,11 @@ fn entity(kind: &str, tags: &[Tag]) -> Option<(Common, EntityKind)> {
             }
             .sanitized();
             let closed = t.i(70).unwrap_or(0) & 1 != 0;
-            let mut sp = Spline { degree, knots, control, weights, fit: fit.clone(), closed, fit_opts };
+            let mut sp = Spline { degree, knots, control, weights, fit: fit.clone(), closed, fit_opts, elevation };
             if !sp.is_valid() && fit.len() >= 2 {
-                sp = Spline::fit_with(&fit, sp.closed, fit_opts);
+                sp = Spline { elevation, ..Spline::fit_with(&fit, sp.closed, fit_opts) };
             } else if !sp.is_valid() && sp.control.len() >= 2 {
-                sp = Spline::from_control(sp.control.clone(), degree);
+                sp = Spline { elevation, ..Spline::from_control(sp.control.clone(), degree) };
             } else if fit.len() >= 3 {
                 // DXF keeps the knots, not how they were spaced: recover it for later refits.
                 sp.fit_opts.knots = sp.infer_knot_param();
@@ -393,16 +468,17 @@ fn entity(kind: &str, tags: &[Tag]) -> Option<(Common, EntityKind)> {
             // is the mirrored point, a negative x scale, the opposite rotation and a negative column
             // spacing. Noise of up to 1e-3 in the extrusion's x/y moves the projection by ~1e-7 of the
             // size, so it still counts as mirrored. A truly tilted extrusion (block plane not parallel
-            // to XY) needs the full 3D block transform, which Insert cannot hold; it is left as read.
-            let n = c.extrusion;
-            let mirrored = n.z < 0.0 && n.x.hypot(n.y) <= 1e-3 * n.z.abs();
+            // to XY) is kept with the OCS values: it is the reference's plane (`Entity::plane`).
+            let mirrored = ext_of(c.extrusion) == Ext::Down;
             let mut p = t.p(10);
             let mut scale = Vec3::new(t.fd(41, 1.0), t.fd(42, 1.0), t.fd(43, 1.0));
             let mut rotation = t.fd(50, 0.0).to_radians();
             let mut col_spacing = t.fd(44, 0.0);
             if mirrored {
+                // The OCS of (0,0,-1) maps (x, y, z) to (-x, y, -z): the block's z turns down too.
                 p = ocs(&c, p);
                 scale.x = -scale.x;
+                scale.z = -scale.z;
                 rotation = -rotation;
                 col_spacing = -col_spacing;
             }
@@ -435,7 +511,7 @@ fn entity(kind: &str, tags: &[Tag]) -> Option<(Common, EntityKind)> {
                 kind,
                 defpt: t.p(10),
                 // The text midpoint is the one OCS point of a DIMENSION.
-                text_mid: if c.extrusion.z < 0.0 { ocs(&c, t.p(11)) } else { t.p(11) },
+                text_mid: if ext_of(c.extrusion) == Ext::Down { ocs(&c, t.p(11)) } else { t.p(11) },
                 p13: t.p(13),
                 p14: t.p(14),
                 p15: t.p(15),
@@ -461,14 +537,14 @@ fn entity(kind: &str, tags: &[Tag]) -> Option<(Common, EntityKind)> {
         "MULTILEADER" | "MLEADER" => EntityKind::MLeader(crate::dxf_mleader::read(tags)),
         "SOLID" | "TRACE" => {
             let corners = [t.p(10), t.p(11), t.p(12), if t.f(13).is_some() { t.p(13) } else { t.p(12) }];
-            let corners = corners.map(|p| ocs(&c, p));
+            let corners = corners.map(|p| plane_pt(&c, p));
             if kind == "SOLID" { EntityKind::Solid(Solid { corners }) } else { EntityKind::Trace(Solid { corners }) }
         }
         "MLINE" => EntityKind::MLine(crate::dxf_mline::read_entity(tags)),
         "3DFACE" => EntityKind::Face3d(Face3d { corners: [t.p(10), t.p(11), t.p(12), t.p(13)], hidden_edges: t.i(70).unwrap_or(0) as u8 }),
         "HATCH" => {
             let mut k = hatch(tags, &t)?;
-            if c.extrusion.z < 0.0
+            if ext_of(c.extrusion) == Ext::Down
                 && let EntityKind::Hatch(h) = &mut k
             {
                 // Boundary in the mirrored OCS, like LWPOLYLINE; the pattern direction mirrors too.
@@ -521,6 +597,8 @@ fn entity(kind: &str, tags: &[Tag]) -> Option<(Common, EntityKind)> {
             tags: tags.iter().map(|tg| RawTag { code: tg.code, value: tg.str() }).collect(),
         }),
     };
+    let (mut c, mut k) = (c, k);
+    settle(&mut c, &mut k);
     Some((c, k))
 }
 
@@ -1157,7 +1235,7 @@ fn parse_entities(recs: &[(String, Vec<Tag>)], d: &mut Drawing, rx: &mut Rx, ski
                     EntityKind::Polyline3d(Polyline3d { points: pts.iter().map(|p| p.0).collect(), closed: flags & 1 != 0 })
                 } else {
                     // A 2D polyline's vertices are in its OCS: mirrored like LWPOLYLINE.
-                    let m = if c.extrusion.z < 0.0 { -1.0 } else { 1.0 };
+                    let m = if ext_of(c.extrusion) == Ext::Down { -1.0 } else { 1.0 };
                     EntityKind::LwPolyline(LwPolyline {
                         vertices: pts
                             .iter()
@@ -1169,6 +1247,8 @@ fn parse_entities(recs: &[(String, Vec<Tag>)], d: &mut Drawing, rx: &mut Rx, ski
                         plinegen: flags & 128 != 0,
                     })
                 };
+                let (mut c, mut k) = (c, k);
+                settle(&mut c, &mut k);
                 kindent = Some((c, k));
             }
             "INSERT" => {
@@ -2302,4 +2382,355 @@ fn helix(tags: &[Tag]) -> Helix {
 /// reader makes it. AutoLISP's `entmake` and `entmod` are built on it.
 pub fn entity_from_groups(kind: &str, tags: &[Tag]) -> Option<(Common, EntityKind)> {
     entity(&kind.to_ascii_uppercase(), tags)
+}
+
+#[cfg(test)]
+mod ocs_tests {
+    use cadcraft_doc::Space;
+    use cadcraft_geom::{Vec3, ViewDir};
+    use cadcraft_render::{DisplayList, Kind, Options, build};
+
+    /// FNV-1a over a display list, bit for bit.
+    fn digest(l: &DisplayList) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut eat = |v: u64| {
+            for b in v.to_le_bytes() {
+                h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+            }
+        };
+        for p in &l.prims {
+            let kind = match p.kind {
+                Kind::Polyline => 1,
+                Kind::Tris => 2,
+                Kind::Mask => 3,
+                Kind::Point => 4,
+                Kind::Infinite { ray } => 5 + u64::from(ray),
+            };
+            for v in [p.handle.0, kind, u64::from(p.start), u64::from(p.len), u64::from(p.color.0), u64::from(p.color.1), u64::from(p.color.2)] {
+                eat(v);
+            }
+        }
+        for v in l.verts.iter().chain(&l.tris) {
+            eat(v.x.to_bits());
+            eat(v.y.to_bits());
+        }
+        h
+    }
+
+    #[test]
+    fn example_drawing_lists_are_unchanged() {
+        let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/apartment.dxf")).unwrap();
+        let d = crate::read_dxf(&bytes).unwrap();
+        let got: Vec<u64> = [ViewDir::PLAN, ViewDir::new(Vec3::new(-1.0, -1.0, 1.0))]
+            .into_iter()
+            .map(|view_dir| digest(&build(&d, &Space::Model, &Options { tolerance: 0.01, view_dir, ..Options::default() })))
+            .collect();
+        // Built (and read) before objects were drawn in their 3D planes.
+        assert_eq!(got, [5093464489804460607, 12539620006824265505]);
+    }
+}
+
+#[cfg(test)]
+mod ocs_roundtrip {
+    use cadcraft_doc::*;
+    use cadcraft_geom::{Mat4, PolyVertex, Spline, Vec2, Vec3};
+
+    fn text() -> Text {
+        Text {
+            insert: Vec3::new(1.0, 2.0, 0.0),
+            align_pt: None,
+            height: 0.5,
+            value: "A".into(),
+            rotation: 0.2,
+            width_factor: 1.0,
+            oblique: 0.0,
+            style: "Standard".into(),
+            halign: HAlign::Left,
+            valign: VAlign::Baseline,
+        }
+    }
+
+    fn mtext() -> MText {
+        MText {
+            insert: Vec3::new(2.0, 1.0, 0.0),
+            height: 0.5,
+            width: 4.0,
+            attach: 1,
+            rotation: 0.3,
+            style: "Standard".into(),
+            contents: "M".into(),
+            line_spacing: 1.0,
+            line_spacing_exact: false,
+            columns: None,
+        }
+    }
+
+    /// One object of every kind that keeps an OCS, in the XY plane.
+    fn planar() -> Vec<EntityKind> {
+        let v = |x, y| PolyVertex::new(Vec2::new(x, y));
+        let attrib = Attrib {
+            tag: "T".into(),
+            text: Text { insert: Vec3::new(3.0, 3.0, 0.0), ..text() },
+            invisible: false,
+            constant: false,
+            prompt: String::new(),
+            props: Default::default(),
+            multiline: None,
+            modes: Default::default(),
+        };
+        let square = vec![v(0.0, 0.0), v(2.0, 0.0), v(2.0, 2.0), v(0.0, 2.0)];
+        vec![
+            EntityKind::Circle(Circle { center: Vec3::new(1.0, 2.0, 0.0), radius: 2.0 }),
+            EntityKind::Arc(Arc { center: Vec3::new(1.0, 2.0, 0.0), radius: 2.0, start: 0.3, end: 2.0 }),
+            EntityKind::Ellipse(Ellipse { center: Vec3::new(1.0, 2.0, 0.0), major: Vec3::new(2.0, 1.0, 0.0), ratio: 0.5, start: 0.2, end: 3.0 }),
+            EntityKind::LwPolyline(LwPolyline {
+                vertices: vec![v(0.0, 0.0), PolyVertex::with_bulge(Vec2::new(4.0, 0.0), 0.5), v(4.0, 3.0)],
+                closed: false,
+                const_width: 0.0,
+                elevation: 0.0,
+                plinegen: false,
+            }),
+            EntityKind::Spline(Spline::from_fit_points(&[Vec2::ZERO, Vec2::new(1.0, 2.0), Vec2::new(3.0, 1.0), Vec2::new(4.0, 3.0)])),
+            EntityKind::Text(text()),
+            EntityKind::MText(mtext()),
+            EntityKind::Insert(Insert {
+                block: "B".into(),
+                insert: Vec3::new(1.0, 1.0, 0.0),
+                scale: Vec3::new(1.0, 1.0, 1.0),
+                rotation: 0.4,
+                attribs: vec![attrib],
+                cols: 1,
+                rows: 1,
+                col_spacing: 0.0,
+                row_spacing: 0.0,
+            }),
+            EntityKind::Solid(Solid {
+                corners: [Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), Vec3::new(1.0, 1.0, 0.0)],
+            }),
+            EntityKind::Hatch(Hatch {
+                pattern: "SOLID".into(),
+                solid: true,
+                loops: vec![HatchLoop { vertices: square, outer: true, sources: Vec::new() }],
+                scale: 1.0,
+                angle: 0.0,
+                associative: false,
+                style: 0,
+                elevation: 0.0,
+                gradient: None,
+                origin: Vec2::ZERO,
+                background: None,
+                pattern_lines: Vec::new(),
+            }),
+        ]
+    }
+
+    /// Where an object's grips are in the world (an MTEXT's direction too).
+    fn world(e: &Entity) -> Vec<Vec3> {
+        let p = e.plane().unwrap_or(Mat4::IDENTITY);
+        let mut pts: Vec<Vec3> = e.kind.grips().into_iter().map(|g| p.apply(g.to3(0.0))).collect();
+        if let EntityKind::MText(t) = &e.kind {
+            pts.push(p.apply_vec(Vec3::new(t.rotation.cos(), t.rotation.sin(), 0.0)));
+        }
+        pts
+    }
+
+    fn roundtrip(d: &Drawing) -> Drawing {
+        crate::read_dxf(crate::write_dxf(d).as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn objects_in_tilted_and_raised_planes_roundtrip() {
+        let tilt = Mat4::translate(Vec3::new(5.0, -2.0, 7.0)).mul(&Mat4::rotation(Vec3::new(1.0, 0.5, 0.2), 1.2));
+        let stand = Mat4::translate(Vec3::new(0.0, 0.0, 3.0)).mul(&Mat4::rotation(Vec3::X, std::f64::consts::FRAC_PI_2));
+        let raise = Mat4::translate(Vec3::new(0.0, 0.0, 4.5));
+        for m in [tilt, stand, raise] {
+            let mut d = Drawing::new_metric();
+            d.blocks.insert("B".into(), std::sync::Arc::new(Block::new("B")));
+            for k in planar() {
+                let mut e = Entity::new(Handle(0), k);
+                assert!(e.transform3(&m), "{}", e.kind.type_name());
+                d.add(&Space::Model, e.common, e.kind).unwrap();
+            }
+            let back = roundtrip(&d);
+            let again = roundtrip(&back);
+            assert_eq!(back.model.len(), d.model.len());
+            for (a, b) in d.model.iter().zip(back.model.iter()).chain(d.model.iter().zip(again.model.iter())) {
+                let name = a.kind.type_name();
+                assert!((a.common.extrusion - b.common.extrusion).len() < 1e-12, "{name}: {:?} {:?}", a.common.extrusion, b.common.extrusion);
+                let (wa, wb) = (world(a), world(b));
+                assert_eq!(wa.len(), wb.len(), "{name}");
+                for (p, q) in wa.iter().zip(&wb) {
+                    assert!((*p - *q).len() < 1e-9, "{name}: {p:?} {q:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_tilted_multiline_attribute_definition_roundtrips() {
+        let def = Attrib {
+            tag: "T".into(),
+            text: text(),
+            invisible: false,
+            constant: false,
+            prompt: String::new(),
+            props: Default::default(),
+            multiline: Some(MultilineAttrib { mtext: mtext(), read_as: "M".into() }),
+            modes: Default::default(),
+        };
+        let mut e = Entity::new(Handle(0), EntityKind::AttDef(def));
+        assert!(e.transform3(&Mat4::rotation(Vec3::new(1.0, 1.0, 0.0), 0.8)));
+        let mut d = Drawing::new_metric();
+        d.add(&Space::Model, e.common.clone(), e.kind.clone()).unwrap();
+        // Multiline attributes are written from DXF 2007 on.
+        let text = cadcraft_dxf::write_ascii(&crate::dxf_write::tags(&d, cadcraft_dxf::Version::R2010));
+        let back = crate::read_dxf(text.as_bytes()).unwrap();
+        let b = back.model.iter().next().unwrap();
+        let (EntityKind::AttDef(x), EntityKind::AttDef(y)) = (&e.kind, &b.kind) else { panic!() };
+        let (mx, my) = (x.multiline.as_ref().unwrap(), y.multiline.as_ref().unwrap());
+        assert!((mx.mtext.insert - my.mtext.insert).len() < 1e-9, "{:?} {:?}", mx.mtext.insert, my.mtext.insert);
+        assert!((mx.mtext.rotation - my.mtext.rotation).abs() < 1e-9);
+        assert!((x.text.insert - y.text.insert).len() < 1e-9);
+    }
+
+    #[test]
+    fn the_default_extrusion_is_not_written() {
+        let mut d = Drawing::new_metric();
+        d.add(&Space::Model, Common::default(), EntityKind::Circle(Circle { center: Vec3::new(0.0, 0.0, 2.0), radius: 1.0 })).unwrap();
+        let text = crate::write_dxf(&d);
+        assert!(!text.lines().any(|l| l.trim() == "210"));
+        let back = roundtrip(&d);
+        let c = back.model.iter().next().unwrap();
+        assert_eq!(c.kind, EntityKind::Circle(Circle { center: Vec3::new(0.0, 0.0, 2.0), radius: 1.0 }));
+        assert_eq!(c.common.extrusion, Vec3::Z);
+    }
+
+    fn read_one(record: &str) -> Entity {
+        let text = format!("0\nSECTION\n2\nENTITIES\n{record}0\nENDSEC\n0\nEOF\n");
+        let d = crate::read_dxf(text.as_bytes()).unwrap();
+        d.model.iter().next().map(|e| e.as_ref().clone()).unwrap()
+    }
+
+    #[test]
+    fn a_standing_circle_keeps_its_ocs_centre() {
+        // Extrusion (0,-1,0): OCS (1,2) at elevation 3 is world (1,-3,2).
+        let e = read_one("0\nCIRCLE\n8\n0\n10\n1\n20\n2\n30\n3\n40\n1.5\n210\n0\n220\n-1\n230\n0\n");
+        assert_eq!(e.kind, EntityKind::Circle(Circle { center: Vec3::new(1.0, 2.0, 3.0), radius: 1.5 }));
+        assert!((e.plane().unwrap().apply(Vec3::new(1.0, 2.0, 0.0)) - Vec3::new(1.0, -3.0, 2.0)).len() < 1e-12);
+        // Seen from above: a segment along X at y = -3.
+        let b = cadcraft_doc::entity_bounds(&Drawing::default(), &e, 0);
+        assert!((b.min.x + 0.5).abs() < 1e-9 && (b.max.x - 2.5).abs() < 1e-9 && (b.max.y + 3.0).abs() < 1e-9, "{b:?}");
+    }
+
+    #[test]
+    fn mirrored_objects_become_upright_with_heights_turned_down() {
+        // A LWPOLYLINE at OCS elevation 5 under (0,0,-1) is at world z -5.
+        let e = read_one("0\nLWPOLYLINE\n8\n0\n90\n2\n70\n0\n38\n5\n39\n2\n10\n1\n20\n0\n10\n2\n20\n1\n210\n0\n220\n0\n230\n-1\n");
+        assert_eq!(e.common.extrusion, Vec3::Z);
+        assert_eq!(e.common.thickness, -2.0);
+        let EntityKind::LwPolyline(p) = &e.kind else { panic!() };
+        assert_eq!((p.elevation, p.vertices[0].p), (-5.0, Vec2::new(-1.0, 0.0)));
+        // A circle's centre is turned with the rest.
+        let c = read_one("0\nCIRCLE\n8\n0\n10\n1\n20\n2\n30\n3\n40\n1\n210\n0\n220\n0\n230\n-1\n");
+        assert_eq!((c.kind.elevation(), c.common.extrusion), (-3.0, Vec3::Z));
+    }
+
+    #[test]
+    fn a_raised_spline_keeps_its_height() {
+        let mut d = Drawing::new_metric();
+        let mut sp = Spline::from_fit_points(&[Vec2::ZERO, Vec2::new(1.0, 2.0), Vec2::new(3.0, 1.0)]);
+        sp.elevation = 3.0;
+        d.add(&Space::Model, Common::default(), EntityKind::Spline(sp.clone())).unwrap();
+        let back = roundtrip(&d);
+        let EntityKind::Spline(b) = &back.model.iter().next().unwrap().kind else { panic!() };
+        assert_eq!(b.elevation, 3.0);
+        assert_eq!(b.control.len(), sp.control.len());
+    }
+
+    #[test]
+    fn hostile_extrusions_do_not_panic() {
+        for n in ["nan\n220\n0\n230\n1", "1e308\n220\n1e308\n230\n-1e308", "0\n220\n0\n230\n0", "inf\n220\n-inf\n230\n0"] {
+            for kind in ["CIRCLE", "ARC", "ELLIPSE", "TEXT", "MTEXT", "SPLINE", "INSERT", "LWPOLYLINE", "HATCH", "SOLID"] {
+                let text = format!(
+                    "0\nSECTION\n2\nENTITIES\n0\n{kind}\n8\n0\n10\n1\n20\n2\n30\n3\n11\n1\n21\n0\n31\n0\n40\n1\n210\n{n}\n0\nENDSEC\n0\nEOF\n"
+                );
+                if let Ok(d) = crate::read_dxf(text.as_bytes()) {
+                    let _ = crate::write_dxf(&d);
+                    let _ = cadcraft_render::build(&d, &Space::Model, &cadcraft_render::Options::default());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn level_kinds_keep_a_tilted_extrusion_through_save() {
+        let n = Vec3::new(0.6, 0.0, 0.8);
+        let dim = Dimension {
+            kind: DimKind::Aligned,
+            defpt: Vec3::new(0.0, 2.0, 0.0),
+            text_mid: Vec3::new(1.0, 2.5, 0.0),
+            p13: Vec3::ZERO,
+            p14: Vec3::new(2.0, 0.0, 0.0),
+            p15: Vec3::ZERO,
+            p16: Vec3::ZERO,
+            text: String::new(),
+            style: "Standard".into(),
+            measurement: 2.0,
+            text_rotation: 0.0,
+            user_text_pos: false,
+            block: None,
+            overrides: Default::default(),
+            assoc: Vec::new(),
+            marks: Default::default(),
+        };
+        let mline = MLine {
+            style: "Standard".into(),
+            def: Default::default(),
+            scale: 1.0,
+            justification: Default::default(),
+            closed: false,
+            no_start_caps: false,
+            no_end_caps: false,
+            vertices: vec![MLineVertex::new(Vec3::ZERO), MLineVertex::new(Vec3::new(4.0, 1.0, 0.0))],
+        };
+        let leader = Leader { vertices: vec![Vec3::ZERO, Vec3::new(2.0, 1.0, 0.0)], arrow: true, spline: false, style: "Standard".into() };
+        let tol = Tolerance { insert: Vec3::new(1.0, 1.0, 0.0), dir: Vec3::X, style: "Standard".into(), text: "%%v0.1".into() };
+        let mut d = Drawing::new_metric();
+        for k in [EntityKind::Dimension(dim), EntityKind::MLine(mline), EntityKind::Leader(leader), EntityKind::Tolerance(tol)] {
+            d.add(&Space::Model, Common { extrusion: n, ..Common::default() }, k).unwrap();
+        }
+        let back = roundtrip(&roundtrip(&d));
+        let kinds: Vec<&str> = back.model.iter().map(|e| e.kind.type_name()).collect();
+        assert_eq!(kinds.len(), 4, "{kinds:?}");
+        for e in back.model.iter() {
+            assert!((e.common.extrusion - n).len() < 1e-12, "{}: {:?}", e.kind.type_name(), e.common.extrusion);
+        }
+    }
+
+    #[test]
+    fn a_dimension_block_at_elevation_draws_there_once() {
+        // AutoCAD's *D block holds the dimension's geometry where it is: at its elevation, 5.
+        let text = "0\nSECTION\n2\nBLOCKS\n0\nBLOCK\n8\n0\n2\n*D1\n70\n1\n10\n0\n20\n0\n30\n0\n\
+                    0\nLINE\n8\n0\n10\n0\n20\n0\n30\n5\n11\n4\n21\n0\n31\n5\n0\nENDBLK\n8\n0\n0\nENDSEC\n\
+                    0\nSECTION\n2\nENTITIES\n0\nDIMENSION\n8\n0\n2\n*D1\n10\n4\n20\n1\n30\n5\n11\n2\n21\n1\n31\n5\n70\n33\n\
+                    100\nAcDbAlignedDimension\n13\n0\n23\n0\n33\n5\n14\n4\n24\n0\n34\n5\n0\nENDSEC\n0\nEOF\n";
+        let d = crate::read_dxf(text.as_bytes()).unwrap();
+        // Seen from the front, x across and z up: the line at height 5, not 10.
+        let front =
+            cadcraft_render::Options { tolerance: 0.01, view_dir: cadcraft_geom::ViewDir::new(Vec3::new(0.0, -1.0, 0.0)), ..Default::default() };
+        let at_five = |d: &Drawing| {
+            let l = cadcraft_render::build(d, &Space::Model, &front);
+            !l.verts.is_empty() && l.verts.iter().all(|v| (v.y - 5.0).abs() < 1e-6)
+        };
+        assert!(at_five(&d));
+        // Written back (its block made again from the dimension) it is still there.
+        assert!(at_five(&roundtrip(&d)));
+    }
+
+    #[test]
+    fn a_mirrored_block_reference_turns_its_z_down() {
+        let e = read_one("0\nINSERT\n8\n0\n2\nB\n10\n1\n20\n2\n30\n3\n41\n1\n42\n1\n43\n2\n210\n0\n220\n0\n230\n-1\n");
+        let EntityKind::Insert(i) = &e.kind else { panic!() };
+        assert_eq!((i.insert, i.scale, e.common.extrusion), (Vec3::new(-1.0, 2.0, -3.0), Vec3::new(-1.0, 1.0, -2.0), Vec3::Z));
+    }
 }

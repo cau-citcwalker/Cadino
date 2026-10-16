@@ -86,6 +86,13 @@ pub(super) enum Poll {
 }
 
 impl Job {
+    /// A build whose worker died without a result, for tests.
+    #[cfg(test)]
+    pub fn lost(key: super::ListKey) -> Job {
+        let (_, rx) = std::sync::mpsc::channel();
+        Job { key, window: None, rx, cancel: Arc::new(AtomicBool::new(false)) }
+    }
+
     pub fn poll(&self) -> Poll {
         match self.rx.try_recv() {
             Ok(b) => Poll::Done(Box::new(b)),

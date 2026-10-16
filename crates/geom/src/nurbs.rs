@@ -230,8 +230,8 @@ impl Spline {
         let rc = s.control.get(rs..)?.to_vec();
         let rw = if s.weights.is_empty() { Vec::new() } else { s.weights.get(rs..)?.to_vec() };
         Some((
-            Spline { degree: p, knots: lk, control: lc, weights: lw, ..Spline::default() },
-            Spline { degree: p, knots: rk, control: rc, weights: rw, ..Spline::default() },
+            Spline { degree: p, knots: lk, control: lc, weights: lw, elevation: self.elevation, ..Spline::default() },
+            Spline { degree: p, knots: rk, control: rc, weights: rw, elevation: self.elevation, ..Spline::default() },
         ))
     }
 
@@ -298,6 +298,7 @@ impl Spline {
                 end_tangent: self.fit_opts.start_tangent.map(|t| -t),
                 ..self.fit_opts
             },
+            elevation: self.elevation,
         }
     }
 

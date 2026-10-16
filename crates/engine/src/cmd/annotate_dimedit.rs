@@ -533,7 +533,7 @@ fn run_dimbreak(s: &mut Session, p: &Value) -> Result<Value> {
                     None => !matches!(e.kind, EntityKind::Dimension(_) | EntityKind::Text(_) | EntityKind::MText(_)),
                 })
                 .take(MAX_BREAK_OBJECTS)
-                .map(|e| (e.handle, e.kind.prims()))
+                .map(|e| (e.handle, e.prims()))
                 .collect();
             let mut plan = Vec::new();
             for h in &hs {

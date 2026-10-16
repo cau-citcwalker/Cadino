@@ -4,7 +4,7 @@
 //! The UI calls [`Session::grip_edit`]; every edit runs through a `grip.*` command so it is
 //! undoable and reachable from scripts, the control channel and MCP.
 
-use cadcraft_doc::{DimKind, EntityKind, Handle, LwPolyline};
+use cadcraft_doc::{DimKind, Entity, EntityKind, Handle, LwPolyline};
 use cadcraft_geom::{Arc, EPS, Mat3, Polyline, Vec2, Vec3, norm_angle};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -492,6 +492,25 @@ pub fn grip_action(kind: &EntityKind, index: usize, action: GripAction, to: Opti
     Some(k)
 }
 
+/// [`stretch_grip`] of object `e`, whose shape is `kind` (its own, or as earlier grips of the same
+/// drag left it), with grip `index` dragged to plan point `to`: an object in a tilted plane gets
+/// the point of its plane seen there ([`Entity::plan_to_local`]), so its grips follow the cursor
+/// in plan.
+pub fn stretch_grip_plan(e: &Entity, kind: &EntityKind, index: usize, to: Vec2) -> Option<EntityKind> {
+    let near = *kind.grips().get(index)?;
+    to.is_finite().then(|| e.plan_to_local(to, near)).and_then(|p| stretch_grip(kind, index, p))
+}
+
+/// [`grip_action`] of object `e` with the picked point `to` in plan (see [`stretch_grip_plan`]).
+pub fn grip_action_plan(e: &Entity, index: usize, action: GripAction, to: Option<Vec2>, value: Option<f64>) -> Option<EntityKind> {
+    let near = e.kind.grips().get(index).copied();
+    let to = match (to, near) {
+        (Some(p), Some(n)) if p.is_finite() => Some(e.plan_to_local(p, n)),
+        (to, _) => to,
+    };
+    grip_action(&e.kind, index, action, to, value)
+}
+
 /// The transform for a multi-functional grip mode about `base` with the dragged point `to`.
 pub fn mode_matrix(mode: GripMode, base: Vec2, to: Vec2) -> Option<Mat3> {
     match mode {
@@ -526,9 +545,9 @@ impl Session {
         r.map(|_| ())
     }
 
-    /// Grip points of an object (the indices `grip_edit` takes).
+    /// Grip points of an object in plan (the indices `grip_edit` takes).
     pub fn grips_of(&self, handle: Handle) -> Result<Vec<Vec2>> {
-        self.doc()?.entity(handle).map(|e| e.kind.grips()).ok_or_else(|| EngineError::Other("no such object".into()))
+        self.doc()?.entity(handle).map(|e| e.grips()).ok_or_else(|| EngineError::Other("no such object".into()))
     }
 }
 

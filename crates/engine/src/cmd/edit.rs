@@ -617,15 +617,7 @@ impl Interactive for PasteM {
     }
     fn preview(&self, s: &Session, c: Vec2) -> Vec<cadcraft_doc::EntityKind> {
         let m = Mat3::translate(c - s.clipboard_base);
-        s.clipboard
-            .iter()
-            .take(500)
-            .map(|e| {
-                let mut k = e.kind.clone();
-                k.transform(&m);
-                k
-            })
-            .collect()
+        s.clipboard.iter().take(500).flat_map(|e| super::helpers::plan_preview(e, &m)).collect()
     }
 }
 

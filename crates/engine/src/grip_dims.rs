@@ -186,6 +186,11 @@ pub fn grip_dims(s: &Session) -> Vec<GripDim> {
     }
     let Some((h, i)) = s.current_prompt().and_then(|p| p.grip) else { return Vec::new() };
     let Some(e) = s.doc().ok().and_then(|d| d.entity(h)) else { return Vec::new() };
+    // ponytail: no grip dimensions for an object in a tilted plane (they measure in its own
+    // coordinates, not what plan view shows); upgrade: map them through `Entity::plan_xf`.
+    if e.plan_xf().is_some() {
+        return Vec::new();
+    }
     let all = dims_of(&e.kind, i);
     let st = &s.settings;
     match st.dyndivis {

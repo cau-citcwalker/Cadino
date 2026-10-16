@@ -79,7 +79,8 @@ fn moved(store: &EntityStore, m: &Mat3) -> EntityStore {
     let mut out = EntityStore::new();
     for e in store.iter() {
         let mut e = (**e).clone();
-        e.kind.transform(m);
+        // A move (the Block Editor's origin): objects in any plane take it.
+        e.transform(m);
         out.push(e);
     }
     out
@@ -114,14 +115,14 @@ impl BlockEdit {
         for e in editor.model.iter() {
             let unchanged = self.original.get(e.handle).filter(|o| {
                 let mut shown = (***o).clone();
-                shown.kind.transform(&to_editor);
+                shown.transform(&to_editor);
                 shown == **e
             });
             match unchanged {
                 Some(o) => out.push((**o).clone()),
                 None => {
                     let mut e = (**e).clone();
-                    e.kind.transform(&back);
+                    e.transform(&back);
                     out.push(e);
                 }
             }

@@ -20,6 +20,16 @@ pub struct Spline {
     /// edits to the fit points rebuild it the same way.
     #[serde(default)]
     pub fit_opts: FitOptions,
+    /// Height of the curve's plane (its OCS z, as LWPOLYLINE's elevation); not degree elevation.
+    /// ponytail: split and reversed keep it, but other derived curves (offsets, fits, joins,
+    /// conversions built with `..Spline::default()`) start at 0; upgrade: carry it in every
+    /// constructor that starts from an existing spline.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub elevation: f64,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
 }
 
 impl Spline {
@@ -28,7 +38,7 @@ impl Spline {
         let n = control.len();
         let degree = degree.clamp(1, n.saturating_sub(1).max(1));
         let knots = clamped_uniform_knots(n, degree);
-        Spline { degree, knots, control, weights: Vec::new(), fit: Vec::new(), closed: false, fit_opts: FitOptions::default() }
+        Spline { degree, knots, control, weights: Vec::new(), fit: Vec::new(), closed: false, fit_opts: FitOptions::default(), elevation: 0.0 }
     }
 
     /// Cubic interpolation through fit points (chord-length parametrisation, natural-ish ends

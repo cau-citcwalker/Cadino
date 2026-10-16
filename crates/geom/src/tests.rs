@@ -321,3 +321,68 @@ fn long_secant_keeps_both_intersections() {
     assert!(hits[0].0.near(Vec2::new(-2.0, 0.0), 1e-8), "{hits:?}");
     assert!(hits[1].0.near(Vec2::new(2.0, 0.0), 1e-8), "{hits:?}");
 }
+
+fn near3(a: Vec3, b: Vec3) -> bool {
+    (a - b).len() < 1e-9
+}
+
+#[test]
+fn mat4_rotation_follows_the_right_hand_rule() {
+    let r = Mat4::rotation(Vec3::X, PI / 2.0);
+    assert!(near3(r.apply(Vec3::Y), Vec3::Z));
+    assert!(near3(r.apply(Vec3::Z), -Vec3::Y));
+    let about = Mat4::rotate_about(Vec3::new(1.0, 1.0, 0.0), Vec3::Z, PI);
+    assert!(near3(about.apply(Vec3::ZERO), Vec3::new(2.0, 2.0, 0.0)));
+    assert_eq!(Mat4::rotation(Vec3::ZERO, 1.0), Mat4::IDENTITY);
+    assert_eq!(Mat4::rotation(Vec3::Z, f64::NAN), Mat4::IDENTITY);
+}
+
+#[test]
+fn mat4_inverse_mirror_and_similarity() {
+    let m =
+        Mat4::translate(Vec3::new(3.0, -2.0, 5.0)).mul(&Mat4::rotation(Vec3::new(1.0, 2.0, 3.0), 0.7)).mul(&Mat4::scale(Vec3::new(2.0, 2.0, 2.0)));
+    let p = Vec3::new(1.5, -4.0, 9.0);
+    let inv = m.inverse().unwrap();
+    assert!(near3(inv.apply(m.apply(p)), p));
+    assert!((m.similarity_scale().unwrap() - 2.0).abs() < 1e-12);
+    assert!(Mat4::scale(Vec3::new(1.0, 2.0, 1.0)).similarity_scale().is_none());
+    assert!(Mat4::scale(Vec3::new(1.0, 1.0, 0.0)).inverse().is_none());
+    let mut persp = Mat4::IDENTITY;
+    persp.m[3][2] = 1.0;
+    assert!(persp.inverse().is_none() && persp.similarity_scale().is_none());
+    let mir = Mat4::mirror(Vec3::new(0.0, 0.0, 2.0), Vec3::Z);
+    assert!(mir.det3() < 0.0 && mir.similarity_scale() == Some(1.0));
+    assert!(near3(mir.apply(Vec3::new(1.0, 1.0, 0.0)), Vec3::new(1.0, 1.0, 4.0)));
+    assert!(near3(mir.apply_vec(Vec3::Z), -Vec3::Z));
+}
+
+#[test]
+fn mat4_plane_xy_is_the_view_of_the_xy_plane() {
+    let v = ViewDir::new(Vec3::new(-1.0, -2.0, 1.5));
+    assert_eq!(v.rotation().plane_xy(), v.plane_xf());
+    assert_eq!(Mat4::from_mat3(&Mat3::rotate(0.3)).plane_xy(), Mat3::rotate(0.3));
+    assert!(Mat3::rotate(0.3).then(Mat3::scale(-2.0, 2.0)).is_similarity());
+    assert!(!Mat3::scale(1.0, 2.0).is_similarity() && !Mat3::scale(0.0, 0.0).is_similarity());
+}
+
+#[test]
+fn ellipse_transformed_keeps_its_points() {
+    let arc = Ellipse { center: Vec2::new(1.0, 2.0), major: Vec2::new(3.0, 1.0), ratio: 0.4, start: 0.5, end: 4.0 };
+    for m in [Mat3::scale(1.0, 0.3), Mat3::rotate(0.4).then(Mat3::scale(-1.0, 2.5)), Mat3 { a: 1.0, b: 0.2, c: 0.9, d: 1.0, e: 3.0, f: -1.0 }] {
+        let t = arc.transformed(&m).unwrap();
+        assert!(t.ratio > 0.0 && t.ratio <= 1.0);
+        // The end points map to the end points (swapped when mirrored, the arc running the
+        // other way round), and every point lands on the image.
+        let (s, e) = if m.is_mirroring() { (t.end, t.start) } else { (t.start, t.end) };
+        assert!(m.apply(arc.at_param(arc.start)).dist(t.at_param(s)) < 1e-9, "{m:?}");
+        assert!(m.apply(arc.at_param(arc.end)).dist(t.at_param(e)) < 1e-9, "{m:?}");
+        for i in 0..=10 {
+            let q = m.apply(arc.at_param(arc.start + arc.sweep() * f64::from(i) / 10.0));
+            assert!(t.closest(q).dist(q) < 1e-2, "{m:?} {i}");
+        }
+    }
+    // A full ellipse stays full; one seen edge-on collapses.
+    let full = Ellipse::full(Vec2::ZERO, Vec2::new(2.0, 0.0), 0.5);
+    assert!(full.transformed(&Mat3::rotate(1.0)).unwrap().is_full());
+    assert!(full.transformed(&Mat3::scale(1.0, 0.0)).is_none());
+}

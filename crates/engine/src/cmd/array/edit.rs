@@ -161,13 +161,14 @@ fn block_from(s: &mut Session, h: Handle, hs: &[Handle], base: Vec2) -> Result<S
     if nesting(d, &refs, &mut Default::default(), 0) + 2 > MAX_BLOCK_DEPTH {
         return Err(other(format!("The objects nest block references too deeply (more than {MAX_BLOCK_DEPTH} levels).")));
     }
+    // Into block coordinates (objects in tilted planes in 3D); refused before anything changes.
+    let ents = ents.iter().map(|e| super::super::helpers::transformed(e, &inv)).collect::<Result<Vec<_>>>()?;
     let d = s.doc_mut()?;
     let name = d.anonymous_block_name("*U");
     let mut b = Block::new(&name);
     b.base = v3(inv.apply(base));
     for mut e in ents {
         e.handle = d.new_handle();
-        e.kind.transform(&inv);
         b.entities.push(e);
     }
     d.blocks.insert(name.clone(), Arc::new(b));
@@ -244,12 +245,11 @@ fn open_source(s: &mut Session, h: Handle, item: (u32, u32, u32)) -> Result<Vec<
     let src = d.block(&p.source).cloned().ok_or_else(|| other("The array's source block is missing."))?;
     let m = ins.transform(blk.base.xy()).then_before(item_place(&p, item)?).then_before(Mat3::translate(-src.base.xy()));
     let space = d.space_of(h).unwrap_or_default();
+    let placed = src.entities.iter().map(|e| super::super::helpers::transformed(e, &m)).collect::<Result<Vec<_>>>()?;
     let d = s.doc_mut()?;
     let mut out = Vec::new();
-    for e in src.entities.iter() {
-        let mut ne = (**e).clone();
+    for mut ne in placed {
         ne.handle = d.new_handle();
-        ne.kind.transform(&m);
         out.push(ne.handle);
         d.ensure_layer(&ne.common.layer);
         if let Some(st) = d.space_mut(&space) {
@@ -321,12 +321,12 @@ fn close_source(s: &mut Session, save: bool) -> Result<Value> {
     if nesting(d, &er, &mut Default::default(), 0) + 2 > MAX_BLOCK_DEPTH {
         return Err(other(format!("The objects nest block references too deeply (more than {MAX_BLOCK_DEPTH} levels).")));
     }
+    let ents = ents.iter().map(|e| super::super::helpers::transformed(e, &inv)).collect::<Result<Vec<_>>>()?;
     let d = s.doc_mut()?;
     let name = d.anonymous_block_name("*U");
     let mut nb = Block::new(&name);
     for mut e in ents {
         e.handle = d.new_handle();
-        e.kind.transform(&inv);
         nb.entities.push(e);
     }
     d.blocks.insert(name.clone(), Arc::new(nb));

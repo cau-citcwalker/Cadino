@@ -509,6 +509,21 @@ impl Insert {
             .then_before(Mat3::scale(self.scale.x, self.scale.y))
             .then_before(Mat3::translate(-base))
     }
+    /// Block-to-plane transform in 3D: [`Insert::transform`] with the z scale (DXF 43) about the
+    /// base point's height. The reference's plane ([`Entity::plane`]) takes it on to the world.
+    pub fn transform3(&self, base: Vec3) -> cadcraft_geom::Mat4 {
+        self.lift(&self.transform(base.xy()), base)
+    }
+    /// `m`, this reference's 2D transform (moved to an array cell, say), in 3D: z scaled by the
+    /// z scale about the base point's height (a non-finite one counts as 1, at height 0).
+    pub fn lift(&self, m: &Mat3, base: Vec3) -> cadcraft_geom::Mat4 {
+        let sz = if self.scale.z.is_finite() { self.scale.z } else { 1.0 };
+        let tz = 0.0 - sz * base.z;
+        let mut t = cadcraft_geom::Mat4::from_mat3(m);
+        t.m[2][2] = sz;
+        t.m[2][3] = if tz.is_finite() { tz } else { 0.0 };
+        t
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -962,6 +977,7 @@ mod region;
 pub use region::*;
 mod solid3d;
 pub use solid3d::{Part, Solid3d};
+mod plane;
 
 /// A raw DXF group: kept for round-tripping entities we do not model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1341,6 +1357,9 @@ impl EntityKind {
                         }
                     }
                 }
+                // ponytail: under a shear or non-uniform scale (a 3D transform of a hatch in a
+                // tilted plane allows one) the pattern takes the average scale and stays
+                // unsheared; upgrade: transform each pattern line's direction and spacing.
                 h.scale *= s;
                 h.angle = cadcraft_geom::norm_angle(h.angle + rot);
                 h.origin = m.apply(h.origin);

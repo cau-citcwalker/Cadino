@@ -308,6 +308,13 @@ pub struct CanvasState {
     /// Tab was pressed over a snap marker: show the next candidate ([`SnapCycle`]).
     pub snap_tab: bool,
     pub snap_cycle: Option<SnapCycle>,
+    /// The lists of the model tiles that look another way than the current one ([`tiles`]).
+    tile_lists: Vec<tiles::TileList>,
+    /// A right-button press on the canvas: where, and whether it has become a Rhino-style drag
+    /// ([`tiles::right_drag`]).
+    rnav: Option<(Pos2, bool)>,
+    /// The model look `list` was last built for ([`tiles::trade`]).
+    last_look: Option<cadcraft_engine::TileLook>,
 }
 
 impl CanvasState {
@@ -442,19 +449,7 @@ fn ensure_list(app: &mut CadApp, xf: &Xf, views: &[(Bounds2, f64)], ctx: &egui::
     // contents stay in the list, which then follows its view: realtime navigation changes it
     // without a new revision.
     let split = split_viewport(st, stencil_clip(app)).map(|(h, ..)| h);
-    let vp_view = {
-        use std::hash::{Hash, Hasher};
-        let mut s = std::collections::hash_map::DefaultHasher::new();
-        split.hash(&mut s);
-        if split.is_none()
-            && let Some((h, vp)) = st.active_viewport()
-        {
-            (h, vp.view_center.x.to_bits(), vp.view_center.y.to_bits(), vp.view_height.to_bits()).hash(&mut s);
-        }
-        // The visual style changes the list too.
-        (st.shaded, st.shaded_edges).hash(&mut s);
-        s.finish()
-    };
+    let vp_view = list_style(st, split);
     // The view direction is part of the view: orbiting builds in the background (see `view_xfs`).
     let view_dir = if st.space == cadcraft_doc::Space::Model { st.view_dir } else { cadcraft_geom::ViewDir::PLAN };
     let d = view_dir.dir;
@@ -552,6 +547,22 @@ fn ensure_list(app: &mut CadApp, xf: &Xf, views: &[(Bounds2, f64)], ctx: &egui::
     app.canvas.window = opts.view;
     app.canvas.list_gen = app.canvas.list_gen.wrapping_add(1);
     app.canvas.build_ms = crate::now_ms() - t0;
+}
+
+/// What the canvas's list depends on besides the drawing and the view direction ([`ListKey`]'s
+/// eighth field): the MSPACE viewport drawn apart (`split`) or the active viewport's view, and
+/// the visual style.
+fn list_style(st: &cadcraft_engine::DocState, split: Option<Handle>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut s = std::collections::hash_map::DefaultHasher::new();
+    split.hash(&mut s);
+    if split.is_none()
+        && let Some((h, vp)) = st.active_viewport()
+    {
+        (h, vp.view_center.x.to_bits(), vp.view_center.y.to_bits(), vp.view_height.to_bits()).hash(&mut s);
+    }
+    (st.shaded, st.shaded_edges).hash(&mut s);
+    s.finish()
 }
 
 /// The active MSPACE viewport when its contents are drawn apart from the layout's list (see
@@ -1160,8 +1171,9 @@ fn solid_drag_preview(doc: &cadcraft_doc::Drawing, drag: &cadcraft_engine::Drag,
     let moved: Vec<cadcraft_doc::Entity> = ents
         .into_iter()
         .map(|e| {
+            // One that can't take the transform (see `Entity::transform`) previews unmoved.
             let mut e = e.clone();
-            e.kind.transform(&m);
+            let _ = e.transform(&m);
             e
         })
         .collect();
@@ -1477,10 +1489,18 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     let t = Tokens::get();
     let full = ui.available_rect_before_wrap();
     // Tiled model viewports (VPORTS): the current tile is the drawing area below; `draw_tiles`
-    // draws the others.
-    let tiles = tile_rects(app, full);
-    let rect = tiles.iter().find(|(_, tile)| tile.active).map_or(full, |(r, _)| *r);
+    // draws the others. A tile that became current takes its own list ([`tiles::trade`]).
+    tiles::trade(app);
+    let mut tiles = tile_rects(app, full);
     let resp = ui.interact(full, ui.id().with("canvas"), Sense::click_and_drag());
+    // A click in another tile makes it current (or answers -VPORTS Join's prompts); in a 3D
+    // layout it goes on to pick there, below, as in Rhino. Its title takes its own clicks.
+    match tiles::click(app, ui, &resp, &tiles) {
+        Some(true) => tiles = tile_rects(app, full),
+        Some(false) => return,
+        None => {}
+    }
+    let rect = tiles.iter().find(|(_, tile)| tile.active).map_or(full, |(r, _)| *r);
     let painter = ui.painter_at(rect);
     app.canvas.rect = Some(rect);
     app.session.viewport_px = (f64::from(rect.width()).max(1.0), f64::from(rect.height()).max(1.0));
@@ -1583,16 +1603,8 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     if resp.dragged_by(egui::PointerButton::Primary) && app.session.realtime_zoom_active() {
         let _ = app.session.realtime_zoom(f64::from(resp.drag_delta().y));
     }
-    // A click in another tile makes it current (or answers -VPORTS Join's prompts).
-    if pressed_primary
-        && let Some(hp) = hover_pos
-        && !rect.contains(hp)
-        && let Some(i) = tiles.iter().position(|(r, _)| r.contains(hp))
-    {
-        if let Err(e) = app.session.click_tile(i) {
-            app.session.echo(e.to_string());
-        }
-        ui.ctx().request_repaint();
+    // Rhino's right-drag navigation in 3D tiles (one starting in another tile makes it current).
+    if tiles::right_drag(app, ui, &resp, rect, &tiles) {
         return;
     }
     // Re-read the view after navigation.
@@ -1888,14 +1900,19 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     // ---------- paint ----------
     painter.rect_filled(rect, 0.0, t.canvas);
     let t0 = crate::now_ms();
-    // The list is built for the current view.
+    // The list is built for the current view, and the tiles that look the same way.
     let xf_build = if mspace { xf_paper } else { xf_now };
     let mut views = vec![(xf_build.view_bounds(), 1.0 / xf_build.scale)];
-    views.extend(tiles.iter().filter(|(r, tile)| !tile.active && r.width() >= 1.0 && r.height() >= 1.0).map(|(r, tile)| {
-        let xf = tile_xf(*r, tile, xf_build.dir);
-        (xf.view_bounds(), 1.0 / xf.scale)
-    }));
+    let look = app.session.state().map(|st| st.look()).ok();
+    views.extend(tiles.iter().filter(|(r, tile)| !tile.active && Some(tile.look) == look && r.width() >= 1.0 && r.height() >= 1.0).map(
+        |(r, tile)| {
+            let xf = tile_xf(*r, tile, xf_build.dir);
+            (xf.view_bounds(), 1.0 / xf.scale)
+        },
+    ));
     ensure_list(app, &xf_build, &views, ui.ctx());
+    app.canvas.last_look = look.filter(|_| app.session.state().is_ok_and(|st| st.space == cadcraft_doc::Space::Model));
+    tiles::ensure_lists(app, &tiles, ui.ctx());
     // A build that landed turns the view shown.
     let xf = view_xfs(app, rect, view).1;
     let xf_paper = if mspace { xf_paper } else { xf };
@@ -2054,7 +2071,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         for h in sel.iter().take(200) {
             // A solid's grips are on the XY plane, which a 3D view shows away from the solid.
             if let Some(e) = st.doc.entity(*h).filter(|e| xf.is_plan() || !matches!(e.kind, cadcraft_doc::EntityKind::Solid3d(_))) {
-                for (gi, g) in e.kind.grips().into_iter().enumerate() {
+                for (gi, g) in e.grips().into_iter().enumerate() {
                     let sp = xf.to_screen(g);
                     if rect.contains(sp) {
                         let r = Rect::from_center_size(sp, vec2(gs * 2.0, gs * 2.0));
@@ -2137,7 +2154,13 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     if app.ui.show_viewcube && sheet.is_none() {
         draw_viewcube(app, ui, rect);
     }
-    viewport_label(app, &painter, rect, xf.dir);
+    // The view's title (the Model tab's opens the viewport menu); the pointer over it is a hand.
+    let mut over_title = false;
+    if let Ok(st) = app.session.state() {
+        let look = cadcraft_engine::TileLook { dir: xf.dir, ..st.look() };
+        let tile = tiles.iter().position(|(_, t)| t.active).map(|i| (i, true));
+        over_title = tiles::title(app, ui, rect, tile, look);
+    }
     // Typing and Escape reach the command line even when its overlay is hidden.
     crate::cmdline::keyboard(app, ui.ctx());
     // Command line overlay.
@@ -2145,7 +2168,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         crate::cmdline::show(app, ui, full);
     }
     // Crosshair cursor.
-    if inside {
+    if inside && !over_title {
         // Hide the OS cursor under the drawn crosshair, unless assistive tech needs it (#39).
         ui.ctx().set_cursor_icon(if app.ui.system_cursor { egui::CursorIcon::Crosshair } else { egui::CursorIcon::None });
         if let Some(hp) = hover_pos {
@@ -2194,31 +2217,36 @@ fn tile_rects(app: &CadApp, full: Rect) -> Vec<(Rect, cadcraft_engine::ModelTile
         .collect()
 }
 
-/// The world ↔ screen transform of a model tile drawn in `r`, looking along `dir` (the model
-/// view's: the tiles share its list).
+/// The world ↔ screen transform of a model tile drawn in `r`, looking along `dir` (the
+/// direction of the list it draws).
 fn tile_xf(r: Rect, tile: &cadcraft_engine::ModelTile, dir: ViewDir) -> Xf {
     Xf::new(r, tile.view.center, f64::from(r.height()) / tile.view.height.max(1e-12)).looking(dir)
 }
 
-/// The tiles other than the current one (each with its own view, clipped to it), then the
-/// tile borders: thin, and heavy around the current tile.
-fn draw_tiles(app: &CadApp, ui: &egui::Ui, tiles: &[(Rect, cadcraft_engine::ModelTile)]) {
+/// The tiles other than the current one (each with its own view and look, clipped to it, no
+/// grid in 3D), then the tile borders (thin, and heavy around the current tile) and the other
+/// tiles' titles.
+fn draw_tiles(app: &mut CadApp, ui: &egui::Ui, tiles: &[(Rect, cadcraft_engine::ModelTile)]) {
     let t = Tokens::get();
     let bg = Rgb(t.canvas.r(), t.canvas.g(), t.canvas.b());
-    for (r, tile) in tiles.iter().filter(|(r, tile)| !tile.active && r.width() >= 1.0 && r.height() >= 1.0) {
+    let others = || tiles.iter().enumerate().filter(|(_, (r, tile))| !tile.active && r.width() >= 1.0 && r.height() >= 1.0);
+    for (_, (r, tile)) in others() {
         let p = ui.painter_at(*r);
-        let xf = tile_xf(*r, tile, app.canvas.list_dir);
+        let (list, dir) = tiles::list_for(app, tile);
+        let xf = tile_xf(*r, tile, dir);
         p.rect_filled(*r, 0.0, t.canvas);
         draw_grid(app, &p, &xf);
-        if let Some(list) = &app.canvas.list {
+        if let Some(list) = list {
             draw_list(&p, &xf, list, bg, app.session.settings.lwdisplay);
         }
-        viewport_label(app, &p, *r, xf.dir);
     }
     let p = ui.painter();
     for (r, tile) in tiles {
         let (w, c) = if tile.active { (2.0, t.accent) } else { (1.0, t.border) };
         p.rect_stroke(*r, 0.0, Stroke::new(w, c), egui::StrokeKind::Outside);
+    }
+    for (i, (r, tile)) in others() {
+        tiles::title(app, ui, *r, Some((i, false)), tile.look);
     }
 }
 
@@ -2563,18 +2591,6 @@ fn draw_ucs_icon(p: &egui::Painter, rect: Rect) {
     p.text(o + vec2(0.0, -70.0), egui::Align2::CENTER_BOTTOM, crate::tl!("Y"), f, t.canvas_ink);
 }
 
-/// The viewport label: the view shown (see [`crate::viewcube::view_name`]) and the visual style.
-fn viewport_label(app: &CadApp, p: &egui::Painter, rect: Rect, view: ViewDir) {
-    let t = Tokens::get();
-    let at = pos2(rect.left() + 10.0, rect.top() + 8.0);
-    let style = match app.session.state().map(|st| (st.shaded, st.shaded_edges)) {
-        Ok((true, true)) => crate::tl!("Shaded with Edges"),
-        Ok((true, false)) => crate::tl!("Shaded"),
-        _ => crate::tl!("2D Wireframe"),
-    };
-    p.text(at, egui::Align2::LEFT_TOP, format!("+  |  {}  |  {style}", crate::viewcube::view_name(view)), crate::theme::small(), t.canvas_ink);
-}
-
 fn draw_viewcube(app: &mut CadApp, ui: &mut egui::Ui, rect: Rect) {
     let l = crate::viewcube::Layout::new(rect);
     let (c, ring) = (l.center, l.ring);
@@ -2668,7 +2684,7 @@ fn grip_at(app: &CadApp, xf: &Xf, hover: Option<Pos2>) -> Option<(Handle, usize)
         if st.doc.layer(&e.common.layer).is_some_and(|l| l.locked) || (!xf.is_plan() && matches!(e.kind, cadcraft_doc::EntityKind::Solid3d(_))) {
             continue;
         }
-        for (i, g) in e.kind.grips().into_iter().enumerate() {
+        for (i, g) in e.grips().into_iter().enumerate() {
             let sp = xf.to_screen(g);
             if (sp.x - hp.x).abs() <= gs && (sp.y - hp.y).abs() <= gs {
                 return Some((*h, i));
@@ -2973,7 +2989,8 @@ pub(crate) mod tests {
         let g = cadcraft_geom::Vec3::new;
         let mesh =
             cadcraft_geom::Mesh3 { verts: Vec::new(), tris: Vec::new(), edges: vec![vec![g(0.0, 0.0, 20.0), g(10.0, 0.0, 20.0)]], open: false };
-        let s = cadcraft_doc::Solid3d { brep: "".into(), mesh: std::sync::Arc::new(mesh), xform: cadcraft_geom::Mat4::IDENTITY, ..Default::default() };
+        let s =
+            cadcraft_doc::Solid3d { brep: "".into(), mesh: std::sync::Arc::new(mesh), xform: cadcraft_geom::Mat4::IDENTITY, ..Default::default() };
         let d = app.session.doc_mut().unwrap();
         d.add(&cadcraft_doc::Space::Model, cadcraft_doc::Common::default(), cadcraft_doc::EntityKind::Solid3d(s)).unwrap()
     }
@@ -3296,6 +3313,48 @@ pub(crate) mod tests {
         assert_eq!(grip_at(&app, &plan, Some(plan.to_screen(Vec2::ZERO))), Some((s, 0)));
     }
 
+    /// A circle standing upright (extrusion along X): world YZ, as `Entity::plane` places it.
+    fn standing_circle(app: &mut CadApp, elevation: f64, radius: f64) -> Handle {
+        let common = cadcraft_doc::Common { extrusion: cadcraft_geom::Vec3::new(1.0, 0.0, 0.0), ..Default::default() };
+        let c = cadcraft_doc::Circle { center: cadcraft_geom::Vec3::new(0.0, 0.0, elevation), radius };
+        let d = app.session.doc_mut().unwrap();
+        d.add(&cadcraft_doc::Space::Model, common, cadcraft_doc::EntityKind::Circle(c)).unwrap()
+    }
+
+    /// The grips of an object in a standing plane are where plan draws it (`Entity::grips`), not
+    /// at its own 2D coordinates.
+    #[test]
+    fn grips_of_a_standing_circle_are_where_plan_draws_them() {
+        let mut f = Frames::default();
+        let mut app = app_looking(&mut f, [0.0, 0.0, 1.0]);
+        app.session.execute("view.set", &serde_json::json!({ "center": [0, 0], "height": 30 })).unwrap();
+        let h = standing_circle(&mut app, 0.0, 5.0);
+        app.session.set_selection(vec![h]);
+        f.run(&mut app, Vec::new());
+        let xf = app.canvas.xf.unwrap();
+        // Its quadrant along OCS X is world (0, 5); along OCS Y it stands up over the centre.
+        assert_eq!(grip_at(&app, &xf, Some(xf.to_screen(Vec2::new(0.0, 5.0)))), Some((h, 1)));
+        assert_eq!(grip_at(&app, &xf, Some(xf.to_screen(Vec2::new(5.0, 0.0)))), None);
+    }
+
+    /// A drag that rebuilds its objects (a solid turned in a 3D view) turns a standing circle in
+    /// the world (`Entity::transform`), not in its own plane's coordinates.
+    #[test]
+    fn a_turned_drag_previews_a_standing_circle_turned_in_the_world() {
+        let mut f = Frames::default();
+        let mut app = app_looking(&mut f, [0.0, -1.0, 0.0]);
+        let s = raised_edge(&mut app);
+        let c = standing_circle(&mut app, 3.0, 2.0);
+        let xf = app.canvas.xf.unwrap();
+        let drag =
+            cadcraft_engine::Drag { handles: vec![s, c], matrix: Mat3::rotate(std::f64::consts::FRAC_PI_2), extra: Vec::new(), clipboard: false };
+        let list = solid_drag_preview(app.session.doc().unwrap(), &drag, &[], &xf).unwrap();
+        let pts: Vec<Vec2> = list.prims.iter().filter(|p| p.handle == c).flat_map(|p| list.points(p).to_vec()).collect();
+        let b = Bounds2::from_points(pts);
+        // Turned a quarter about Z it faces the front view: a whole circle, not a line seen edge-on.
+        assert!(b.width() > 3.9 && b.height() > 3.9, "{b:?}");
+    }
+
     /// Rotating a solid in a 3D view previews it rebuilt as it will be: moving the view plane on
     /// the GPU would carry its height along sideways (#41, #58, #62).
     #[test]
@@ -3378,6 +3437,9 @@ mod rebuild;
 
 /// Object snaps on solids in 3D views.
 mod snap3d;
+
+/// Rhino-style model tiles: their own lists, titles and right-drag navigation.
+mod tiles;
 
 #[cfg(test)]
 mod hatch_pick_tests {

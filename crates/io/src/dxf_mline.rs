@@ -192,8 +192,9 @@ fn params(along: f64, on: &[(f64, f64)], len: f64) -> Vec<f64> {
     v
 }
 
-/// The MLINE groups after the common entity groups.
-pub(crate) fn entity_tags(m: &MLine, style_handle: &str) -> Vec<Tag> {
+/// The MLINE groups after the common entity groups; `extrusion` is its 210 (as read: an MLINE
+/// stays horizontal, see `Entity::plane`, but keeps a file's tilted extrusion).
+pub(crate) fn entity_tags(m: &MLine, style_handle: &str, extrusion: Vec3) -> Vec<Tag> {
     let mut t = Vec::new();
     let p = |t: &mut Vec<Tag>, c: i32, v: Vec3| {
         t.push(Tag::f(c, v.x));
@@ -210,7 +211,7 @@ pub(crate) fn entity_tags(m: &MLine, style_handle: &str) -> Vec<Tag> {
     t.push(Tag::i(72, m.vertices.len() as i64));
     t.push(Tag::i(73, m.def.elements.len() as i64));
     p(&mut t, 10, m.vertices.first().map(|v| v.p).unwrap_or_default());
-    p(&mut t, 210, Vec3::Z);
+    p(&mut t, 210, extrusion);
     let pts = m.points();
     let n = pts.len();
     let dirs = m.directions();

@@ -317,8 +317,9 @@ fn run_wblock(s: &mut Session, p: &Value) -> Result<Value> {
         b.entities
             .iter()
             .map(|e| {
+                // A move: objects in any plane take it.
                 let mut e = (**e).clone();
-                e.kind.transform(&m);
+                e.transform(&m);
                 e
             })
             .collect()
@@ -327,8 +328,9 @@ fn run_wblock(s: &mut Session, p: &Value) -> Result<Value> {
             .iter()
             .filter_map(|h| src.entity(*h))
             .map(|e| {
+                // A move: objects in any plane take it.
                 let mut e = (**e).clone();
-                e.kind.transform(&m);
+                e.transform(&m);
                 e
             })
             .collect()
