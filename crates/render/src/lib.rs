@@ -99,6 +99,20 @@ pub struct DisplayList {
     /// Plot style end, join and fill style per primitive (parallel to `prims`; missing entries
     /// are "use object"), turned into geometry by [`pen::apply`].
     pub pens: Vec<Pen>,
+    /// Shaded model space ([`Options::shaded`]): how far toward the viewer each vertex of `verts`
+    /// and `tris` is (`ViewDir::depth` of its world point; 2D objects lie on z = 0), parallel to
+    /// them. Empty for other lists, whose vertices all share one depth. A depth-buffered canvas
+    /// hides what is behind shaded faces with it; the CPU raster keeps painter order.
+    pub vert_depth: Vec<f64>,
+    pub tri_depth: Vec<f64>,
+    /// Shaded model space: the primitives (ranges of `prims`, in order) that are solids' shaded
+    /// faces, which hide what is behind them. Other fills (hatches, text, wipeouts) only hide
+    /// by drawing order, as in 2D.
+    pub faces: Vec<std::ops::Range<u32>>,
+    /// Shaded model space: the solids' edges as [`Kind::Polyline`] primitives in `verts`, not in
+    /// `prims`. A depth-buffered canvas draws them over the faces where nothing nearer hides them
+    /// ("shaded with edges"); drawn in painter order they would show the hidden edges through.
+    pub edges: Vec<DPrim>,
 }
 
 /// A glyph of plotted text: the font glyph and, in world coordinates, where it sits. It is
@@ -324,6 +338,21 @@ struct Builder<'a> {
     shared_budget: Option<&'a std::sync::atomic::AtomicUsize>,
     /// Transparency (percent) of the entity being drawn.
     transparency: u8,
+    /// Shaded model space: vertex depths are recorded ([`DisplayList::vert_depth`]), a point `q`
+    /// of the XY plane in view-plane coordinates at depth `g[0] q.x + g[1] q.y`.
+    depth: Option<[f64; 2]>,
+}
+
+/// The depth gradient of [`Builder::depth`] for a build of model space (`model`) with `opts`.
+fn plane_depth(opts: &Options, model: bool) -> Option<[f64; 2]> {
+    // ponytail: seen exactly edge-on (Front, Left...) the view plane loses the XY plane's depth,
+    // so 2D objects all sit at the depth of the origin; carry world points if that matters.
+    let v = opts.view_dir;
+    let d = |q: Vec2| {
+        let w = v.unproject_xy(q);
+        v.dir.x * w.x + v.dir.y * w.y
+    };
+    (opts.shaded && model).then(|| [d(Vec2::new(1.0, 0.0)), d(Vec2::new(0.0, 1.0))])
 }
 
 /// Upper bound on the block contents drawn per display list (each block reference, MINSERT copy
@@ -350,20 +379,30 @@ impl Builder<'_> {
             self.list.pens.push(pen);
         }
     }
-    fn polyline(&mut self, ctx: &Ctx, color: Ink, lw: f32, pts: &[Vec2]) {
-        self.polyline_at(ctx, color, lw, pts, ctx.xf);
+    /// Record the depth of vertex `q` (view plane) when the list keeps depths: `z` for a 3D
+    /// point, else the depth of the XY plane there.
+    fn depth_of(&self, q: Vec2, z: Option<f64>) -> Option<f64> {
+        self.depth.map(|g| z.unwrap_or(g[0] * q.x + g[1] * q.y))
     }
-    fn polyline_at(&mut self, ctx: &Ctx, color: Ink, lw: f32, pts: &[Vec2], xf: Mat3) {
+    fn polyline(&mut self, ctx: &Ctx, color: Ink, lw: f32, pts: &[Vec2]) {
+        self.polyline_at(ctx, color, lw, pts, ctx.xf, &[]);
+    }
+    /// A polyline through `pts` after `xf`; `z`: the depths of 3D points (solids), empty for
+    /// points on the XY plane.
+    fn polyline_at(&mut self, ctx: &Ctx, color: Ink, lw: f32, pts: &[Vec2], xf: Mat3, z: &[f64]) {
         if pts.len() < 2 {
             return;
         }
         self.note_pen(color);
         let (color, lw) = self.styled(color, lw);
         let start = self.list.verts.len() as u32;
-        for p in pts {
+        for (i, p) in pts.iter().enumerate() {
             let q = xf.apply(*p);
             self.list.bounds.add(q);
             self.list.verts.push(q);
+            if let Some(d) = self.depth_of(q, z.get(i).copied()) {
+                self.list.vert_depth.push(d);
+            }
         }
         self.list.prims.push(DPrim {
             handle: ctx.top,
@@ -377,19 +416,23 @@ impl Builder<'_> {
         });
     }
     fn tris(&mut self, ctx: &Ctx, color: Ink, tris: &[Vec2]) {
-        self.tris_at(ctx, color, tris, ctx.xf);
+        self.tris_at(ctx, color, tris, ctx.xf, &[]);
     }
-    fn tris_at(&mut self, ctx: &Ctx, color: Ink, tris: &[Vec2], xf: Mat3) {
+    /// Triangles `tris` after `xf`; `z` as for [`Builder::polyline_at`].
+    fn tris_at(&mut self, ctx: &Ctx, color: Ink, tris: &[Vec2], xf: Mat3, z: &[f64]) {
         if tris.len() < 3 {
             return;
         }
         self.note_pen(color);
         let (color, _) = self.styled(color, 0.0);
         let start = self.list.tris.len() as u32;
-        for p in tris {
+        for (i, p) in tris.iter().enumerate() {
             let q = xf.apply(*p);
             self.list.bounds.add(q);
             self.list.tris.push(q);
+            if let Some(d) = self.depth_of(q, z.get(i).copied()) {
+                self.list.tri_depth.push(d);
+            }
         }
         self.list.prims.push(DPrim {
             handle: ctx.top,
@@ -422,7 +465,7 @@ impl Builder<'_> {
                 let len = if let Some(t) = glyph {
                     let xf = crate::text::placement(t, ctx.xf);
                     let mesh = crate::text::mesh(t, xf, pixel);
-                    self.tris_at(ctx, color, &mesh.triangles, xf);
+                    self.tris_at(ctx, color, &mesh.triangles, xf, &[]);
                     mesh.triangles.len()
                 } else {
                     let tris = fill::triangulate_evenodd(g);
@@ -451,6 +494,9 @@ impl Builder<'_> {
         self.list.bounds.add(q);
         let start = self.list.verts.len() as u32;
         self.list.verts.push(q);
+        if let Some(d) = self.depth_of(q, None) {
+            self.list.vert_depth.push(d);
+        }
         self.list.prims.push(DPrim {
             handle: ctx.top,
             color: color.rgb,
@@ -465,8 +511,13 @@ impl Builder<'_> {
     fn infinite(&mut self, ctx: &Ctx, color: Ink, base: Vec2, dir: Vec2, ray: bool) {
         let (color, _) = self.styled(color, 0.0);
         let start = self.list.verts.len() as u32;
-        self.list.verts.push(ctx.xf.apply(base));
+        let q = ctx.xf.apply(base);
+        self.list.verts.push(q);
         self.list.verts.push(ctx.xf.apply_vec(dir).normalized());
+        // The direction has no depth of its own: both at the base's.
+        if let Some(d) = self.depth_of(q, None) {
+            self.list.vert_depth.extend([d, d]);
+        }
         self.list.prims.push(DPrim {
             handle: ctx.top,
             color: color.rgb,
@@ -521,7 +572,16 @@ fn top_ctx<'a>(d: &'a Drawing, xf: Mat3, top: Handle, frozen: &'a [String], vp_c
 fn build_space(d: &Drawing, space: &Space, opts: &Options, plotting: bool) -> DisplayList {
     let opts = &with_point_view(d, space, opts);
     let styler = style_table(d, space, opts, plotting).map(|t| plotstyle::Styler::new(d, t));
-    let mut b = Builder { list: DisplayList::default(), opts, plotting, styles: styler.as_ref(), named: None, shared_budget: None, transparency: 0 };
+    let mut b = Builder {
+        list: DisplayList::default(),
+        opts,
+        plotting,
+        styles: styler.as_ref(),
+        named: None,
+        shared_budget: None,
+        transparency: 0,
+        depth: plane_depth(opts, matches!(space, Space::Model)),
+    };
     if let Space::Paper(name) = space {
         b.list.sheet = paper::sheet(d, name);
     }
@@ -568,12 +628,20 @@ fn build_parallel(b: &mut Builder, d: &Drawing, store: &cadcraft_doc::EntityStor
     use rayon::prelude::*;
     let ents: Vec<&std::sync::Arc<Entity>> = store.iter().collect();
     let budget = std::sync::atomic::AtomicUsize::new(0);
-    let (opts, plotting) = (b.opts, b.plotting);
+    let (opts, plotting, depth) = (b.opts, b.plotting, b.depth);
     let parts: Vec<DisplayList> = ents
         .par_chunks(PARALLEL_CHUNK)
         .map(|chunk| {
-            let mut part =
-                Builder { list: DisplayList::default(), opts, plotting, styles: None, named: None, shared_budget: Some(&budget), transparency: 0 };
+            let mut part = Builder {
+                list: DisplayList::default(),
+                opts,
+                plotting,
+                styles: None,
+                named: None,
+                shared_budget: Some(&budget),
+                transparency: 0,
+                depth,
+            };
             for e in chunk {
                 entity(&mut part, &top_ctx(d, opts.view_dir.plane_xf(), e.handle, &[], &[]), e);
             }
@@ -584,6 +652,8 @@ fn build_parallel(b: &mut Builder, d: &Drawing, store: &cadcraft_doc::EntityStor
     b.list.prims.reserve(parts.iter().map(|p| p.prims.len()).sum());
     b.list.verts.reserve(parts.iter().map(|p| p.verts.len()).sum());
     b.list.tris.reserve(parts.iter().map(|p| p.tris.len()).sum());
+    b.list.vert_depth.reserve(parts.iter().map(|p| p.vert_depth.len()).sum());
+    b.list.tri_depth.reserve(parts.iter().map(|p| p.tri_depth.len()).sum());
     for part in parts {
         append(&mut b.list, part);
     }
@@ -603,6 +673,13 @@ fn append(dst: &mut DisplayList, src: DisplayList) {
     }));
     dst.verts.extend(src.verts);
     dst.tris.extend(src.tris);
+    dst.vert_depth.extend(src.vert_depth);
+    dst.tri_depth.extend(src.tri_depth);
+    dst.faces.extend(src.faces.into_iter().map(|r| r.start + prims..r.end + prims));
+    dst.edges.extend(src.edges.into_iter().map(|mut p| {
+        p.start += verts;
+        p
+    }));
     dst.prim_layers.extend(src.prim_layers);
     dst.texts.extend(src.texts.into_iter().map(|mut t| {
         if t.prim < PlotText::CLIPPED {
@@ -699,8 +776,16 @@ pub fn viewport_content(d: &Drawing, space: &Space, handle: Handle, area: Bounds
     }
     let opts = &with_point_view(d, space, opts);
     let styler = style_table(d, space, opts, false).map(|t| plotstyle::Styler::new(d, t));
-    let mut b =
-        Builder { list: DisplayList::default(), opts, plotting: false, styles: styler.as_ref(), named: None, shared_budget: None, transparency: 0 };
+    let mut b = Builder {
+        list: DisplayList::default(),
+        opts,
+        plotting: false,
+        styles: styler.as_ref(),
+        named: None,
+        shared_budget: None,
+        transparency: 0,
+        depth: None,
+    };
     contents(&mut b, d, vp, area, &Clip::Rect(area));
     b.list
 }
@@ -747,6 +832,7 @@ fn contents(b: &mut Builder, d: &Drawing, vp: &cadcraft_doc::Viewport, area: Bou
         named: None,
         shared_budget: None,
         transparency: 0,
+        depth: None,
     };
     #[cfg(not(target_arch = "wasm32"))]
     let parallel = !b.plotting && b.styles.is_none() && d.model.len() >= 2 * PARALLEL_CHUNK;
@@ -771,6 +857,7 @@ fn contents(b: &mut Builder, d: &Drawing, vp: &cadcraft_doc::Viewport, area: Bou
                         named: None,
                         shared_budget: Some(&budget),
                         transparency: 0,
+                        depth: None,
                     };
                     let c = ctx();
                     for me in chunk.iter().filter(|me| seen(me)) {
@@ -917,7 +1004,16 @@ pub fn build_entities<'a, I: IntoIterator<Item = &'a Entity>>(d: &Drawing, ents:
     } else {
         opts
     };
-    let mut b = Builder { list: DisplayList::default(), opts, plotting: false, styles: None, named: None, shared_budget: None, transparency: 0 };
+    let mut b = Builder {
+        list: DisplayList::default(),
+        opts,
+        plotting: false,
+        styles: None,
+        named: None,
+        shared_budget: None,
+        transparency: 0,
+        depth: plane_depth(opts, true),
+    };
     for e in ents {
         entity(&mut b, &top_ctx(d, opts.view_dir.plane_xf(), e.handle, &[], &[]), e);
     }

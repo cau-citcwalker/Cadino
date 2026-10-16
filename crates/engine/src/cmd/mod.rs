@@ -36,6 +36,7 @@ mod qselect;
 mod selecttools;
 mod settings;
 mod solids;
+mod solids2;
 mod spline_opts;
 mod table;
 mod tolerance;
@@ -180,6 +181,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(view::specs());
         v.extend(view3d::specs());
         v.extend(solids::specs());
+        v.extend(solids2::specs());
         v.extend(draw::specs());
         v.extend(draw2::specs());
         v.extend(annotate::specs());

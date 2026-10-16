@@ -1265,3 +1265,11 @@ menu	Modify	수정
 	Top	평면
 	Viewpoint	관측점
 	Visual Styles	비주얼 스타일
+	Chamfer Edge	모서리 모따기
+	Chamfer Edges	모서리 모따기
+	Planar	평면
+	Planar Surface	평면 곡면
+	Shell	쉘
+	Slice	슬라이스
+	Surfaces	곡면
+	Wedge	쐐기

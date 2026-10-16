@@ -1,15 +1,18 @@
 //! 3D solids (CAD-rhino): BOX, CYLINDER, CONE, SPHERE, TORUS, EXTRUDE, REVOLVE, FILLETEDGE,
-//! the solid side of UNION, SUBTRACT and INTERSECT, and STEP/STL exchange.
+//! the solid side of UNION, SUBTRACT and INTERSECT, and STEP/STL exchange. The later modelling
+//! commands are in `solids2`.
 //!
-//! Shapes come from [`cadcraft_kernel`]; the document keeps each as a [`Solid3d`]. A boolean's
-//! result replaces the first solid (keeping its properties) and erases the others.
+//! Shapes come from [`cadcraft_kernel`]; the document keeps each as a [`Solid3d`] (a surface is
+//! one whose mesh is open). A boolean's result replaces the first solid (keeping its properties)
+//! and erases the others.
 
+use std::f64::consts::{PI, TAU};
 use std::path::Path;
 use std::sync::Arc;
 
-use cadcraft_doc::{EntityKind, Handle, Solid3d};
-use cadcraft_geom::{EPS, Mat4, PolyVertex, Polyline, Vec2, Vec3};
-use cadcraft_kernel::{BoolOp, Built, Placed, Primitive, Seg};
+use cadcraft_doc::{EntityKind, Handle, Helix, Solid3d};
+use cadcraft_geom::{EPS, Mat4, PolyVertex, Polyline, Spline, Vec2, Vec3};
+use cadcraft_kernel::{BoolOp, Built, Curve, MAX_SPLINE_POINTS, Placed, Primitive, Seg};
 use serde_json::{Map, Value, json};
 
 use super::machines::{SelOutcome, SelectPhase, number};
@@ -18,13 +21,14 @@ use crate::{Accept, EngineError, Input, Interactive, Prompt, Result, Session, St
 
 /// One prompt of a primitive: the JSON key it fills and its message.
 #[derive(Clone, Copy)]
-enum Q {
+pub(super) enum Q {
     Point(&'static str, &'static str),
     /// A distance: typed, or picked as the distance from the first point.
     Dist(&'static str, &'static str),
 }
 
-const BOX: &[Q] = &[Q::Point("corner1", "Specify first corner"), Q::Point("corner2", "Specify other corner"), Q::Dist("height", "Specify height")];
+pub(super) const BOX: &[Q] =
+    &[Q::Point("corner1", "Specify first corner"), Q::Point("corner2", "Specify other corner"), Q::Dist("height", "Specify height")];
 const CYLINDER: &[Q] =
     &[Q::Point("center", "Specify center point of base"), Q::Dist("radius", "Specify base radius"), Q::Dist("height", "Specify height")];
 const CONE: &[Q] =
@@ -59,7 +63,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("extrude", "Extrude", run_extrude)
             .menu(&["Draw", "Modeling", "Extrude"])
             .alias(&["ext"])
-            .params("{handles?, height} (closed polylines, circles, single-loop regions; the profiles are erased)")
+            .params("{handles?, height}: closed polylines, circles and single-loop regions make solids (and are erased); lines, arcs and open polylines make surfaces")
             .interactive(|_| Ok(Box::new(ProfileM::new(ProfileOp::Extrude)))),
         CommandSpec::new("revolve", "Revolve", run_revolve)
             .menu(&["Draw", "Modeling", "Revolve"])
@@ -82,41 +86,48 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-fn kernel(e: cadcraft_kernel::KernelError) -> EngineError {
+pub(super) fn kernel(e: cadcraft_kernel::KernelError) -> EngineError {
     EngineError::Other(e.to_string())
 }
 
-fn solid(b: Built) -> EntityKind {
+pub(super) fn solid(b: Built) -> EntityKind {
     EntityKind::Solid3d(Solid3d { brep: Arc::from(b.brep), mesh: Arc::new(b.mesh), xform: Mat4::IDENTITY })
 }
 
-fn add(s: &mut Session, b: Built) -> Result<Value> {
+pub(super) fn add(s: &mut Session, b: Built) -> Result<Value> {
     let h = s.add_entity(solid(b))?;
     Ok(json!({ "handle": h.hex() }))
 }
 
 /// A point as `[x, y]` or `[x, y, z]` (z = 0 when left out).
-fn p3(p: &Value, key: &str) -> Option<Vec3> {
+pub(super) fn p3(p: &Value, key: &str) -> Option<Vec3> {
     let v = p.get(key)?;
     let z = v.as_array().and_then(|a| a.get(2)).and_then(Value::as_f64).unwrap_or(0.0);
     let q = point_value(v)?.to3(z);
     q.is_finite().then_some(q)
 }
 
-fn p3_req(cmd: &str, p: &Value, key: &str) -> Result<Vec3> {
+pub(super) fn p3_req(cmd: &str, p: &Value, key: &str) -> Result<Vec3> {
     p3(p, key).ok_or_else(|| bad(cmd, format!("`{key}` ([x, y] or [x, y, z]) is required")))
 }
 
-fn run_box(s: &mut Session, p: &Value) -> Result<Value> {
-    let a = p3_req("box", p, "corner1")?;
+/// BOX's and WEDGE's corners: `corner1` and `corner2` (with `height` above the first, or the
+/// second's own height), or `corner1` and `length`, `width` and `height`.
+pub(super) fn box_corners(cmd: &str, p: &Value) -> Result<(Vec3, Vec3)> {
+    let a = p3_req(cmd, p, "corner1")?;
     let b = match p3(p, "corner2") {
         Some(c) => match p.get("height").and_then(Value::as_f64) {
             Some(h) => Vec3::new(c.x, c.y, a.z + h),
             None if (c.z - a.z).abs() > 1e-12 => c,
-            None => return Err(bad("box", "`height` is required when both corners are on one plane")),
+            None => return Err(bad(cmd, "`height` is required when both corners are on one plane")),
         },
-        None => a + Vec3::new(f64_req("box", p, "length")?, f64_req("box", p, "width")?, f64_req("box", p, "height")?),
+        None => a + Vec3::new(f64_req(cmd, p, "length")?, f64_req(cmd, p, "width")?, f64_req(cmd, p, "height")?),
     };
+    Ok((a, b))
+}
+
+fn run_box(s: &mut Session, p: &Value) -> Result<Value> {
+    let (a, b) = box_corners("box", p)?;
     add(s, cadcraft_kernel::primitive(&Primitive::Box { a, b }).map_err(kernel)?)
 }
 
@@ -144,10 +155,16 @@ fn run_torus(s: &mut Session, p: &Value) -> Result<Value> {
     add(s, cadcraft_kernel::primitive(&Primitive::Torus { center, radius, tube }).map_err(kernel)?)
 }
 
-/// A closed loop of polyline vertices as kernel pieces at height `z`. Pieces end exactly on the
-/// vertices (the kernel joins them by position), coincident vertices are dropped, and arcs too
-/// flat for the kernel to tell from their chord are lines. An error when no area is left.
+/// A closed loop of polyline vertices as kernel pieces at height `z` (see [`poly_segs`]).
 fn loop_segs(vs: &[PolyVertex], z: f64) -> Result<Vec<Seg>> {
+    poly_segs(vs, z, true)
+}
+
+/// Polyline vertices as kernel pieces at height `z`, round a closed loop or along an open run.
+/// Pieces end exactly on the vertices (the kernel joins them by position), coincident vertices
+/// are dropped, and arcs too flat for the kernel to tell from their chord are lines. An error
+/// when a loop encloses no area, or a run has no length.
+fn poly_segs(vs: &[PolyVertex], z: f64, closed: bool) -> Result<Vec<Seg>> {
     // A vertex on the one before it keeps that position and takes the later bulge.
     let mut pts: Vec<PolyVertex> = Vec::with_capacity(vs.len());
     for v in vs {
@@ -156,7 +173,7 @@ fn loop_segs(vs: &[PolyVertex], z: f64) -> Result<Vec<Seg>> {
             _ => pts.push(*v),
         }
     }
-    if pts.len() > 1 && pts.first().zip(pts.last()).is_some_and(|(a, b)| a.p.near(b.p, EPS)) {
+    if closed && pts.len() > 1 && pts.first().zip(pts.last()).is_some_and(|(a, b)| a.p.near(b.p, EPS)) {
         pts.pop();
     }
     // A nearly flat arc is a line: below a sagitta (|bulge| * chord / 2) of a millionth of the
@@ -172,17 +189,22 @@ fn loop_segs(vs: &[PolyVertex], z: f64) -> Result<Vec<Seg>> {
             }
         }
     }
-    let pl = Polyline { vertices: pts, closed: true };
+    let pl = Polyline { vertices: pts, closed };
     let b = pl.bounds();
     let size = b.width().max(b.height());
-    // NaN (non-finite vertices) encloses nothing either.
-    let encloses = pl.area().abs() > 1e-12 * size * size;
-    if !encloses {
-        return Err(EngineError::Other("A profile encloses no area.".into()));
+    if closed {
+        // NaN (non-finite vertices) encloses nothing either.
+        let encloses = pl.area().abs() > 1e-12 * size * size;
+        if !encloses {
+            return Err(EngineError::Other("A profile encloses no area.".into()));
+        }
+    } else if n < 2 || !size.is_finite() {
+        return Err(EngineError::Other("A curve has no length.".into()));
     }
     Ok(pl
         .vertices
         .iter()
+        .take(if closed { n } else { n - 1 })
         .enumerate()
         .filter_map(|(i, v)| {
             let (a, b) = (v.p, pl.vertices.get((i + 1) % n)?.p);
@@ -197,28 +219,142 @@ fn loop_segs(vs: &[PolyVertex], z: f64) -> Result<Vec<Seg>> {
         .collect())
 }
 
-/// A closed planar curve as a kernel profile; `None` for other objects.
-fn profile(k: &EntityKind) -> Result<Option<Vec<Seg>>> {
-    Ok(match k {
-        EntityKind::Circle(c) => Some(vec![Seg::Circle { center: c.center, radius: c.radius, normal: Vec3::Z }]),
-        EntityKind::LwPolyline(p) if p.closed && p.vertices.len() >= 2 => Some(loop_segs(&p.vertices, p.elevation)?),
+/// A curve object as a kernel curve: lines, arcs, circles, 2D and 3D polylines, single-loop
+/// regions, splines and helices; `None` for other objects.
+pub(super) fn curve_of(k: &EntityKind) -> Result<Option<Curve>> {
+    Ok(Some(match k {
+        EntityKind::Line(l) => Curve::Segs(vec![Seg::Line { a: l.a, b: l.b }]),
+        EntityKind::Arc(a) => {
+            let end = if a.end > a.start { a.end } else { a.end + TAU };
+            let at = |t: f64| Vec3::new(a.center.x + a.radius * t.cos(), a.center.y + a.radius * t.sin(), a.center.z);
+            Curve::Segs(vec![Seg::Arc { a: at(a.start), mid: at((a.start + end) / 2.0), b: at(end) }])
+        }
+        EntityKind::Circle(c) => Curve::Segs(vec![Seg::Circle { center: c.center, radius: c.radius, normal: Vec3::Z }]),
+        EntityKind::LwPolyline(p) if p.vertices.len() >= 2 => Curve::Segs(poly_segs(&p.vertices, p.elevation, p.closed)?),
+        EntityKind::Polyline3d(p) => Curve::Segs(points_segs(&p.points, p.closed)?),
         EntityKind::Region(r) => match r.loops.as_slice() {
-            [l] => Some(loop_segs(&l.vertices, 0.0)?),
-            _ => None,
+            [l] => Curve::Segs(loop_segs(&l.vertices, 0.0)?),
+            _ => return Ok(None),
         },
+        EntityKind::Spline(sp) => spline_curve(sp)?,
+        EntityKind::Helix(h) => helix_curve(h),
+        _ => return Ok(None),
+    }))
+}
+
+/// A circle as a path: two half circles from its rightmost point, so the path has a start.
+pub(super) fn circle_path(center: Vec3, radius: f64) -> Curve {
+    let at = |t: f64| Vec3::new(center.x + radius * t.cos(), center.y + radius * t.sin(), center.z);
+    let (start, half) = (at(0.0), at(PI));
+    Curve::Segs(vec![Seg::Arc { a: start, mid: at(PI / 2.0), b: half }, Seg::Arc { a: half, mid: at(1.5 * PI), b: start }])
+}
+
+/// A 3D polyline's lines, without repeated points.
+fn points_segs(pts: &[Vec3], closed: bool) -> Result<Vec<Seg>> {
+    let mut ps: Vec<Vec3> = Vec::with_capacity(pts.len());
+    for p in pts {
+        if !ps.last().is_some_and(|l| (*l - *p).len() <= EPS) {
+            ps.push(*p);
+        }
+    }
+    if closed && ps.len() > 2 && ps.first().zip(ps.last()).is_some_and(|(a, b)| (*a - *b).len() <= EPS) {
+        ps.pop();
+    }
+    if ps.len() < 2 {
+        return Err(EngineError::Other("A curve has no length.".into()));
+    }
+    let mut segs: Vec<Seg> = ps.windows(2).filter_map(|w| Some(Seg::Line { a: *w.first()?, b: *w.get(1)? })).collect();
+    if let (true, Some(a), Some(b)) = (closed && ps.len() > 2, ps.last(), ps.first()) {
+        segs.push(Seg::Line { a: *a, b: *b });
+    }
+    Ok(segs)
+}
+
+/// A spline as the smooth curve through points on it, with its end tangents.
+/// ponytail: sampled and fitted again rather than passed as NURBS (the bindings take no knots);
+/// within a thousandth of its size.
+fn spline_curve(sp: &Spline) -> Result<Curve> {
+    let b = sp.bounds();
+    let size = b.width().max(b.height());
+    if !size.is_finite() || size <= EPS {
+        return Err(EngineError::Other("A spline has no length.".into()));
+    }
+    let gap = (size * 1e-9).max(1e-6);
+    let mut pts: Vec<Vec3> = Vec::new();
+    for p in sp.tessellate(size * 1e-3) {
+        if !pts.last().is_some_and(|l| (l.xy() - p).len() <= gap) {
+            pts.push(p.to3(0.0));
+        }
+    }
+    // Keep a closed spline's end on its start.
+    if let (true, Some(first), Some(last)) = (sp.closed, pts.first().copied(), pts.last_mut()) {
+        *last = first;
+    }
+    let step = pts.len().div_ceil(MAX_SPLINE_POINTS - 1).max(1);
+    if step > 1 {
+        let last = pts.last().copied();
+        pts = pts.into_iter().step_by(step).collect();
+        if let (Some(l), Some(end)) = (last, pts.last())
+            && *end != l
+        {
+            pts.push(l);
+        }
+    }
+    let (lo, hi) = sp.domain();
+    let (t0, t1) = (sp.derivative(lo).to3(0.0), sp.derivative(hi).to3(0.0));
+    let tangents = (t0.len() > 0.0 && t1.len() > 0.0 && t0.is_finite() && t1.is_finite()).then_some((t0, t1));
+    Ok(Curve::Spline { points: pts, tangents })
+}
+
+/// A helix as the smooth curve through 16 points a turn, with its exact end tangents.
+fn helix_curve(h: &Helix) -> Curve {
+    let h = h.clone().sanitized();
+    // turns is within (0, 500] once sanitized: at most 8 000 points.
+    let n = (1..MAX_SPLINE_POINTS).find(|n| *n as f64 >= h.turns * 16.0).unwrap_or(MAX_SPLINE_POINTS - 1).max(8);
+    let points = (0..=n).map(|i| h.point_at(i as f64 / n as f64)).collect();
+    let spin = if h.ccw { TAU } else { -TAU } * h.turns;
+    let grow = h.top_radius - h.base_radius;
+    let tangent = |t: f64| {
+        let (a, r) = (h.start_angle + spin * t, h.base_radius + grow * t);
+        Vec3::new(grow * a.cos() - r * spin * a.sin(), grow * a.sin() + r * spin * a.cos(), h.height)
+    };
+    Curve::Spline { points, tangents: Some((tangent(0.0), tangent(1.0))) }
+}
+
+/// A curve object as a kernel profile of lines and arcs (closed or, unless `closed_only`, open);
+/// `None` for other objects.
+fn profile(k: &EntityKind, closed_only: bool) -> Result<Option<Vec<Seg>>> {
+    let open = match k {
+        EntityKind::Line(_) | EntityKind::Arc(_) => true,
+        EntityKind::LwPolyline(p) => !p.closed,
+        EntityKind::Polyline3d(p) => !p.closed,
+        _ => false,
+    };
+    if closed_only && open {
+        return Ok(None);
+    }
+    Ok(match curve_of(k)? {
+        Some(Curve::Segs(s)) => Some(s),
         _ => None,
     })
 }
 
-fn locked_err() -> EngineError {
+pub(super) fn locked_err() -> EngineError {
     EngineError::Other("The objects are on a locked layer.".into())
 }
 
-/// Replace each profile among `hs` by the solid `make` builds from it, in the profile's space
-/// (keeping its layer and other properties). Objects that aren't closed planar curves, and those
-/// on locked layers, are skipped. Every solid is made before the drawing changes, so an error
-/// leaves it as it was.
-fn from_profiles(s: &mut Session, cmd: &str, hs: &[Handle], make: impl Fn(&[Seg]) -> cadcraft_kernel::Result<Built>) -> Result<Value> {
+/// Each profile among `hs` with the solid or surface `make` builds from it, in the profile's space
+/// (keeping its layer and other properties). A profile that made a solid is erased; one that made
+/// a surface stays (as AutoCAD's default DELOBJ does). Objects that aren't curves (or closed ones
+/// when `closed_only`), and those on locked layers, are skipped. Every shape is made before the
+/// drawing changes, so an error leaves it as it was.
+fn from_profiles(
+    s: &mut Session,
+    cmd: &str,
+    hs: &[Handle],
+    closed_only: bool,
+    make: impl Fn(&[Seg]) -> cadcraft_kernel::Result<Built>,
+) -> Result<Value> {
     let mut built = Vec::new();
     let (mut skipped, mut locked) = (0usize, 0usize);
     let d = s.doc()?;
@@ -232,20 +368,28 @@ fn from_profiles(s: &mut Session, cmd: &str, hs: &[Handle], make: impl Fn(&[Seg]
             locked += 1;
             continue;
         }
-        let Some(prof) = profile(&e.kind)? else {
+        let Some(prof) = profile(&e.kind, closed_only)? else {
             skipped += 1;
             continue;
         };
         built.push((*h, space, e.common.clone(), make(&prof).map_err(kernel)?));
     }
     if built.is_empty() {
-        return Err(if locked > 0 { locked_err() } else { bad(cmd, "select closed polylines, circles or single-loop regions") });
+        let what = if closed_only {
+            "select closed polylines, circles or single-loop regions"
+        } else {
+            "select lines, arcs, circles, polylines or single-loop regions"
+        };
+        return Err(if locked > 0 { locked_err() } else { bad(cmd, what) });
     }
     let d = s.doc_mut()?;
     let mut made = Vec::with_capacity(built.len());
     for (h, space, common, b) in built {
+        let surface = b.mesh.open;
         made.push(d.add(&space, common, solid(b))?.hex());
-        d.remove_entity(h);
+        if !surface {
+            d.remove_entity(h);
+        }
     }
     Ok(json!({ "handles": made, "skipped": skipped, "locked": locked }))
 }
@@ -253,7 +397,7 @@ fn from_profiles(s: &mut Session, cmd: &str, hs: &[Handle], make: impl Fn(&[Seg]
 fn run_extrude(s: &mut Session, p: &Value) -> Result<Value> {
     let hs = targets(s, p)?;
     let h = f64_req("extrude", p, "height")?;
-    from_profiles(s, "extrude", &hs, |prof| cadcraft_kernel::extrude(prof, Vec3::new(0.0, 0.0, h)))
+    from_profiles(s, "extrude", &hs, false, |prof| cadcraft_kernel::extrude(prof, Vec3::new(0.0, 0.0, h)))
 }
 
 fn run_revolve(s: &mut Session, p: &Value) -> Result<Value> {
@@ -261,42 +405,52 @@ fn run_revolve(s: &mut Session, p: &Value) -> Result<Value> {
     let axis = points_param(p, "axis").filter(|a| a.len() == 2).ok_or_else(|| bad("revolve", "`axis` ([[x,y],[x,y]]) is required"))?;
     let (Some(a), Some(b)) = (axis.first().copied(), axis.get(1).copied()) else { return Err(bad("revolve", "`axis` needs two points")) };
     let angle = f64_or(p, "angle", 360.0).to_radians();
-    from_profiles(s, "revolve", &hs, |prof| cadcraft_kernel::revolve(prof, a.to3(0.0), (b - a).to3(0.0), angle))
+    from_profiles(s, "revolve", &hs, true, |prof| cadcraft_kernel::revolve(prof, a.to3(0.0), (b - a).to3(0.0), angle))
 }
 
-/// The 3D solids among `hs`, in order.
-fn solids(s: &Session, hs: &[Handle]) -> Result<Vec<(Handle, Solid3d)>> {
+/// The 3D solids (and surfaces) among `hs`, in order, each once.
+pub(super) fn solids(s: &Session, hs: &[Handle]) -> Result<Vec<(Handle, Solid3d)>> {
     let d = s.doc()?;
     Ok(hs
         .iter()
-        .filter_map(|h| match &d.entity(*h)?.kind {
+        .enumerate()
+        .filter(|(i, h)| !hs.get(..*i).is_some_and(|before| before.contains(h)))
+        .filter_map(|(_, h)| match &d.entity(*h)?.kind {
             EntityKind::Solid3d(x) => Some((*h, x.clone())),
             _ => None,
         })
         .collect())
 }
 
-fn placed(x: &Solid3d) -> Placed<'_> {
+pub(super) fn placed(x: &Solid3d) -> Placed<'_> {
     Placed { brep: &x.brep, xform: &x.xform }
 }
 
-fn run_filletedge(s: &mut Session, p: &Value) -> Result<Value> {
-    let hs = targets(s, p)?;
-    let r = f64_req("filletedge", p, "radius")?;
-    let mut xs = solids(s, &hs)?;
+/// Each 3D solid among `hs` (not surfaces, nor those on locked layers) replaced by what `op` makes
+/// of it; every result is made before the drawing changes. How many changed, and how many were
+/// left on locked layers.
+pub(super) fn per_solid(s: &mut Session, cmd: &str, hs: &[Handle], op: impl Fn(Placed) -> cadcraft_kernel::Result<Built>) -> Result<(usize, usize)> {
+    let mut xs = solids(s, hs)?;
+    xs.retain(|(_, x)| !x.mesh.open);
     let all = xs.len();
     xs.retain(|(h, _)| !super::curves::is_locked(s, *h));
     if xs.is_empty() {
-        return Err(if all > 0 { locked_err() } else { bad("filletedge", "select 3D solids") });
+        return Err(if all > 0 { locked_err() } else { bad(cmd, "select 3D solids") });
     }
-    // Every solid first, so an error leaves the drawing as it was.
-    let built = xs.iter().map(|(h, x)| Ok((*h, cadcraft_kernel::fillet(placed(x), r).map_err(kernel)?))).collect::<Result<Vec<_>>>()?;
+    let built = xs.iter().map(|(h, x)| Ok((*h, op(placed(x)).map_err(kernel)?))).collect::<Result<Vec<_>>>()?;
     let n = built.len();
     let d = s.doc_mut()?;
     for (h, b) in built {
         d.modify_entity(h, |e| e.kind = solid(b))?;
     }
-    Ok(json!({ "filleted": n, "locked": all - n }))
+    Ok((n, all - n))
+}
+
+fn run_filletedge(s: &mut Session, p: &Value) -> Result<Value> {
+    let hs = targets(s, p)?;
+    let r = f64_req("filletedge", p, "radius")?;
+    let (n, locked) = per_solid(s, "filletedge", &hs, |x| cadcraft_kernel::fillet(x, r))?;
+    Ok(json!({ "filleted": n, "locked": locked }))
 }
 
 /// UNION and INTERSECT of the solids among `hs`; `None` when there are none (regions then).
@@ -385,7 +539,7 @@ fn run_stepin(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// The prompts of a primitive, then its JSON form.
-struct Ask {
+pub(super) struct Ask {
     id: &'static str,
     name: &'static str,
     qs: &'static [Q],
@@ -394,13 +548,18 @@ struct Ask {
 }
 
 impl Ask {
-    fn new(id: &'static str, name: &'static str, qs: &'static [Q]) -> Self {
+    pub(super) fn new(id: &'static str, name: &'static str, qs: &'static [Q]) -> Self {
         Ask { id, name, qs, vals: Map::new(), base: None }
+    }
+    /// The values given so far.
+    #[cfg(test)]
+    pub(super) fn values(&self) -> &Map<String, Value> {
+        &self.vals
     }
 }
 
 /// A typed distance.
-fn distance(t: &str) -> Result<f64> {
+pub(super) fn distance(t: &str) -> Result<f64> {
     crate::units::parse_distance(t).or_else(|| number(t)).filter(|v| v.is_finite()).ok_or_else(|| EngineError::Other("Requires a distance.".into()))
 }
 
@@ -420,8 +579,10 @@ impl Interactive for Ask {
         let (key, v) = match (q, i) {
             (_, Input::Cancel) => return Ok(Step::Cancel),
             (Q::Point(k, _), Input::Point(p)) => {
+                // A first point snapped to a 3D object starts the shape at its height.
+                let z = if self.vals.is_empty() { s.point_z.filter(|z| z.is_finite()) } else { None };
                 self.base.get_or_insert(p);
-                (k, json!([p.x, p.y]))
+                (k, z.map_or_else(|| json!([p.x, p.y]), |z| json!([p.x, p.y, z])))
             }
             (Q::Dist(k, _), Input::Point(p)) => (k, json!(self.base.map_or(0.0, |b| b.dist(p)))),
             (Q::Dist(k, _), Input::Text(t)) => (k, json!(distance(&t)?)),
@@ -447,7 +608,7 @@ impl Interactive for Ask {
         // The base outline as the cursor moves: BOX's rectangle, the others' base circle.
         let Some(b) = self.base else { return Vec::new() };
         match (self.id, self.vals.len()) {
-            ("box", 1) => vec![super::helpers::lwpoly(super::helpers::rect_vertices(b, cursor), true)],
+            ("box" | "wedge", 1) => vec![super::helpers::lwpoly(super::helpers::rect_vertices(b, cursor), true)],
             (_, 1) if b.dist(cursor) > 1e-12 => vec![super::helpers::circle(b, b.dist(cursor))],
             _ => Vec::new(),
         }
@@ -455,15 +616,17 @@ impl Interactive for Ask {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum ProfileOp {
+pub(super) enum ProfileOp {
     Extrude,
     Revolve,
     Fillet,
+    Chamfer,
+    Shell,
 }
 
-/// EXTRUDE, REVOLVE and FILLETEDGE at the command line: select objects, then the height, the
-/// axis and angle, or the radius.
-struct ProfileM {
+/// EXTRUDE, REVOLVE, FILLETEDGE, CHAMFEREDGE and SHELL at the command line: select objects, then
+/// the height, the axis and angle, the radius, the distance or the wall thickness.
+pub(super) struct ProfileM {
     op: ProfileOp,
     sel: SelectPhase,
     hs: Vec<Handle>,
@@ -471,7 +634,7 @@ struct ProfileM {
 }
 
 impl ProfileM {
-    fn new(op: ProfileOp) -> Self {
+    pub(super) fn new(op: ProfileOp) -> Self {
         ProfileM { op, sel: SelectPhase::default(), hs: Vec::new(), axis: Vec::new() }
     }
     fn run(&self, s: &mut Session, extra: Value) -> Result<Step> {
@@ -483,6 +646,8 @@ impl ProfileM {
             ProfileOp::Extrude => "extrude",
             ProfileOp::Revolve => "revolve",
             ProfileOp::Fillet => "filletedge",
+            ProfileOp::Chamfer => "chamferedge",
+            ProfileOp::Shell => "shell",
         };
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.into()))?;
         (spec.run)(s, &p)?;
@@ -497,6 +662,8 @@ impl Interactive for ProfileM {
             ProfileOp::Extrude => "EXTRUDE",
             ProfileOp::Revolve => "REVOLVE",
             ProfileOp::Fillet => "FILLETEDGE",
+            ProfileOp::Chamfer => "CHAMFEREDGE",
+            ProfileOp::Shell => "SHELL",
         }
     }
     fn begin(&mut self, s: &mut Session) -> Result<Step> {
@@ -516,6 +683,8 @@ impl Interactive for ProfileM {
             (ProfileOp::Revolve, 1) => Prompt::new("Specify axis endpoint", Accept::POINT).base_opt(self.axis.first().copied()),
             (ProfileOp::Revolve, _) => Prompt::new("Specify angle of revolution", Accept::NUMBER).default("360"),
             (ProfileOp::Fillet, _) => Prompt::new("Specify fillet radius", Accept::NUMBER),
+            (ProfileOp::Chamfer, _) => Prompt::new("Specify distance", Accept::NUMBER),
+            (ProfileOp::Shell, _) => Prompt::new("Enter the shell offset distance", Accept::NUMBER),
         }
     }
     fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
@@ -547,6 +716,8 @@ impl Interactive for ProfileM {
             }
             (ProfileOp::Extrude, Input::Text(t)) => self.run(s, json!({ "height": distance(&t)? })),
             (ProfileOp::Fillet, Input::Text(t)) => self.run(s, json!({ "radius": distance(&t)? })),
+            (ProfileOp::Chamfer, Input::Text(t)) => self.run(s, json!({ "distance": distance(&t)? })),
+            (ProfileOp::Shell, Input::Text(t)) => self.run(s, json!({ "thickness": distance(&t)? })),
             _ => Ok(Step::Continue),
         }
     }
@@ -716,7 +887,7 @@ mod plain_tests {
         let (a, b) = (circle(&mut s, 0.0), circle(&mut s, 10.0));
         let before = s.doc().unwrap().clone();
         let calls = Cell::new(0);
-        let r = from_profiles(&mut s, "extrude", &[a, b], |_| {
+        let r = from_profiles(&mut s, "extrude", &[a, b], false, |_| {
             calls.set(calls.get() + 1);
             if calls.get() == 2 { Err(cadcraft_kernel::KernelError::Failed("no".into())) } else { Ok(Built::default()) }
         });
@@ -725,7 +896,7 @@ mod plain_tests {
         // So does a profile with no area.
         let flat = s.add_entity(super::super::helpers::lwpoly(vec![pv(0.0, 0.0, 0.0), pv(5.0, 0.0, 0.0)], true)).unwrap();
         let before = s.doc().unwrap().clone();
-        assert!(from_profiles(&mut s, "extrude", &[a, flat], |_| Ok(Built::default())).is_err());
+        assert!(from_profiles(&mut s, "extrude", &[a, flat], false, |_| Ok(Built::default())).is_err());
         assert_eq!(*s.doc().unwrap(), before);
     }
 
@@ -740,7 +911,7 @@ mod plain_tests {
         let locked = circle(&mut s, 10.0);
         s.doc_mut().unwrap().modify_entity(locked, |e| e.common.layer = "Defpoints".into()).unwrap();
         s.doc_mut().unwrap().layer_mut("Defpoints").unwrap().locked = true;
-        let r = from_profiles(&mut s, "extrude", &[free, locked, paper], |_| Ok(Built::default())).unwrap();
+        let r = from_profiles(&mut s, "extrude", &[free, locked, paper], false, |_| Ok(Built::default())).unwrap();
         assert_eq!(r["locked"], 1, "{r}");
         let d = s.doc().unwrap();
         assert!(d.entity(locked).is_some(), "the locked circle stays");

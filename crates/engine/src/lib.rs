@@ -148,6 +148,8 @@ pub struct DocState {
     pub view_dir: ViewDir,
     /// 3D solids shaded instead of drawn as edges (VSCURRENT).
     pub shaded: bool,
+    /// Shaded solids also show their visible edges (VSCURRENT's Shaded with Edges).
+    pub shaded_edges: bool,
     /// The model's 3D centre orbits pivot about, for the revision it was measured at (orbiting
     /// calls for it every frame of a drag).
     pub orbit_center: Option<(u64, cadcraft_geom::Vec3)>,
@@ -182,6 +184,7 @@ impl DocState {
             block_edit: None,
             view_dir: ViewDir::PLAN,
             shaded: false,
+            shaded_edges: false,
             orbit_center: None,
             orbit_target: None,
         }

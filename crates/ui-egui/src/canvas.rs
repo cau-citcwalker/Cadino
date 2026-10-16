@@ -267,6 +267,9 @@ pub struct CanvasState {
     pub xf: Option<Xf>,
     pub hover: Option<Handle>,
     pub snap: Option<SnapHit>,
+    /// The height of `snap` when it is on a solid in a 3D view ([`snap3d`]): its point is the
+    /// world point's XY.
+    pub snap_z: Option<f64>,
     /// Effective cursor point after snaps/ortho/polar.
     pub cursor: Option<Vec2>,
     /// The polar or object snap tracking path(s) the cursor is on.
@@ -523,6 +526,7 @@ fn ensure_list(app: &mut CadApp, xf: &Xf, views: &[(Bounds2, f64)], ctx: &egui::
         cancel: None,
         view_dir,
         shaded: st.shaded,
+        ..Default::default()
     };
     if view_only {
         let t = Tokens::get();
@@ -687,6 +691,7 @@ fn ensure_vp_content(app: &mut CadApp, xf_paper: &Xf, ctx: &egui::Context) -> Op
             cancel: None,
             view_dir: cadcraft_geom::ViewDir::PLAN,
             shaded: st.shaded,
+            ..Default::default()
         };
         c.list = cadcraft_render::viewport_content(&st.doc, &st.space, h, area, &opts);
         c.key = Some(key);
@@ -1423,6 +1428,7 @@ fn effective_point(app: &mut CadApp, raw: Vec2, xf: &Xf, ctx: &egui::Context) ->
     let deferred = prompt.as_ref().is_some_and(|p| p.deferred);
     let corner = prompt.as_ref().is_some_and(|p| p.corner);
     app.canvas.snap = None;
+    app.canvas.snap_z = None;
     app.canvas.track = None;
     if !wants_point || app.session.pending_window.is_some() {
         if !wants_point {
@@ -1675,11 +1681,8 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         if let Some((_, earlier)) = releases.split_last() {
             for pos in earlier.iter().filter(|p| rect.contains(**p)) {
                 let w = effective_point(app, xf.to_world(*pos), &xf, ui.ctx());
-                let result = match app.canvas.snap {
-                    Some(hit) => app.session.input_snapped(hit),
-                    None => app.session.input(Input::Point(w)),
-                };
-                if let Err(e) = result {
+                snap3d::apply(app, &xf, *pos);
+                if let Err(e) = snap3d::send_point(app, w) {
                     app.session.echo(e.to_string());
                 }
             }
@@ -1712,6 +1715,12 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         // Typed or menu snap overrides (END, NON…) and Tab cycling; a locked Dynamic Input value wins.
         if dyn_frame.and_then(|f| crate::dyninput::parse(&app.cmd.buffer, &f)).is_none_or(|e| e.first_locked().is_none()) {
             override_cursor(app, w, &xf);
+            // A 3D view also snaps to solids where it draws them (the engine snaps in plan).
+            if grip_held.is_none()
+                && let Some(hp) = hover_pos
+            {
+                snap3d::apply(app, &xf, hp);
+            }
         }
         // Typed grip dimensions win over snap overrides too.
         if let Some(q) = grip_held {
@@ -1723,6 +1732,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     } else {
         app.canvas.cursor = None;
         app.canvas.snap = None;
+        app.canvas.snap_z = None;
         app.session.cursor_deferred = None;
     }
 
@@ -1774,11 +1784,9 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
                 // Nothing drawn there: "Select objects" opens a window.
                 Ok(())
             } else {
-                // Preserve a snap's viewport origin for DIST, and its deferred curve where needed.
-                match app.canvas.snap {
-                    Some(hit) => app.session.input_snapped(hit),
-                    None => app.session.input(Input::Point(p)),
-                }
+                // Preserve a snap's viewport origin for DIST, its deferred curve where needed, and
+                // a 3D snap's height.
+                snap3d::send_point(app, p)
             };
             if let Err(e) = result {
                 app.session.echo(e.to_string());
@@ -1823,6 +1831,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
             let done = if !xf.is_plan() {
                 close_view_window(app, &xf, end, mods.shift)
             } else if app.session.prompting() {
+                app.session.point_z = None;
                 app.session.input(Input::Point(xf.to_world(end)))
             } else {
                 app.session.idle_click(xf.to_world(end), mods.shift)
@@ -2116,7 +2125,8 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         draw_tracking(&painter, &xf, &app.session.tracking.acquired, app.canvas.track.as_ref(), view.height * 4.0);
     }
     if let (Some(hit), Some(_)) = (app.canvas.snap, app.canvas.cursor) {
-        draw_snap_marker(&painter, xf.to_screen(hit.point), &hit);
+        let at = app.canvas.snap_z.map_or_else(|| xf.to_screen(hit.point), |z| snap3d::screen_of(&xf, hit.point.to3(z)));
+        draw_snap_marker(&painter, at, &hit);
     }
     draw_tiles(app, ui, &tiles);
     // UCS icon, ViewCube and viewport label.
@@ -2168,6 +2178,7 @@ fn edit_text_at(app: &mut CadApp, p: Vec2) -> bool {
         return false;
     }
     app.start("textedit");
+    app.session.point_z = None;
     if let Err(e) = app.session.input(Input::Point(p)) {
         app.session.echo(e.to_string());
     }
@@ -2955,10 +2966,147 @@ pub(crate) mod tests {
     /// A solid that is only an edge from (0, 0, 20) to (10, 0, 20): drawn 20 above its plan.
     fn raised_edge(app: &mut CadApp) -> Handle {
         let g = cadcraft_geom::Vec3::new;
-        let mesh = cadcraft_geom::Mesh3 { verts: Vec::new(), tris: Vec::new(), edges: vec![vec![g(0.0, 0.0, 20.0), g(10.0, 0.0, 20.0)]], open: false };
+        let mesh =
+            cadcraft_geom::Mesh3 { verts: Vec::new(), tris: Vec::new(), edges: vec![vec![g(0.0, 0.0, 20.0), g(10.0, 0.0, 20.0)]], open: false };
         let s = cadcraft_doc::Solid3d { brep: "".into(), mesh: std::sync::Arc::new(mesh), xform: cadcraft_geom::Mat4::IDENTITY };
         let d = app.session.doc_mut().unwrap();
         d.add(&cadcraft_doc::Space::Model, cadcraft_doc::Common::default(), cadcraft_doc::EntityKind::Solid3d(s)).unwrap()
+    }
+
+    /// A solid moved 5 up: an open edge (0, 0, 10)–(4, 0, 10)–(4, 3, 10), a circle of radius 3
+    /// about (20, 5, 10) upright in the XZ plane and an ellipse about (40, -20, 10).
+    fn snap_solid() -> cadcraft_doc::Solid3d {
+        let g = cadcraft_geom::Vec3::new;
+        let ring = |c: cadcraft_geom::Vec3, rx: f64, rz: f64| -> Vec<cadcraft_geom::Vec3> {
+            (0..=24).map(|i| f64::from(i % 24) * std::f64::consts::TAU / 24.0).map(|t| g(c.x + rx * t.cos(), c.y, c.z + rz * t.sin())).collect()
+        };
+        let edges = vec![
+            vec![g(0.0, 0.0, 10.0), g(4.0, 0.0, 10.0), g(4.0, 3.0, 10.0)],
+            ring(g(20.0, 5.0, 10.0), 3.0, 3.0),
+            ring(g(40.0, -20.0, 10.0), 3.0, 2.0),
+        ];
+        let mut xform = cadcraft_geom::Mat4::IDENTITY;
+        xform.m[2][3] = 5.0;
+        let mesh = cadcraft_geom::Mesh3 { verts: Vec::new(), tris: Vec::new(), edges, open: false };
+        cadcraft_doc::Solid3d { brep: "".into(), mesh: std::sync::Arc::new(mesh), xform }
+    }
+
+    /// The app looking along `dir` at world point `at`, 60 units high on screen, LINE asking for
+    /// its first point with only the object snaps `osmode` running.
+    fn app_snapping(f: &mut Frames, dir: [f64; 3], at: cadcraft_geom::Vec3, osmode: u32) -> CadApp {
+        let mut app = app_looking(f, dir);
+        let st = app.session.state_mut().unwrap();
+        let center = st.view_dir.project(at);
+        st.set_view_quiet(cadcraft_engine::View { center, height: 60.0 });
+        app.session.settings.osmode = osmode;
+        app.session.cmdline("line").unwrap();
+        f.run(&mut app, Vec::new());
+        app
+    }
+
+    /// The snaps of a solid are where it is in the world: its edges' ends, the point halfway along
+    /// an open edge, the centre of a closed edge that is a circle; only of the modes asked for,
+    /// with no midpoint on a closed edge and no centre for an ellipse.
+    #[test]
+    fn a_solid_snaps_to_its_edge_ends_midpoints_and_circle_centres() {
+        use snap::mode::{CEN, END, MID};
+        let (s, g) = (snap_solid(), cadcraft_geom::Vec3::new);
+        let has = |c: &[(cadcraft_geom::Vec3, u32)], p: cadcraft_geom::Vec3, m: u32| c.iter().any(|(q, k)| *k == m && (*q - p).len() < 1e-9);
+        let all = snap3d::candidates(&s, END | MID | CEN);
+        assert!(has(&all, g(0.0, 0.0, 15.0), END) && has(&all, g(4.0, 3.0, 15.0), END) && has(&all, g(23.0, 5.0, 15.0), END), "{all:?}");
+        assert!(has(&all, g(3.5, 0.0, 15.0), MID) && has(&all, g(20.0, 5.0, 15.0), CEN), "{all:?}");
+        assert_eq!(snap3d::candidates(&s, MID).len(), 1);
+        assert_eq!(snap3d::candidates(&s, CEN).len(), 1);
+        assert_eq!(snap3d::candidates(&s, END).len(), 4);
+    }
+
+    /// Solids on layers turned off or frozen aren't snapped to.
+    #[test]
+    fn solids_on_hidden_layers_are_not_snapped_to() {
+        let mut d = cadcraft_doc::Drawing::new_metric();
+        d.layers.push(cadcraft_doc::Layer::new("Shut"));
+        let common = cadcraft_doc::Common { layer: "Shut".into(), ..Default::default() };
+        d.add(&cadcraft_doc::Space::Model, common, cadcraft_doc::EntityKind::Solid3d(snap_solid())).unwrap();
+        let xf = Xf::new(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0)), Vec2::ZERO, 5.0)
+            .looking(ViewDir::new(cadcraft_geom::Vec3::new(-1.0, -1.0, 1.0)));
+        let p = cadcraft_geom::Vec3::new(0.0, 0.0, 15.0);
+        let at = snap3d::screen_of(&xf, p);
+        let near = |d: &cadcraft_doc::Drawing| snap3d::nearest(d, &cadcraft_doc::Space::Model, &xf, at, 10.0, snap::mode::END);
+        assert_eq!(near(&d), Some((p, snap::mode::END)));
+        let shut: [fn(&mut cadcraft_doc::Layer); 2] = [|l| l.on = false, |l| l.frozen = true];
+        for f in shut {
+            let mut d = d.clone();
+            d.layers.iter_mut().filter(|l| l.name == "Shut").for_each(f);
+            assert_eq!(near(&d), None);
+        }
+    }
+
+    /// In a 3D view a point prompt snaps to a raised solid's vertex where it is drawn: the marker
+    /// is there, and the command gets the vertex's XY with its height (`Session::point_z`). With
+    /// the running snaps off (F3) it gets the point on the XY plane under the cursor, no height.
+    #[test]
+    fn a_3d_view_snaps_to_a_raised_solid_vertex_with_its_height() {
+        let mut f = Frames::default();
+        let top = cadcraft_geom::Vec3::new(10.0, 0.0, 20.0);
+        let mut app = app_snapping(&mut f, [-1.0, -1.0, 1.0], top, snap::mode::END);
+        raised_edge(&mut app);
+        let xf = app.canvas.xf.unwrap();
+        let at = snap3d::screen_of(&xf, top) + vec2(3.0, -2.0);
+        app.session.settings.osmode |= snap::mode::OFF;
+        app.session.point_z = Some(1.0);
+        f.click(&mut app, at);
+        assert_eq!((app.canvas.snap.is_none(), app.session.point_z), (true, None));
+        assert!(app.session.last_point.dist(xf.to_world(at)) < 1e-6, "{:?}", app.session.last_point);
+        app.session.settings.osmode = snap::mode::END;
+        f.run(&mut app, vec![egui::Event::PointerMoved(at + vec2(1.0, 0.0))]);
+        let hit = app.canvas.snap.unwrap();
+        assert_eq!((hit.point, hit.mode, app.canvas.snap_z), (Vec2::new(10.0, 0.0), snap::mode::END, Some(20.0)));
+        f.click(&mut app, at);
+        assert_eq!((app.session.last_point, app.session.point_z), (Vec2::new(10.0, 0.0), Some(20.0)));
+    }
+
+    /// In a 3D view the cursor snaps to the point halfway along a solid's edge and to the centre of
+    /// its circular edge where they are drawn; a typed CEN override takes the centre with its
+    /// height (the engine would look for it in plan, where the circle is a line).
+    #[test]
+    fn a_3d_view_snaps_to_solid_midpoints_and_centres() {
+        use snap::mode::{CEN, MID};
+        let mut f = Frames::default();
+        let (mid, cen) = (cadcraft_geom::Vec3::new(3.5, 0.0, 15.0), cadcraft_geom::Vec3::new(20.0, 5.0, 15.0));
+        let mut app = app_snapping(&mut f, [-1.0, -1.0, 1.0], cen, MID | CEN);
+        app.session
+            .doc_mut()
+            .unwrap()
+            .add(&cadcraft_doc::Space::Model, cadcraft_doc::Common::default(), cadcraft_doc::EntityKind::Solid3d(snap_solid()))
+            .unwrap();
+        let xf = app.canvas.xf.unwrap();
+        for (p, m) in [(mid, MID), (cen, CEN)] {
+            f.run(&mut app, vec![egui::Event::PointerMoved(snap3d::screen_of(&xf, p) + vec2(2.0, 2.0))]);
+            let hit = app.canvas.snap.unwrap();
+            assert_eq!((hit.point, hit.mode, app.canvas.snap_z), (p.xy(), m, Some(15.0)));
+        }
+        app.session.settings.osmode = 0;
+        app.session.cmdline("cen").unwrap();
+        f.click(&mut app, snap3d::screen_of(&xf, cen) + vec2(2.0, 1.0));
+        assert_eq!((app.session.last_point, app.session.point_z), (cen.xy(), Some(15.0)));
+        assert!(app.session.point_mods.is_empty());
+    }
+
+    /// Plan view keeps the engine's snaps: a raised solid's vertex snaps where its plan is, and the
+    /// point given has no height (a height left from a 3D snap is cleared).
+    #[test]
+    fn plan_view_snaps_in_plan_without_a_height() {
+        let mut f = Frames::default();
+        let mut app = app_snapping(&mut f, [0.0, 0.0, 1.0], cadcraft_geom::Vec3::new(10.0, 0.0, 0.0), snap::mode::END);
+        raised_edge(&mut app);
+        app.session.point_z = Some(7.0);
+        let xf = app.canvas.xf.unwrap();
+        let at = xf.to_screen(Vec2::new(10.0, 0.0)) + vec2(3.0, -2.0);
+        f.run(&mut app, vec![egui::Event::PointerMoved(at)]);
+        assert_eq!(app.canvas.snap.map(|h| (h.point, h.mode)), Some((Vec2::new(10.0, 0.0), snap::mode::END)));
+        assert_eq!(app.canvas.snap_z, None);
+        f.click(&mut app, at);
+        assert_eq!((app.session.last_point, app.session.point_z), (Vec2::new(10.0, 0.0), None));
     }
 
     /// The app with an empty drawing looking along `dir`, its list built (at once, not in the
@@ -3173,6 +3321,9 @@ mod compare;
 
 /// Background rebuilds of the display list for a new view.
 mod rebuild;
+
+/// Object snaps on solids in 3D views.
+mod snap3d;
 
 #[cfg(test)]
 mod hatch_pick_tests {

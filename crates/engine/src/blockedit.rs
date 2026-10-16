@@ -311,6 +311,7 @@ impl DocState {
         self.view_dir = host.view_dir;
         self.orbit_target = None;
         self.shaded = host.shaded;
+        self.shaded_edges = host.shaded_edges;
         self.revision += 1;
         Ok(())
     }

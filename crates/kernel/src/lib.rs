@@ -15,6 +15,10 @@ use std::path::{Path, PathBuf};
 use cadcraft_geom::{Mat4, Mesh3, Vec3};
 use serde::{Deserialize, Serialize};
 
+mod curve;
+pub use curve::Curve;
+use curve::{JOIN, Run, closed, newell, unit};
+
 #[cfg(feature = "occt")]
 mod occt;
 #[cfg(feature = "occt")]
@@ -84,9 +88,24 @@ pub enum Primitive {
         radius: f64,
         tube: f64,
     },
+    /// A box cut diagonally, from the corners of its bounding box (`b.z - a.z` is the height):
+    /// full height at the smaller x, sloping down to nothing at the larger.
+    Wedge {
+        a: Vec3,
+        b: Vec3,
+    },
+    /// A regular pyramid: base centre, 3 to 32 sides, base radius to a vertex, top radius (0 =
+    /// pointed) and height along Z (negative = downward). Its first base edge runs along X.
+    Pyramid {
+        base: Vec3,
+        sides: u32,
+        radius: f64,
+        top_radius: f64,
+        height: f64,
+    },
 }
 
-/// One piece of a closed planar profile.
+/// One piece of a profile, cross section or path.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Seg {
     Line {
@@ -115,6 +134,12 @@ pub enum BoolOp {
 
 /// Most pieces one profile may have (hostile parameters).
 pub const MAX_PROFILE_SEGS: usize = 100_000;
+/// Most points a spline curve may have.
+pub const MAX_SPLINE_POINTS: usize = 10_000;
+/// Most cross sections one loft may have.
+pub const MAX_SECTIONS: usize = 1_000;
+/// Most sides a pyramid may have.
+pub const MAX_PYRAMID_SIDES: u32 = 32;
 
 /// The shortest length the kernel models: OpenCASCADE takes lengths under 1e-7 for zero and
 /// throws on them.
@@ -158,7 +183,7 @@ pub fn primitive(p: &Primitive) -> Result<Built> {
     };
     let fin = |v: Vec3| if v.is_finite() { Ok(()) } else { Err(KernelError::Invalid("a point is not finite".into())) };
     match *p {
-        Primitive::Box { a, b } => {
+        Primitive::Box { a, b } | Primitive::Wedge { a, b } => {
             fin(a)?;
             fin(b)?;
             let d = b - a;
@@ -190,6 +215,20 @@ pub fn primitive(p: &Primitive) -> Result<Built> {
             pos(radius, "the torus radius")?;
             pos(tube, "the tube radius")?;
         }
+        Primitive::Pyramid { base, sides, radius, top_radius, height } => {
+            fin(base)?;
+            if !(3..=MAX_PYRAMID_SIDES).contains(&sides) {
+                return Err(KernelError::Invalid(format!("a pyramid has 3 to {MAX_PYRAMID_SIDES} sides")));
+            }
+            pos(radius, "the base radius")?;
+            pos(height.abs(), "the height")?;
+            // As for boxes: a size far below the pyramid's is lost to rounding.
+            let hi = radius.max(top_radius).max(height.abs());
+            let small = |v: f64| v < MIN_LEN.max(hi * 1e-9);
+            if !(top_radius == 0.0 || top_radius.is_finite() && !small(top_radius)) || small(radius) || small(height.abs()) {
+                return Err(KernelError::Invalid("the pyramid is too flat, or its top too small (make it 0 or larger)".into()));
+            }
+        }
     }
     let p = match *p {
         // OpenCASCADE can't make a cone with equal radii: that is a cylinder.
@@ -201,25 +240,99 @@ pub fn primitive(p: &Primitive) -> Result<Built> {
     run(Request::Primitive(p))?.built()
 }
 
+/// Whether OpenCASCADE can make the piece: finite, and not so small or flat that it can't tell
+/// its points apart (it throws then).
+fn seg_ok(s: &Seg) -> bool {
+    match *s {
+        Seg::Line { a, b } => a.is_finite() && b.is_finite() && (b - a).len() >= MIN_LEN,
+        Seg::Arc { a, mid, b } => {
+            // A sagitta under a millionth of the chord is a line to it (see the engine's loop_segs).
+            let chord = (b - a).len();
+            a.is_finite()
+                && mid.is_finite()
+                && b.is_finite()
+                && chord >= MIN_LEN
+                && (mid - a).len() >= MIN_LEN
+                && (b - mid).len() >= MIN_LEN
+                && (mid - a).cross(b - a).len() >= 1e-7 * chord * chord
+        }
+        Seg::Circle { center, radius, normal } => {
+            center.is_finite() && normal.is_finite() && normal.len() > 0.0 && radius.is_finite() && radius >= MIN_LEN
+        }
+    }
+}
+
+/// The pieces must be ones the kernel can make, joined end to end (OpenCASCADE throws on a wire
+/// it can't join); a circle stands alone.
 fn check_profile(profile: &[Seg]) -> Result<()> {
     if profile.is_empty() || profile.len() > MAX_PROFILE_SEGS {
         return Err(KernelError::Invalid("the profile needs 1 to 100000 pieces".into()));
     }
-    let ok = profile.iter().all(|s| match *s {
-        Seg::Line { a, b } => a.is_finite() && b.is_finite(),
-        Seg::Arc { a, mid, b } => a.is_finite() && mid.is_finite() && b.is_finite(),
-        Seg::Circle { center, radius, normal } => {
-            center.is_finite() && normal.is_finite() && normal.len() > 0.0 && radius.is_finite() && radius > 0.0
-        }
+    if !profile.iter().all(seg_ok) {
+        return Err(KernelError::Invalid("the profile has a non-finite point, or a piece too small to model".into()));
+    }
+    let joined = profile.windows(2).all(|w| match w {
+        [p, q] => matches!((curve::ends(p), curve::ends(q)), (Some((_, e)), Some((s, _))) if (e - s).len() <= JOIN),
+        _ => true,
     });
-    if ok { Ok(()) } else { Err(KernelError::Invalid("the profile has a non-finite point or radius".into())) }
+    if joined { Ok(()) } else { Err(KernelError::Invalid("the pieces of a curve must meet end to end".into())) }
 }
 
-/// A solid swept from a closed planar profile along `dir`.
+fn check_curve(c: &Curve) -> Result<()> {
+    match c {
+        Curve::Segs(s) => check_profile(s),
+        Curve::Spline { points, tangents } => {
+            if points.len() < 2 || points.len() > MAX_SPLINE_POINTS {
+                return Err(KernelError::Invalid(format!("a spline needs 2 to {MAX_SPLINE_POINTS} points")));
+            }
+            let tangent_ok = |t: Vec3| t.is_finite() && t.len() > 0.0;
+            if !points.iter().all(|p| p.is_finite()) || tangents.is_some_and(|(a, b)| !(tangent_ok(a) && tangent_ok(b))) {
+                return Err(KernelError::Invalid("a spline has a non-finite point or tangent".into()));
+            }
+            // OpenCASCADE throws on two points in the same place.
+            if points.windows(2).any(|w| matches!(w, [a, b] if (*b - *a).len() < MIN_LEN)) {
+                return Err(KernelError::Invalid("a spline has two points in the same place".into()));
+            }
+            Ok(())
+        }
+    }
+}
+
+/// A closed curve that becomes a face must be flat and enclose some area: OpenCASCADE throws
+/// on one that isn't. Its unit normal.
+fn check_flat(c: &Curve) -> Result<Vec3> {
+    if let Curve::Segs(s) = c
+        && let [Seg::Circle { normal, .. }] = s.as_slice()
+    {
+        return unit(*normal).ok_or_else(|| KernelError::Invalid("a circle has no normal".into()));
+    }
+    let pts = c.points();
+    let o = pts.first().copied().unwrap_or(Vec3::ZERO);
+    let reach = pts.iter().map(|p| (*p - o).len()).fold(0.0, f64::max);
+    let n = newell(&pts, o);
+    let Some(n) = unit(n).filter(|_| n.len() > 1e-12 * reach * reach) else {
+        return Err(KernelError::Invalid("the profile encloses no area".into()));
+    };
+    let tol = 1e-7_f64.max(reach * 1e-12);
+    if pts.iter().any(|p| n.dot(*p - o).abs() > tol) {
+        return Err(KernelError::Invalid("a closed profile must be flat".into()));
+    }
+    Ok(n)
+}
+
+/// A solid swept from a closed planar profile along `dir`, or a surface from an open one.
 pub fn extrude(profile: &[Seg], dir: Vec3) -> Result<Built> {
     check_profile(profile)?;
-    if !dir.is_finite() || dir.len() < 1e-12 {
+    let Some(d) = unit(dir).filter(|_| dir.len() >= 1e-12) else {
         return Err(KernelError::Invalid("the extrusion needs a non-zero height or direction".into()));
+    };
+    if closed(profile) {
+        // Along its own plane the profile sweeps no volume.
+        if check_flat(&Curve::Segs(profile.to_vec()))?.dot(d).abs() < 1e-9 {
+            return Err(KernelError::Invalid("the extrusion runs along the profile's plane".into()));
+        }
+    } else if profile.iter().any(|s| matches!(*s, Seg::Line { a, b } if (b - a).cross(d).len() < MIN_LEN.max((b - a).len() * 1e-9))) {
+        return Err(KernelError::Invalid("a line extruded along itself makes no surface".into()));
     }
     run(Request::Extrude(profile.to_vec(), dir))?.built()
 }
@@ -227,6 +340,10 @@ pub fn extrude(profile: &[Seg], dir: Vec3) -> Result<Built> {
 /// A solid of revolution of a closed planar profile about the axis through `origin` along `axis`.
 pub fn revolve(profile: &[Seg], origin: Vec3, axis: Vec3, angle: f64) -> Result<Built> {
     check_profile(profile)?;
+    if !closed(profile) {
+        return Err(KernelError::Invalid("the profile must be closed".into()));
+    }
+    check_flat(&Curve::Segs(profile.to_vec()))?;
     if !origin.is_finite() || !axis.is_finite() || axis.len() < 1e-12 {
         return Err(KernelError::Invalid("the axis needs two different points".into()));
     }
@@ -252,9 +369,9 @@ fn check_axis(profile: &[Seg], origin: Vec3, axis: Vec3) -> Result<()> {
     // The profile's plane: Newell's method over its points, or a circle's own normal.
     let o = pts.first().copied().unwrap_or(origin);
     let reach = pts.iter().map(|p| (*p - o).len()).fold(0.0, f64::max);
-    let newell = pts.iter().zip(pts.iter().cycle().skip(1)).fold(Vec3::ZERO, |n, (p, q)| n + (*p - o).cross(*q - o));
-    if newell.len() > 1e-12 * reach * reach {
-        normal = newell;
+    let loop_normal = newell(&pts, o);
+    if loop_normal.len() > 1e-12 * reach * reach {
+        normal = loop_normal;
     }
     if normal.len() == 0.0 {
         return Err(KernelError::Invalid("the profile encloses no area".into()));
@@ -295,13 +412,8 @@ fn circle_extremes(center: Vec3, radius: f64, normal: Vec3, dir: Vec3) -> Vec<Ve
 
 /// [`circle_extremes`] for the arc from `a` through `mid` to `b`, where they lie on it.
 fn arc_extremes(a: Vec3, mid: Vec3, b: Vec3, dir: Vec3) -> Vec<Vec3> {
-    let (u, v) = (a - b, mid - b);
-    let k = u.cross(v);
+    let Some((c, k)) = curve::circumcentre(a, mid, b) else { return Vec::new() };
     let kk = k.dot(k);
-    if !kk.is_finite() || kk <= 0.0 {
-        return Vec::new();
-    }
-    let c = b + (v * u.dot(u) - u * v.dot(v)).cross(k) * (0.5 / kk);
     let r = (a - c).len();
     // Angles about the centre from `a`, counterclockwise about `k`.
     let x = (a - c) * (1.0 / r);
@@ -324,6 +436,108 @@ pub fn fillet(s: Placed, radius: f64) -> Result<Built> {
     }
     check_brep(s.brep)?;
     run(Request::Fillet(Solid::of(s), radius))?.built()
+}
+
+/// Bevel every edge of the solid by `distance` along both faces.
+pub fn chamfer(s: Placed, distance: f64) -> Result<Built> {
+    if !(distance.is_finite() && distance >= MIN_LEN) {
+        return Err(KernelError::Invalid(format!("the distance must be at least {MIN_LEN}")));
+    }
+    check_brep(s.brep)?;
+    run(Request::Chamfer(Solid::of(s), distance))?.built()
+}
+
+/// Hollow the solid inward to walls `thickness` thick: open where its top faces were (the flat
+/// faces at its greatest height) when `remove_top`, else closed round an empty inside.
+pub fn shell(s: Placed, thickness: f64, remove_top: bool) -> Result<Built> {
+    if !(thickness.is_finite() && thickness >= MIN_LEN) {
+        return Err(KernelError::Invalid(format!("the thickness must be at least {MIN_LEN}")));
+    }
+    check_brep(s.brep)?;
+    run(Request::Shell(Solid::of(s), thickness, remove_top))?.built()
+}
+
+/// A flat surface bounded by a closed planar curve.
+pub fn plane_surface(profile: &[Seg]) -> Result<Built> {
+    check_profile(profile)?;
+    if !closed(profile) {
+        return Err(KernelError::Invalid("a planar surface needs a closed curve".into()));
+    }
+    check_flat(&Curve::Segs(profile.to_vec()))?;
+    run(Request::PlaneSurface(profile.to_vec()))?.built()
+}
+
+/// The shape cut by the plane through `origin` square to `normal`: the piece on the normal's
+/// side, then the one on the other; `None` where none of it lies.
+pub fn slice(s: Placed, origin: Vec3, normal: Vec3) -> Result<[Option<Built>; 2]> {
+    let Some(n) = unit(normal).filter(|_| origin.is_finite()) else {
+        return Err(KernelError::Invalid("the cutting plane needs a point and a direction".into()));
+    };
+    check_brep(s.brep)?;
+    let mut pieces = run(Request::Slice(Solid::of(s), origin, n))?.pieces()?.into_iter();
+    match (pieces.next(), pieces.next(), pieces.next()) {
+        (Some(a), Some(b), None) => Ok([a, b]),
+        _ => Err(mismatch()),
+    }
+}
+
+/// A solid through closed cross sections, or a surface through open ones, in their order:
+/// smooth, or straight between neighbours when `ruled`.
+pub fn loft(sections: &[Curve], ruled: bool) -> Result<Built> {
+    if sections.len() < 2 || sections.len() > MAX_SECTIONS {
+        return Err(KernelError::Invalid(format!("a loft needs 2 to {MAX_SECTIONS} cross sections")));
+    }
+    sections.iter().try_for_each(check_curve)?;
+    let closed = sections.iter().filter(|c| c.is_closed()).count();
+    if closed != 0 && closed != sections.len() {
+        return Err(KernelError::Invalid("cross sections must be all open or all closed".into()));
+    }
+    // The end sections are capped with faces.
+    if closed > 0 {
+        sections.first().into_iter().chain(sections.last()).try_for_each(|c| check_flat(c).map(|_| ()))?;
+    }
+    // Two horizontal sections at one height have nothing between them.
+    let levels: Vec<f64> = sections.iter().filter_map(level).collect();
+    if levels.iter().enumerate().any(|(i, a)| levels.iter().skip(i + 1).any(|b| (a - b).abs() < MIN_LEN)) {
+        return Err(KernelError::Invalid("cross sections must be at different elevations".into()));
+    }
+    // Open sections run the way the one before runs, or the surface twists through itself.
+    let mut secs = sections.to_vec();
+    if closed == 0 {
+        for i in 1..secs.len() {
+            if let (Some(prev), Some(cur)) = (secs.get(i - 1).and_then(Curve::ends), secs.get(i).and_then(Curve::ends))
+                && (cur.0 - prev.0).len() + (cur.1 - prev.1).len() > (cur.0 - prev.1).len() + (cur.1 - prev.0).len()
+                && let Some(c) = secs.get_mut(i)
+            {
+                *c = c.reversed();
+            }
+        }
+    }
+    run(Request::Loft(secs, ruled))?.built()
+}
+
+/// The height of a section that lies flat in a horizontal plane.
+fn level(c: &Curve) -> Option<f64> {
+    if let Curve::Segs(s) = c
+        && let [Seg::Circle { center, normal, .. }] = s.as_slice()
+    {
+        return (normal.x.abs() < 1e-12 && normal.y.abs() < 1e-12).then_some(center.z);
+    }
+    let pts = c.points();
+    let z = pts.first()?.z;
+    pts.iter().all(|p| (p.z - z).abs() < MIN_LEN).then_some(z)
+}
+
+/// A solid from a closed profile, or a surface from an open one, swept along `path`. The profile
+/// is first moved to the path's start and turned square to it; corners in the path are mitred.
+pub fn sweep(profile: &Curve, path: &Curve) -> Result<Built> {
+    check_curve(profile)?;
+    check_curve(path)?;
+    let solid = profile.is_closed();
+    if solid {
+        check_flat(profile)?;
+    }
+    run(Request::Sweep(curve::sweep_runs(profile, path)?, solid))?.built()
 }
 
 /// The tessellation of stored B-rep text (files read without a mesh).
@@ -397,6 +611,12 @@ enum Request {
     Revolve(Vec<Seg>, Vec3, Vec3, f64),
     Boolean(BoolOp, Solid, Solid),
     Fillet(Solid, f64),
+    Chamfer(Solid, f64),
+    Shell(Solid, f64, bool),
+    PlaneSurface(Vec<Seg>),
+    Slice(Solid, Vec3, Vec3),
+    Loft(Vec<Curve>, bool),
+    Sweep(Vec<Run>, bool),
     Tessellate(String),
     TessellateAll(Vec<String>),
     ExportStep(Vec<Solid>, PathBuf),
@@ -426,6 +646,8 @@ enum Reply {
     Mesh(Mesh3),
     /// One per B-rep of [`Request::TessellateAll`]: the mesh or why there is none.
     Meshes(Vec<std::result::Result<Mesh3, String>>),
+    /// The two pieces of [`Request::Slice`], each `None` where the shape has nothing.
+    Pieces(Vec<Option<Built>>),
     Done,
 }
 
@@ -439,6 +661,12 @@ impl Request {
             Request::Revolve(..) => "revolving",
             Request::Boolean(..) => "combining solids",
             Request::Fillet(..) => "rounding edges",
+            Request::Chamfer(..) => "bevelling edges",
+            Request::Shell(..) => "hollowing a solid",
+            Request::PlaneSurface(_) => "making a surface",
+            Request::Slice(..) => "slicing",
+            Request::Loft(..) => "lofting",
+            Request::Sweep(..) => "sweeping",
             Request::Tessellate(_) => "reading a solid",
             Request::TessellateAll(_) => "reading solids",
             Request::ExportStep(..) => "writing STEP",
@@ -458,6 +686,12 @@ impl Request {
             Request::Revolve(prof, origin, axis, angle) => backend::revolve(prof, *origin, *axis, *angle).map(Reply::Built),
             Request::Boolean(op, a, b) => backend::boolean(*op, a.placed(), b.placed()).map(Reply::Built),
             Request::Fillet(s, radius) => backend::fillet(s.placed(), *radius).map(Reply::Built),
+            Request::Chamfer(s, distance) => backend::chamfer(s.placed(), *distance).map(Reply::Built),
+            Request::Shell(s, thickness, remove_top) => backend::shell(s.placed(), *thickness, *remove_top).map(Reply::Built),
+            Request::PlaneSurface(prof) => backend::plane_surface(prof).map(Reply::Built),
+            Request::Slice(s, origin, normal) => backend::slice(s.placed(), *origin, *normal).map(Reply::Pieces),
+            Request::Loft(secs, ruled) => backend::loft(secs, *ruled).map(Reply::Built),
+            Request::Sweep(runs, solid) => backend::sweep(runs, *solid).map(Reply::Built),
             Request::Tessellate(brep) => backend::tessellate(brep).map(Reply::Mesh),
             Request::TessellateAll(breps) => Ok(Reply::Meshes(breps.iter().map(|b| backend::tessellate(b).map_err(|e| e.to_string())).collect())),
             Request::ExportStep(ss, path) => backend::export_step(&placed(ss), path).map(|_| Reply::Done),
@@ -476,6 +710,9 @@ impl Reply {
     }
     fn meshes(self) -> Result<Vec<std::result::Result<Mesh3, String>>> {
         if let Reply::Meshes(m) = self { Ok(m) } else { Err(mismatch()) }
+    }
+    fn pieces(self) -> Result<Vec<Option<Built>>> {
+        if let Reply::Pieces(p) = self { Ok(p) } else { Err(mismatch()) }
     }
     fn done(self) -> Result<()> {
         if let Reply::Done = self { Ok(()) } else { Err(mismatch()) }
@@ -626,5 +863,50 @@ mod tests {
         assert!(matches!(primitive(&Primitive::Box { a: Vec3::ZERO, b: Vec3::new(1.0, 1.0, 0.0) }), Err(KernelError::Invalid(_))));
         assert!(matches!(extrude(&[], Vec3::Z), Err(KernelError::Invalid(_))));
         assert!(matches!(fillet(Placed { brep: "", xform: &Mat4::IDENTITY }, f64::NAN), Err(KernelError::Invalid(_))));
+    }
+
+    #[test]
+    fn modelling_input_is_checked_before_the_kernel() {
+        let invalid = |r: Result<Built>| matches!(r, Err(KernelError::Invalid(_)));
+        let v = Vec3::new;
+        let line = |a: Vec3, b: Vec3| Seg::Line { a, b };
+        let pyramid = |sides, radius, top_radius, height| primitive(&Primitive::Pyramid { base: Vec3::ZERO, sides, radius, top_radius, height });
+        assert!(invalid(pyramid(2, 1.0, 0.0, 1.0)) && invalid(pyramid(33, 1.0, 0.0, 1.0)));
+        assert!(invalid(pyramid(4, 1.0, 1e-12, 1.0)), "a top too small to model");
+        assert!(invalid(pyramid(4, 1.0, f64::NAN, 1.0)) && invalid(pyramid(4, 1.0, 0.0, 0.0)));
+        assert!(invalid(primitive(&Primitive::Wedge { a: Vec3::ZERO, b: v(1.0, 0.0, 1.0) })));
+        // Pieces the kernel throws on: a point-long line, pieces that don't meet, a flat arc.
+        assert!(invalid(extrude(&[line(Vec3::ZERO, Vec3::ZERO)], Vec3::Z)));
+        assert!(invalid(extrude(&[line(Vec3::ZERO, v(1.0, 0.0, 0.0)), line(v(2.0, 0.0, 0.0), v(2.0, 1.0, 0.0))], Vec3::Z)));
+        assert!(invalid(extrude(&[Seg::Arc { a: Vec3::ZERO, mid: v(1.0, 0.0, 0.0), b: v(2.0, 0.0, 0.0) }], Vec3::Z)));
+        // An open line along itself, an open profile revolved, a closed one along its plane.
+        assert!(invalid(extrude(&[line(Vec3::ZERO, v(0.0, 0.0, 1.0))], Vec3::Z)));
+        assert!(invalid(revolve(&[line(Vec3::ZERO, v(1.0, 0.0, 0.0))], v(0.0, 5.0, 0.0), v(1.0, 0.0, 0.0), 1.0)));
+        let tri = [line(Vec3::ZERO, v(1.0, 0.0, 0.0)), line(v(1.0, 0.0, 0.0), v(0.0, 1.0, 0.0)), line(v(0.0, 1.0, 0.0), Vec3::ZERO)];
+        assert!(invalid(extrude(&tri, v(1.0, 0.0, 0.0))));
+        // A closed curve that isn't flat makes no face.
+        let bent = [
+            line(Vec3::ZERO, v(1.0, 0.0, 0.0)),
+            line(v(1.0, 0.0, 0.0), v(1.0, 1.0, 1.0)),
+            line(v(1.0, 1.0, 1.0), v(0.0, 1.0, 0.0)),
+            line(v(0.0, 1.0, 0.0), Vec3::ZERO),
+        ];
+        assert!(invalid(plane_surface(&bent)) && invalid(plane_surface(&tri[..2])));
+        // Lofts: too few, mixed, two at one elevation.
+        let circle = |z: f64| Curve::Segs(vec![Seg::Circle { center: v(0.0, 0.0, z), radius: 1.0, normal: Vec3::Z }]);
+        let open = Curve::Segs(vec![line(Vec3::ZERO, v(1.0, 0.0, 0.0))]);
+        assert!(invalid(loft(&[circle(0.0)], false)));
+        assert!(invalid(loft(&[circle(0.0), open.clone()], false)));
+        assert!(invalid(loft(&[circle(0.0), circle(1.0), circle(0.0)], true)));
+        // Sweeps: a spline with a repeated point, a path that doubles back.
+        let twice = Curve::Spline { points: vec![Vec3::ZERO, Vec3::ZERO, v(1.0, 0.0, 0.0)], tangents: None };
+        assert!(invalid(sweep(&circle(0.0), &twice)));
+        let back = Curve::Segs(vec![line(Vec3::ZERO, v(5.0, 0.0, 0.0)), line(v(5.0, 0.0, 0.0), v(0.0, 0.0, 0.0))]);
+        assert!(invalid(sweep(&circle(0.0), &back)));
+        // Sizes and planes.
+        let p = Placed { brep: "CASCADE Topology", xform: &Mat4::IDENTITY };
+        assert!(invalid(chamfer(p, 0.0)) && invalid(shell(p, -1.0, true)) && invalid(shell(p, f64::INFINITY, false)));
+        assert!(matches!(slice(p, Vec3::ZERO, Vec3::ZERO), Err(KernelError::Invalid(_))));
+        assert!(matches!(slice(p, v(f64::NAN, 0.0, 0.0), Vec3::Z), Err(KernelError::Invalid(_))));
     }
 }

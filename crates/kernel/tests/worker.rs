@@ -42,3 +42,21 @@ fn hostile_brep_crashes_the_worker_not_the_app() {
         r => panic!("expected a crash reported as an error, got {r:?}"),
     }
 }
+
+#[test]
+fn modelling_operations_round_trip_through_the_worker() {
+    use cadcraft_kernel::{Curve, Seg};
+    use_worker();
+    let v = Vec3::new;
+    let circle = |r: f64, z: f64| Curve::Segs(vec![Seg::Circle { center: v(0.0, 0.0, z), radius: r, normal: Vec3::Z }]);
+    let loft = cadcraft_kernel::loft(&[circle(2.0, 0.0), circle(1.0, 3.0)], false).unwrap();
+    assert!(!loft.mesh.open);
+    let path = Curve::Segs(vec![Seg::Line { a: v(0.0, 0.0, 0.0), b: v(5.0, 0.0, 0.0) }, Seg::Line { a: v(5.0, 0.0, 0.0), b: v(5.0, 5.0, 0.0) }]);
+    let pipe = cadcraft_kernel::sweep(&circle(0.5, 0.0), &path).unwrap();
+    assert!(!pipe.mesh.open);
+    let placed = cadcraft_kernel::Placed { brep: &pipe.brep, xform: &cadcraft_geom::Mat4::IDENTITY };
+    let [a, b] = cadcraft_kernel::slice(placed, v(2.0, 0.0, 0.0), v(1.0, 0.0, 0.0)).unwrap();
+    assert!(a.is_some() && b.is_some());
+    let pyramid = Primitive::Pyramid { base: Vec3::ZERO, sides: 5, radius: 3.0, top_radius: 0.0, height: 4.0 };
+    assert_eq!(cadcraft_kernel::primitive(&pyramid).unwrap().mesh.tris.len(), 3 + 5);
+}

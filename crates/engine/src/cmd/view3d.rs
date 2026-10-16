@@ -52,11 +52,14 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("vscurrent", "Visual Styles", run_vscurrent)
             .menu(&["View", "Visual Styles", "Shaded"])
             .alias(&["vs"])
-            .params("{style: 2dwireframe | wireframe | shaded | realistic | conceptual}")
+            .params("{style: 2dwireframe | wireframe | shaded | shadedwithedges | realistic | conceptual}")
             .noundo()
             .interactive(|_| Ok(Box::new(VscurrentM))),
         CommandSpec::new("vscurrent.wireframe", "2D Wireframe", |s, _| run_vscurrent(s, &json!({ "style": "2dwireframe" })))
             .menu(&["View", "Visual Styles", "2D Wireframe"])
+            .noundo(),
+        CommandSpec::new("vscurrent.edges", "Shaded with Edges", |s, _| run_vscurrent(s, &json!({ "style": "shadedwithedges" })))
+            .menu(&["View", "Visual Styles", "Shaded with Edges"])
             .noundo(),
     ]
 }
@@ -167,13 +170,17 @@ fn run_orbit(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn run_vscurrent(s: &mut Session, p: &Value) -> Result<Value> {
     let style = str_param(p, "style").unwrap_or("shaded").trim().to_ascii_lowercase();
-    let shaded = match style.as_str() {
-        "2dwireframe" | "2" | "wireframe" | "w" => false,
-        "shaded" | "s" | "realistic" | "r" | "conceptual" | "c" | "hidden" | "h" | "shaded with edges" | "e" | "shades of gray" | "g" => true,
+    // (shaded, with edges)
+    let (shaded, edges) = match style.as_str() {
+        "2dwireframe" | "2" | "wireframe" | "w" => (false, false),
+        "shaded" | "s" | "realistic" | "r" | "shades of gray" | "g" => (true, false),
+        "shadedwithedges" | "shaded with edges" | "e" | "conceptual" | "c" | "hidden" | "h" => (true, true),
         other => return Err(bad("vscurrent", format!("unknown visual style `{other}`"))),
     };
-    s.state_mut()?.shaded = shaded;
-    Ok(json!({ "style": if shaded { "Shaded" } else { "2dWireframe" } }))
+    let st = s.state_mut()?;
+    st.shaded = shaded;
+    st.shaded_edges = edges;
+    Ok(json!({ "style": match (shaded, edges) { (false, _) => "2dWireframe", (true, false) => "Shaded", (true, true) => "ShadedWithEdges" } }))
 }
 
 /// VPOINT at the command line: a direction as `x,y,z`, or a preset view.
@@ -215,7 +222,7 @@ impl Interactive for VscurrentM {
         "VSCURRENT"
     }
     fn prompt(&self, _s: &Session) -> Prompt {
-        Prompt::new("Enter an option", Accept::TEXT).kw(&["2dwireframe", "Wireframe", "Shaded", "Realistic", "Conceptual"])
+        Prompt::new("Enter an option", Accept::TEXT).kw(&["2dwireframe", "Wireframe", "Shaded", "shaded with Edges", "Realistic", "Conceptual"])
     }
     fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
         match i {

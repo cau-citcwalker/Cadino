@@ -12,6 +12,14 @@
 //! is drawn after everything before it and under everything after it. The shader only uses
 //! vertex buffers and one uniform buffer, so it runs on WebGPU and WebGL2.
 //!
+//! Depth: with a depth buffer in the render pass ([`GpuTarget::stencil`] a depth-stencil format),
+//! everything is depth-tested (less or equal) and only solids' shaded faces and wipeouts write
+//! depth ([`MeshData::writes`]), pushed back a little so lines on them stay visible. Shaded model
+//! space carries vertex depths ([`DisplayList::vert_depth`]); every other list, the highlight
+//! and the drag sit at the nearest depth, so they pass and keep their drawing order as in 2D. The
+//! solids' edges ([`DisplayList::edges`]) are drawn only with a depth buffer, which hides the
+//! hidden ones. The pass clears depth every frame, as it does the stencil.
+//!
 //! Infinite lines (xline/ray) and all overlays stay egui shapes (see `canvas.rs`), and the
 //! canvas falls back to the CPU path when no wgpu render state was handed to the app.
 
@@ -24,15 +32,24 @@ use egui_wgpu::wgpu;
 use egui_wgpu::wgpu::util::DeviceExt;
 
 /// Line/triangle vertex: position (2 × f32, relative to the origin) + sRGB colour (4 × u8,
-/// premultiplied by its alpha: transparent objects blend with what is under them).
-const VERTEX_SIZE: usize = 12;
+/// premultiplied by its alpha: transparent objects blend with what is under them) + depth (f32,
+/// 0 = nearest, see [`Depth`]).
+const VERTEX_SIZE: usize = 16;
 /// Wide-line / point instance: a, b (2 × f32 each) + colour (4 × u8) + width in points (f32) +
-/// length along its polyline before `a`, in world units (f32; dashing).
-const INSTANCE_SIZE: usize = 28;
+/// length along its polyline before `a`, in world units (f32; dashing) + the depths of a and b
+/// (2 × f32).
+const INSTANCE_SIZE: usize = 36;
 /// Vertices (or instances) per GPU buffer; divisible by 2 and 3 so no primitive straddles two.
 const CHUNK: usize = 4_194_300;
 /// Point markers are 1.5 × 1.5 points (as on the CPU path).
 const POINT_SIZE: f32 = 1.5;
+/// Vertex depths of a list span clip-space depth 0 (nearest) to this, leaving room behind the
+/// farthest for the faces' depth bias.
+const DEPTH_SPAN: f64 = 0.5;
+/// How far faces that write depth are pushed back: a few depth steps plus two pixels of their
+/// depth slope, so an edge or line lying on a face (rasterised up to a pixel off it) passes the
+/// depth test, while what lies behind the face by any real distance stays hidden.
+const FACE_BIAS: wgpu::DepthBiasState = wgpu::DepthBiasState { constant: 4, slope_scale: 2.0, clamp: 0.0 };
 
 /// How the native window presents frames (`NativeOptions::wgpu_options.surface`).
 ///
@@ -95,7 +112,8 @@ impl FrameCap {
 pub struct GpuTarget {
     pub format: wgpu::TextureFormat,
     /// The stencil buffer format of the render pass, when it has one (the native window asks
-    /// for one): clipped viewports are clipped with it.
+    /// for one): clipped viewports are clipped with it. A depth-stencil format
+    /// (`Depth24PlusStencil8`) also depth-tests shaded 3D views.
     pub stencil: Option<wgpu::TextureFormat>,
 }
 
@@ -108,6 +126,12 @@ pub struct MeshData {
     /// Draw-order breaks, one before each wipeout mask: the fill vertices, line vertices and
     /// quad instances drawn before it. Each group is drawn fills, lines, quads in turn.
     pub breaks: Vec<[usize; 3]>,
+    /// Fill vertex ranges (in order) that write depth: opaque shaded faces and wipeout masks of
+    /// a list with depths. Other fills, lines and quads only test it.
+    pub writes: Vec<std::ops::Range<usize>>,
+    /// Line vertices at the end of `lines` drawn only with a depth buffer: the solids' edges
+    /// over shaded faces ([`DisplayList::edges`]).
+    pub edge_lines: usize,
     /// The vertex buffers already created from this data (see [`MeshData::upload_now`]); the
     /// paint callback then only swaps them in.
     uploaded: Option<Uploaded>,
@@ -151,19 +175,63 @@ fn rel(p: Vec2, origin: Vec2) -> [f32; 2] {
     [(p.x - origin.x) as f32, (p.y - origin.y) as f32]
 }
 
-fn push_vertex(out: &mut Vec<u8>, p: [f32; 2], c: [u8; 4]) {
+fn push_vertex(out: &mut Vec<u8>, p: [f32; 2], c: [u8; 4], z: f32) {
     out.extend_from_slice(&p[0].to_le_bytes());
     out.extend_from_slice(&p[1].to_le_bytes());
     out.extend_from_slice(&c);
+    out.extend_from_slice(&z.to_le_bytes());
 }
 
-fn push_instance(out: &mut Vec<u8>, a: [f32; 2], b: [f32; 2], c: [u8; 4], width: f32, start: f32) {
+/// A wide line (or a point marker, `a` = `b`) from `a` at depth `z[0]` to `b` at `z[1]`.
+fn push_instance(out: &mut Vec<u8>, a: [f32; 2], b: [f32; 2], c: [u8; 4], width: f32, start: f32, z: [f32; 2]) {
     for v in [a[0], a[1], b[0], b[1]] {
         out.extend_from_slice(&v.to_le_bytes());
     }
     out.extend_from_slice(&c);
     out.extend_from_slice(&width.to_le_bytes());
     out.extend_from_slice(&start.to_le_bytes());
+    out.extend_from_slice(&z[0].to_le_bytes());
+    out.extend_from_slice(&z[1].to_le_bytes());
+}
+
+/// A display list's vertex depths ([`DisplayList::vert_depth`], [`DisplayList::tri_depth`]) as
+/// clip-space depth: 0 for the nearest vertex, [`DEPTH_SPAN`] for the farthest. A list without
+/// depths, or whose depths don't match its vertices, is all at 0.
+struct Depth<'a> {
+    verts: &'a [f64],
+    tris: &'a [f64],
+    near: f64,
+    scale: f64,
+}
+
+impl<'a> Depth<'a> {
+    fn of(list: &'a DisplayList) -> Self {
+        let verts = if list.vert_depth.len() == list.verts.len() { list.vert_depth.as_slice() } else { &[] };
+        let tris = if list.tri_depth.len() == list.tris.len() { list.tri_depth.as_slice() } else { &[] };
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for d in verts.iter().chain(tris).filter(|d| d.is_finite()) {
+            lo = lo.min(*d);
+            hi = hi.max(*d);
+        }
+        let scale = if hi > lo && (hi - lo).is_finite() { DEPTH_SPAN / (hi - lo) } else { 0.0 };
+        Depth { verts, tris, near: hi, scale }
+    }
+    /// Whether the list has depths (then its faces and masks write depth).
+    fn any(&self) -> bool {
+        !self.verts.is_empty() || !self.tris.is_empty()
+    }
+    fn z(&self, d: Option<f64>) -> f32 {
+        match d {
+            Some(d) if d.is_finite() && self.scale > 0.0 => ((self.near - d) * self.scale).clamp(0.0, DEPTH_SPAN) as f32,
+            _ => 0.0,
+        }
+    }
+    fn vert(&self, i: usize) -> f32 {
+        self.z(self.verts.get(i).copied())
+    }
+    fn tri(&self, i: usize) -> f32 {
+        self.z(self.tris.get(i).copied())
+    }
 }
 
 /// Lineweight in screen points for a primitive (as on the CPU path), or `None` for a hairline.
@@ -186,55 +254,81 @@ pub fn build_mesh(list: &DisplayList, origin: Vec2, bg: Rgb, lwdisplay: bool) ->
     let mut m = MeshData {
         lines: Vec::with_capacity(list.segment_count().saturating_mul(2 * VERTEX_SIZE)),
         tris: Vec::with_capacity(list.tris.len().saturating_mul(VERTEX_SIZE)),
-        quads: Vec::new(),
-        breaks: Vec::new(),
-        uploaded: None,
+        ..MeshData::default()
     };
-    for prim in &list.prims {
+    let depth = Depth::of(list);
+    // The shaded faces among the primitives (ranges in order).
+    let mut faces = list.faces.iter().peekable();
+    for (i, prim) in list.prims.iter().enumerate() {
         let col = premultiplied(prim.display_rgb(bg), prim.alpha());
         let pts = list.points(prim);
+        let at = prim.start as usize;
         match prim.kind {
             Kind::Polyline => match wide_width(prim.lw, lwdisplay) {
                 Some(w) => {
-                    for s in pts.windows(2) {
+                    for (k, s) in pts.windows(2).enumerate() {
                         if let [a, b] = s {
-                            push_instance(&mut m.quads, rel(*a, origin), rel(*b, origin), col, w, 0.0);
+                            let z = [depth.vert(at + k), depth.vert(at + k + 1)];
+                            push_instance(&mut m.quads, rel(*a, origin), rel(*b, origin), col, w, 0.0, z);
                         }
                     }
                 }
                 None => {
-                    for s in pts.windows(2) {
+                    for (k, s) in pts.windows(2).enumerate() {
                         if let [a, b] = s {
-                            push_vertex(&mut m.lines, rel(*a, origin), col);
-                            push_vertex(&mut m.lines, rel(*b, origin), col);
+                            push_vertex(&mut m.lines, rel(*a, origin), col, depth.vert(at + k));
+                            push_vertex(&mut m.lines, rel(*b, origin), col, depth.vert(at + k + 1));
                         }
                     }
                 }
             },
-            Kind::Tris => {
-                for t in pts.as_chunks::<3>().0 {
-                    for q in t {
-                        push_vertex(&mut m.tris, rel(*q, origin), col);
+            Kind::Tris | Kind::Mask => {
+                let mask = prim.kind == Kind::Mask;
+                if mask {
+                    m.breaks.push([m.tri_vertices(), m.line_vertices(), m.quad_instances()]);
+                }
+                while faces.next_if(|r| r.end as usize <= i).is_some() {}
+                let face = faces.peek().is_some_and(|r| r.start as usize <= i) && prim.alpha() == u8::MAX;
+                let col = if mask { [bg.0, bg.1, bg.2, 255] } else { col };
+                let from = m.tri_vertices();
+                for (k, t) in pts.as_chunks::<3>().0.iter().enumerate() {
+                    for (j, q) in t.iter().enumerate() {
+                        push_vertex(&mut m.tris, rel(*q, origin), col, depth.tri(at + 3 * k + j));
                     }
                 }
-            }
-            Kind::Mask => {
-                m.breaks.push([m.tri_vertices(), m.line_vertices(), m.quad_instances()]);
-                for t in pts.as_chunks::<3>().0 {
-                    for q in t {
-                        push_vertex(&mut m.tris, rel(*q, origin), [bg.0, bg.1, bg.2, 255]);
+                let to = m.tri_vertices();
+                if (face || mask) && depth.any() && from < to {
+                    match m.writes.last_mut() {
+                        Some(w) if w.end == from => w.end = to,
+                        _ => m.writes.push(from..to),
                     }
                 }
             }
             Kind::Point => {
                 if let Some(q) = pts.first() {
                     let p = rel(*q, origin);
-                    push_instance(&mut m.quads, p, p, col, POINT_SIZE, 0.0);
+                    let z = depth.vert(at);
+                    push_instance(&mut m.quads, p, p, col, POINT_SIZE, 0.0, [z, z]);
                 }
             }
             // Drawn on the CPU each frame (clipped to the view).
             Kind::Infinite { .. } => {}
         }
+    }
+    // ponytail: edges are hairlines whatever their lineweight; quads with depth if it matters.
+    if depth.any() {
+        let before = m.line_vertices();
+        for prim in &list.edges {
+            let col = premultiplied(prim.display_rgb(bg), prim.alpha());
+            let at = prim.start as usize;
+            for (k, s) in list.points(prim).windows(2).enumerate() {
+                if let [a, b] = s {
+                    push_vertex(&mut m.lines, rel(*a, origin), col, depth.vert(at + k));
+                    push_vertex(&mut m.lines, rel(*b, origin), col, depth.vert(at + k + 1));
+                }
+            }
+        }
+        m.edge_lines = m.line_vertices() - before;
     }
     m
 }
@@ -242,7 +336,8 @@ pub fn build_mesh(list: &DisplayList, origin: Vec2, bg: Rgb, lwdisplay: bool) ->
 /// Vertex data drawing primitives `prims` of `list` in `color` (the selection highlight), as on
 /// the CPU path: lines `width` points wide, and fills filled, or with `dashed` (SELECTIONEFFECT 0;
 /// the callback's `dash` dashes the lines) outlined. A wipeout is always outlined, since filling it
-/// would hide the drawing; infinite lines are left to the CPU (they are clipped per frame).
+/// would hide the drawing; infinite lines are left to the CPU (they are clipped per frame). It sits
+/// at the nearest depth, over everything.
 pub fn build_highlight_mesh(list: &DisplayList, prims: &[usize], origin: Vec2, color: [u8; 4], width: f32, dashed: bool) -> MeshData {
     let mut m = MeshData::default();
     for prim in prims.iter().filter_map(|&i| list.prims.get(i)) {
@@ -252,7 +347,7 @@ pub fn build_highlight_mesh(list: &DisplayList, prims: &[usize], origin: Vec2, c
                 let mut run = 0.0;
                 for s in pts.windows(2) {
                     if let [a, b] = s {
-                        push_instance(&mut m.quads, rel(*a, origin), rel(*b, origin), color, width, run as f32);
+                        push_instance(&mut m.quads, rel(*a, origin), rel(*b, origin), color, width, run as f32, [0.0; 2]);
                         run += a.dist(*b);
                     }
                 }
@@ -260,14 +355,14 @@ pub fn build_highlight_mesh(list: &DisplayList, prims: &[usize], origin: Vec2, c
             Kind::Point => {
                 if let Some(q) = pts.first() {
                     let p = rel(*q, origin);
-                    push_instance(&mut m.quads, p, p, color, 3.0, 0.0);
+                    push_instance(&mut m.quads, p, p, color, 3.0, 0.0, [0.0; 2]);
                 }
             }
             Kind::Tris if !dashed => {
                 let fill = translucent(color, HIGHLIGHT_FILL_ALPHA);
                 for t in pts.as_chunks::<3>().0 {
                     for q in t {
-                        push_vertex(&mut m.tris, rel(*q, origin), fill);
+                        push_vertex(&mut m.tris, rel(*q, origin), fill, 0.0);
                     }
                 }
             }
@@ -276,7 +371,7 @@ pub fn build_highlight_mesh(list: &DisplayList, prims: &[usize], origin: Vec2, c
                     let mut run = 0.0;
                     for s in line.windows(2) {
                         if let [a, b] = s {
-                            push_instance(&mut m.quads, rel(*a, origin), rel(*b, origin), color, width, run as f32);
+                            push_instance(&mut m.quads, rel(*a, origin), rel(*b, origin), color, width, run as f32, [0.0; 2]);
                             run += a.dist(*b);
                         }
                     }
@@ -379,14 +474,20 @@ struct Layer {
     tris: Vec<Batch>,
     quads: Vec<Batch>,
     breaks: Vec<[usize; 3]>,
+    writes: Vec<std::ops::Range<usize>>,
+    edge_lines: usize,
 }
 
 struct Resources {
     line_pipeline: wgpu::RenderPipeline,
     tri_pipeline: wgpu::RenderPipeline,
     quad_pipeline: wgpu::RenderPipeline,
+    /// Fills that write depth ([`MeshData::writes`]); the fill pipeline without a depth buffer.
+    face_pipeline: wgpu::RenderPipeline,
     /// With a stencil buffer: the pipelines of [`Stencil::Mask`] and [`Stencil::Inside`].
     clipped: Option<ClipPipelines>,
+    /// The render pass has a depth buffer.
+    depth: bool,
     linear_out: bool,
     layers: Vec<Layer>,
 }
@@ -397,6 +498,7 @@ struct ClipPipelines {
     line: wgpu::RenderPipeline,
     tri: wgpu::RenderPipeline,
     quad: wgpu::RenderPipeline,
+    face: wgpu::RenderPipeline,
 }
 
 const UNIFORM_SIZE: u64 = 80;
@@ -428,6 +530,13 @@ fn px_to_clip(px: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(px.x / view.b.z * 2.0 - 1.0, 1.0 - px.y / view.b.w * 2.0, 0.0, 1.0);
 }
 
+// `px_to_clip` at depth `z` (0 = nearest).
+fn px_to_clip_at(px: vec2<f32>, z: f32) -> vec4<f32> {
+    var c = px_to_clip(px);
+    c.z = z;
+    return c;
+}
+
 // `c` is premultiplied sRGB; a linear target gets it linearised, still premultiplied.
 fn out_color(c: vec4<f32>) -> vec4<f32> {
     if (view.a.w > 0.5) {
@@ -440,9 +549,9 @@ fn out_color(c: vec4<f32>) -> vec4<f32> {
 }
 
 @vertex
-fn vs_line(@location(0) pos: vec2<f32>, @location(1) color: vec4<f32>) -> VOut {
+fn vs_line(@location(0) pos: vec2<f32>, @location(1) color: vec4<f32>, @location(2) z: f32) -> VOut {
     var o: VOut;
-    o.pos = px_to_clip(to_px(pos));
+    o.pos = px_to_clip_at(to_px(pos), z);
     o.color = out_color(color);
     o.along = 0.0;
     return o;
@@ -456,6 +565,8 @@ fn vs_quad(
     @location(2) color: vec4<f32>,
     @location(3) width: f32,
     @location(4) start: f32,
+    @location(5) za: f32,
+    @location(6) zb: f32,
 ) -> VOut {
     let pa = to_px(a);
     let pb = to_px(b);
@@ -472,7 +583,7 @@ fn vs_quad(
     let s = select(-1.0, 1.0, vi == 2u || vi == 3u || vi == 5u);
     let along = mix(pa - dir * hw, pb + dir * hw, t);
     var o: VOut;
-    o.pos = px_to_clip(along + n * hw * s);
+    o.pos = px_to_clip_at(along + n * hw * s, mix(za, zb, t));
     o.color = out_color(color);
     o.along = start * view.a.z + mix(-hw, len + hw, t);
     return o;
@@ -491,12 +602,13 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
 "#;
 
 fn vertex_layout() -> wgpu::VertexBufferLayout<'static> {
-    const ATTRS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![0 => Float32x2, 1 => Unorm8x4];
+    const ATTRS: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![0 => Float32x2, 1 => Unorm8x4, 2 => Float32];
     wgpu::VertexBufferLayout { array_stride: VERTEX_SIZE as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &ATTRS }
 }
 
 fn instance_layout() -> wgpu::VertexBufferLayout<'static> {
-    const ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4, 3 => Float32, 4 => Float32];
+    const ATTRS: [wgpu::VertexAttribute; 7] =
+        wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4, 3 => Float32, 4 => Float32, 5 => Float32, 6 => Float32];
     wgpu::VertexBufferLayout { array_stride: INSTANCE_SIZE as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &ATTRS }
 }
 
@@ -528,17 +640,29 @@ impl Resources {
                 layout: &bgl,
                 entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() }],
             });
-            Layer { uniform, bind_group, key: None, lines: Vec::new(), tris: Vec::new(), quads: Vec::new(), breaks: Vec::new() }
+            Layer {
+                uniform,
+                bind_group,
+                key: None,
+                lines: Vec::new(),
+                tris: Vec::new(),
+                quads: Vec::new(),
+                breaks: Vec::new(),
+                writes: Vec::new(),
+                edge_lines: 0,
+            }
         };
         // A render pass with a stencil buffer needs every pipeline to name its format; only the
-        // clipped-viewport pipelines read or write it.
+        // clipped-viewport pipelines read or write it. With a depth buffer every pipeline tests
+        // depth and only `write` ones (faces) write it.
+        let depth = target.stencil.is_some_and(|f| f.has_depth_aspect());
         let face = |compare, pass_op| wgpu::StencilFaceState {
             compare,
             fail_op: wgpu::StencilOperation::Keep,
             depth_fail_op: wgpu::StencilOperation::Keep,
             pass_op,
         };
-        let stencil_state = |s: Stencil| {
+        let stencil_state = |s: Stencil, write: bool| {
             target.stencil.map(|format| {
                 let stencil = match s {
                     Stencil::Off => wgpu::StencilState::default(),
@@ -551,47 +675,56 @@ impl Resources {
                         wgpu::StencilState { front: f, back: f, read_mask: 1, write_mask: 0 }
                     }
                 };
-                wgpu::DepthStencilState { format, depth_write_enabled: None, depth_compare: None, stencil, bias: wgpu::DepthBiasState::default() }
+                let (depth_write_enabled, depth_compare, bias) = match (depth, write) {
+                    (true, true) => (Some(true), Some(wgpu::CompareFunction::LessEqual), FACE_BIAS),
+                    (true, false) => (Some(false), Some(wgpu::CompareFunction::LessEqual), wgpu::DepthBiasState::default()),
+                    (false, _) => (None, None, wgpu::DepthBiasState::default()),
+                };
+                wgpu::DepthStencilState { format, depth_write_enabled, depth_compare, stencil, bias }
             })
         };
-        let pipeline = |label: &str, vs: &str, topology: wgpu::PrimitiveTopology, buffer: wgpu::VertexBufferLayout<'static>, s: Stencil| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&layout),
-                vertex: wgpu::VertexState {
-                    module: &module,
-                    entry_point: Some(vs),
-                    buffers: &[Some(buffer)],
-                    compilation_options: Default::default(),
-                },
-                primitive: wgpu::PrimitiveState { topology, ..Default::default() },
-                depth_stencil: stencil_state(s),
-                multisample: wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: target.format,
-                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                        write_mask: if s == Stencil::Mask { wgpu::ColorWrites::empty() } else { wgpu::ColorWrites::ALL },
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
+        let pipeline =
+            |label: &str, vs: &str, topology: wgpu::PrimitiveTopology, buffer: wgpu::VertexBufferLayout<'static>, s: Stencil, write: bool| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some(vs),
+                        buffers: &[Some(buffer)],
+                        compilation_options: Default::default(),
+                    },
+                    primitive: wgpu::PrimitiveState { topology, ..Default::default() },
+                    depth_stencil: stencil_state(s, write),
+                    multisample: wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: target.format,
+                            blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                            write_mask: if s == Stencil::Mask { wgpu::ColorWrites::empty() } else { wgpu::ColorWrites::ALL },
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
         use wgpu::PrimitiveTopology::{LineList, TriangleList};
         Resources {
-            line_pipeline: pipeline("cad_lines", "vs_line", LineList, vertex_layout(), Stencil::Off),
-            tri_pipeline: pipeline("cad_fills", "vs_line", TriangleList, vertex_layout(), Stencil::Off),
-            quad_pipeline: pipeline("cad_quads", "vs_quad", TriangleList, instance_layout(), Stencil::Off),
+            line_pipeline: pipeline("cad_lines", "vs_line", LineList, vertex_layout(), Stencil::Off, false),
+            tri_pipeline: pipeline("cad_fills", "vs_line", TriangleList, vertex_layout(), Stencil::Off, false),
+            quad_pipeline: pipeline("cad_quads", "vs_quad", TriangleList, instance_layout(), Stencil::Off, false),
+            face_pipeline: pipeline("cad_faces", "vs_line", TriangleList, vertex_layout(), Stencil::Off, true),
             clipped: target.stencil.map(|_| ClipPipelines {
-                mask: pipeline("cad_clip_mask", "vs_line", TriangleList, vertex_layout(), Stencil::Mask),
-                line: pipeline("cad_clip_lines", "vs_line", LineList, vertex_layout(), Stencil::Inside),
-                tri: pipeline("cad_clip_fills", "vs_line", TriangleList, vertex_layout(), Stencil::Inside),
-                quad: pipeline("cad_clip_quads", "vs_quad", TriangleList, instance_layout(), Stencil::Inside),
+                mask: pipeline("cad_clip_mask", "vs_line", TriangleList, vertex_layout(), Stencil::Mask, false),
+                line: pipeline("cad_clip_lines", "vs_line", LineList, vertex_layout(), Stencil::Inside, false),
+                tri: pipeline("cad_clip_fills", "vs_line", TriangleList, vertex_layout(), Stencil::Inside, false),
+                quad: pipeline("cad_clip_quads", "vs_quad", TriangleList, instance_layout(), Stencil::Inside, false),
+                face: pipeline("cad_clip_faces", "vs_line", TriangleList, vertex_layout(), Stencil::Inside, true),
             }),
+            depth,
             linear_out: target.format.is_srgb(),
             layers: (0..=LAYER_MASK).map(|_| layer()).collect(),
         }
@@ -677,7 +810,8 @@ impl GpuFaults {
 /// Create the canvas pipelines in the renderer's callback resources, and report wgpu errors and
 /// device loss to `faults` instead of panicking. Call once with the app's render state (eframe
 /// `CreationContext::wgpu_render_state`) and the format of its render pass's stencil buffer,
-/// if it has one (eframe `NativeOptions::stencil_buffer`).
+/// if it has one (eframe `NativeOptions::stencil_buffer`; with `depth_buffer` too, the combined
+/// depth-stencil format, which depth-tests shaded 3D views).
 pub fn install(rs: &egui_wgpu::RenderState, faults: &Arc<GpuFaults>, stencil: Option<wgpu::TextureFormat>) -> GpuTarget {
     let f = Arc::clone(faults);
     rs.device.on_uncaptured_error(Arc::new(move |e: wgpu::Error| f.error(e.to_string())));
@@ -686,7 +820,7 @@ pub fn install(rs: &egui_wgpu::RenderState, faults: &Arc<GpuFaults>, stencil: Op
     let target = GpuTarget { format: rs.target_format, stencil: stencil.filter(|s| s.has_stencil_aspect()) };
     let res = Resources::new(&rs.device, target);
     rs.renderer.write().callback_resources.insert(res);
-    log::info!("gpu canvas: target {:?}, stencil {:?}", rs.target_format, target.stencil);
+    log::info!("gpu canvas: target {:?}, depth/stencil {:?}", rs.target_format, target.stencil);
     target
 }
 
@@ -712,6 +846,8 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
                     (res.lines, res.tris, res.quads) = (u.lines, u.tris, u.quads);
                 }
                 res.breaks = m.breaks;
+                res.writes = m.writes;
+                res.edge_lines = m.edge_lines;
                 res.key = Some(self.key);
             }
         }
@@ -741,11 +877,11 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
         // Whole-screen device pixels; egui already set the scissor to the canvas clip rect.
         pass.set_viewport(0.0, 0.0, sw as f32, sh as f32, 0.0, 1.0);
         pass.set_bind_group(0, &res.bind_group, &[]);
-        let (tri, line, quad) = match (self.stencil, &shared.clipped) {
-            (Stencil::Off, _) => (&shared.tri_pipeline, &shared.line_pipeline, &shared.quad_pipeline),
+        let (tri, line, quad, face) = match (self.stencil, &shared.clipped) {
+            (Stencil::Off, _) => (&shared.tri_pipeline, &shared.line_pipeline, &shared.quad_pipeline, &shared.face_pipeline),
             // The outline is all triangles.
-            (Stencil::Mask, Some(c)) => (&c.mask, &c.mask, &c.mask),
-            (Stencil::Inside, Some(c)) => (&c.tri, &c.line, &c.quad),
+            (Stencil::Mask, Some(c)) => (&c.mask, &c.mask, &c.mask, &c.mask),
+            (Stencil::Inside, Some(c)) => (&c.tri, &c.line, &c.quad, &c.face),
             // No stencil buffer: the canvas never asks for these.
             (_, None) => return,
         };
@@ -755,25 +891,64 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
         let mask = self.stencil == Stencil::Mask;
         // Draw-order groups split at each wipeout; without wipeouts there is one group.
         let total = |bs: &[Batch]| bs.iter().map(|b| b.count as usize).sum::<usize>();
-        let all = [total(&res.tris), if mask { 0 } else { total(&res.lines) }, if mask { 0 } else { total(&res.quads) }];
+        // Without a depth buffer the solids' edges at the end of the lines would all show.
+        let lines = total(&res.lines).saturating_sub(if shared.depth { 0 } else { res.edge_lines });
+        let all = [total(&res.tris), if mask { 0 } else { lines }, if mask { 0 } else { total(&res.quads) }];
         let mut from = [0usize; 3];
         for to in res.breaks.iter().copied().chain(std::iter::once(all)) {
-            for (i, (pipeline, batches)) in [(tri, &res.tris), (line, &res.lines), (quad, &res.quads)].into_iter().enumerate() {
-                let parts = batch_ranges(batches.iter().map(|b| b.count), from[i]..to[i]);
-                if parts.is_empty() {
-                    continue;
-                }
-                pass.set_pipeline(pipeline);
-                for (j, r) in parts {
-                    let Some(b) = batches.get(j) else { continue };
-                    pass.set_vertex_buffer(0, b.buffer.slice(..));
-                    // Quads are instanced: six vertices per instance.
-                    if i == 2 { pass.draw(0..6, r) } else { pass.draw(r, 0..1) }
-                }
+            // Fills in runs: faces that write depth and the rest, in drawing order.
+            for (r, write) in write_runs(from[0]..to[0], &res.writes) {
+                draw_range(pass, if write { face } else { tri }, &res.tris, r, false);
             }
+            draw_range(pass, line, &res.lines, from[1]..to[1], false);
+            draw_range(pass, quad, &res.quads, from[2]..to[2], true);
             from = to;
         }
     }
+}
+
+/// Draw `range` of the vertices (or, `instanced`, quad instances) laid end to end in `batches`.
+fn draw_range(
+    pass: &mut wgpu::RenderPass<'static>,
+    pipeline: &wgpu::RenderPipeline,
+    batches: &[Batch],
+    range: std::ops::Range<usize>,
+    instanced: bool,
+) {
+    let parts = batch_ranges(batches.iter().map(|b| b.count), range);
+    if parts.is_empty() {
+        return;
+    }
+    pass.set_pipeline(pipeline);
+    for (j, r) in parts {
+        let Some(b) = batches.get(j) else { continue };
+        pass.set_vertex_buffer(0, b.buffer.slice(..));
+        // Quads are instanced: six vertices per instance.
+        if instanced { pass.draw(0..6, r) } else { pass.draw(r, 0..1) }
+    }
+}
+
+/// `range` of the fill vertices split into runs that write depth (inside one of `writes`, which
+/// are in order) and runs that don't, in order.
+fn write_runs(range: std::ops::Range<usize>, writes: &[std::ops::Range<usize>]) -> Vec<(std::ops::Range<usize>, bool)> {
+    let mut out = Vec::new();
+    let mut at = range.start;
+    let first = writes.partition_point(|w| w.end <= range.start);
+    for w in writes.iter().skip(first).take_while(|w| w.start < range.end) {
+        let (lo, hi) = (w.start.max(at), w.end.min(range.end));
+        if lo >= hi {
+            continue;
+        }
+        if at < lo {
+            out.push((at..lo, false));
+        }
+        out.push((lo..hi, true));
+        at = hi;
+    }
+    if at < range.end {
+        out.push((at..range.end, false));
+    }
+    out
 }
 
 /// For batches holding `counts` vertices (or instances) each: the batch indices and the ranges
@@ -793,6 +968,8 @@ fn batch_ranges(counts: impl IntoIterator<Item = u32>, range: std::ops::Range<us
 }
 
 #[cfg(test)]
+// Vertex ranges as data: one range is a list of one, and a backwards one is hostile input.
+#[allow(clippy::single_range_in_vec_init, clippy::reversed_empty_ranges)]
 mod tests {
     use super::*;
     use cadcraft_doc::Handle;
@@ -894,8 +1071,213 @@ mod tests {
         assert_eq!(&m.lines[0..8], &[0u8; 8]);
         // Colour 7 on a white background inverts to black (display_rgb).
         assert_eq!(&m.lines[8..12], &[0, 0, 0, 255]);
-        let x = f32::from_le_bytes([m.lines[12], m.lines[13], m.lines[14], m.lines[15]]);
-        assert_eq!(x, 1.0);
+        // A list without depths is all at the nearest depth: drawn in order, as in 2D.
+        assert_eq!(f32_at(&m.lines, 12), 0.0);
+        assert_eq!(f32_at(&m.lines, VERTEX_SIZE), 1.0, "the second vertex's x");
+        assert!(m.writes.is_empty() && m.edge_lines == 0);
+    }
+
+    fn f32_at(bytes: &[u8], o: usize) -> f32 {
+        f32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]])
+    }
+
+    /// A shaded 3D view's list: a face sloped both ways (depth 1 + (x - 16) / 16 + (48 - y) / 16,
+    /// 1 to 5), a line across the view behind it (depth 0), a line in front (depth 6), edges on
+    /// the face (its diagonal, and one off the pixel centres, which only the depth bias keeps in
+    /// front of it) and an edge behind it, and a wipeout. Grey lines, black face.
+    fn shaded_list() -> DisplayList {
+        let v = Vec2::new;
+        let (grey, black) = (Rgb(128, 128, 128), Rgb(0, 0, 0));
+        let p = |kind, color, start, len| DPrim { handle: Handle(1), color, aci7: false, lw: 0.0, transparency: 0, kind, start, len };
+        let face = [v(16.0, 16.0), v(48.0, 16.0), v(48.0, 48.0), v(16.0, 16.0), v(48.0, 48.0), v(16.0, 48.0)];
+        let mask = [v(56.0, 56.0), v(60.0, 56.0), v(60.0, 60.0)];
+        let on = |q: Vec2| 1.0 + (q.x - 16.0) / 16.0 + (48.0 - q.y) / 16.0;
+        let verts = [
+            (0.0, 31.5),
+            (64.0, 31.5),
+            (40.5, 0.0),
+            (40.5, 64.0),
+            (16.0, 16.0),
+            (48.0, 48.0),
+            (20.0, 39.7),
+            (44.0, 39.7),
+            (16.0, 27.5),
+            (48.0, 27.5),
+        ]
+        .map(|(x, y)| v(x, y));
+        let behind = |q: Vec2| on(q) - 0.5;
+        let mut l = DisplayList {
+            vert_depth: vec![0.0, 0.0, 6.0, 6.0, on(verts[4]), on(verts[5]), on(verts[6]), on(verts[7]), behind(verts[8]), behind(verts[9])],
+            verts: verts.to_vec(),
+            tri_depth: face.iter().map(|q| on(*q)).chain([2.0; 3]).collect(),
+            tris: face.iter().chain(&mask).copied().collect(),
+            prims: vec![p(Kind::Tris, black, 0, 6), p(Kind::Polyline, grey, 0, 2), p(Kind::Polyline, grey, 2, 2), p(Kind::Mask, black, 6, 3)],
+            faces: vec![0..1],
+            edges: vec![p(Kind::Polyline, grey, 4, 2), p(Kind::Polyline, grey, 6, 2), p(Kind::Polyline, grey, 8, 2)],
+            ..Default::default()
+        };
+        l.bounds = Bounds2::new(v(0.0, 0.0), v(64.0, 64.0));
+        l
+    }
+
+    #[test]
+    fn depths_run_from_the_nearest_and_faces_write() {
+        let l = shaded_list();
+        let m = build_mesh(&l, Vec2::ZERO, Rgb(255, 255, 255), false);
+        // Depths 0..=6 span 0.5..=0 (nearest first).
+        let z = |bytes: &[u8], i: usize| f32_at(bytes, i * VERTEX_SIZE + 12);
+        assert_eq!([z(&m.lines, 0), z(&m.lines, 2)], [0.5, 0.0], "the line behind, the one in front");
+        assert_eq!(z(&m.tris, 0), 0.25, "the face's corner at depth 3");
+        assert!((z(&m.tris, 1) - 1.0 / 12.0).abs() < 1e-7, "the one at depth 5");
+        // The face and the wipeout write depth (one run: they follow each other); the edges
+        // follow the lines.
+        assert_eq!(m.writes, vec![0..9]);
+        assert_eq!(m.breaks, vec![[6, 4, 0]]);
+        assert_eq!((m.line_vertices(), m.edge_lines), (10, 6));
+        // A transparent face only tests depth, like a hatch.
+        let mut t = shaded_list();
+        t.prims[0].transparency = 50;
+        assert_eq!(build_mesh(&t, Vec2::ZERO, Rgb(255, 255, 255), false).writes, vec![6..9]);
+        // Depths that don't match the vertices are dropped: all nearest, nothing written.
+        let mut bad = shaded_list();
+        bad.tri_depth.pop();
+        bad.vert_depth.clear();
+        let m = build_mesh(&bad, Vec2::ZERO, Rgb(255, 255, 255), false);
+        assert!(m.writes.is_empty() && m.edge_lines == 0);
+        assert!((0..m.tri_vertices()).all(|i| z(&m.tris, i) == 0.0));
+        // Wide lines carry the depth of both ends.
+        let mut wide = shaded_list();
+        wide.prims[1].lw = 1.0;
+        let m = build_mesh(&wide, Vec2::ZERO, Rgb(255, 255, 255), true);
+        assert_eq!([f32_at(&m.quads, 28), f32_at(&m.quads, 32)], [0.5, 0.5]);
+    }
+
+    #[test]
+    fn write_runs_split_fills_at_the_faces() {
+        assert_eq!(write_runs(0..10, &[]), vec![(0..10, false)]);
+        assert_eq!(write_runs(0..10, &[2..4, 6..12]), vec![(0..2, false), (2..4, true), (4..6, false), (6..10, true)]);
+        assert_eq!(write_runs(3..5, &[0..4, 4..9]), vec![(3..4, true), (4..5, true)]);
+        assert!(write_runs(4..4, &[0..9]).is_empty());
+        // Hostile ranges (backwards, out of order) draw every vertex once, in order.
+        assert_eq!(write_runs(0..6, &[5..2, 4..6, 1..3]), vec![(0..4, false), (4..6, true)]);
+    }
+
+    /// Render `list` into a white 64 × 64 target with a `format` depth/stencil buffer, one
+    /// world unit per pixel; the sum of each pixel's colour channels, row by row from the top.
+    #[allow(clippy::unwrap_used)]
+    fn render(list: &DisplayList, format: wgpu::TextureFormat) -> Vec<u32> {
+        const SIZE: u32 = 64;
+        let rs = egui_kittest::wgpu::create_render_state(egui_kittest::wgpu::default_wgpu_setup(), Default::default());
+        let faults = Arc::new(GpuFaults::default());
+        install(&rs, &faults, Some(format));
+        let (device, queue) = (&rs.device, &rs.queue);
+        let extent = wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 };
+        let texture = |format, usage| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: extent,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let color = texture(rs.target_format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
+        let ds = texture(format, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        let (color_view, ds_view) = (color.create_view(&Default::default()), ds.create_view(&Default::default()));
+        let slot: MeshSlot = Arc::default();
+        *slot.lock().unwrap() = Some(build_mesh(list, Vec2::ZERO, Rgb(255, 255, 255), false));
+        let cb = CanvasCallback {
+            key: 1,
+            slot,
+            offset: [-32.0, -32.0],
+            scale: 1.0,
+            center: [32.0, 32.0],
+            layer: LAYER_DRAWING,
+            xform: IDENTITY_XFORM,
+            dash: 0.0,
+            stencil: Stencil::Off,
+        };
+        let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [SIZE, SIZE], pixels_per_point: 1.0 };
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let mut renderer = rs.renderer.write();
+        let _ = egui_wgpu::CallbackTrait::prepare(&cb, device, queue, &screen, &mut encoder, &mut renderer.callback_resources);
+        {
+            let mut pass = encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &color_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::WHITE), store: wgpu::StoreOp::Store },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &ds_view,
+                        depth_ops: format
+                            .has_depth_aspect()
+                            .then_some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
+                        stencil_ops: format
+                            .has_stencil_aspect()
+                            .then_some(wgpu::Operations { load: wgpu::LoadOp::Clear(0), store: wgpu::StoreOp::Discard }),
+                    }),
+                    ..Default::default()
+                })
+                .forget_lifetime();
+            let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE as f32, SIZE as f32));
+            let info = egui::PaintCallbackInfo { viewport: rect, clip_rect: rect, pixels_per_point: 1.0, screen_size_px: [SIZE, SIZE] };
+            egui_wgpu::CallbackTrait::paint(&cb, info, &mut pass, &renderer.callback_resources);
+        }
+        let row = SIZE * 4;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(row * SIZE),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            color.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(SIZE) },
+            },
+            extent,
+        );
+        queue.submit([encoder.finish()]);
+        buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_secs(10)) }).unwrap();
+        let px: Vec<u32> =
+            buffer.slice(..).get_mapped_range().unwrap().chunks(4).map(|p| u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])).collect();
+        assert_eq!(faults.take(), None, "wgpu reported nothing");
+        px
+    }
+
+    #[test]
+    fn depth_buffer_hides_what_is_behind_shaded_faces() {
+        // Screen (x, y) is world (x, 64 - y); 0 = black (the face), about 384 = grey (a line),
+        // 765 = white.
+        let at = |px: &[u32], x: usize, y: usize| px[y * 64 + x];
+        let (black, grey, white) = (|v: u32| v < 100, |v: u32| (200..600).contains(&v), |v: u32| v > 700);
+        let px = render(&shaded_list(), wgpu::TextureFormat::Depth24PlusStencil8);
+        assert!(grey(at(&px, 8, 32)) && black(at(&px, 24, 32)), "the line behind the face is hidden by it");
+        assert!(grey(at(&px, 40, 8)) && grey(at(&px, 40, 20)), "the line in front shows over the face");
+        // The edges on the sloped face show all along them; the one behind it stays hidden.
+        for x in [20, 26, 32, 38, 44] {
+            let y = 64 - x;
+            assert!(grey(at(&px, x, y)) || grey(at(&px, x, y - 1)) || grey(at(&px, x, y + 1)), "diagonal edge at {x}");
+        }
+        // World y 39.7 is screen row 24, whose pixel centres lie 0.2 units up the slope, where
+        // the face is nearer than the edge: shown only thanks to the bias.
+        for x in [22, 28, 34] {
+            assert!(grey(at(&px, x, 24)), "edge off the pixel centres at {x}: {}", at(&px, x, 24));
+        }
+        assert!(black(at(&px, 24, 36)) && black(at(&px, 30, 36)), "the hidden edge");
+        assert!(white(at(&px, 4, 4)));
+        // Without a depth buffer: drawing order as before (lines over fills), no edges.
+        let px = render(&shaded_list(), wgpu::TextureFormat::Stencil8);
+        assert!(grey(at(&px, 24, 32)), "the line draws over the face");
+        assert!(black(at(&px, 30, 36)) && black(at(&px, 28, 24)) && black(at(&px, 26, 38)), "no edges");
     }
 
     #[test]
