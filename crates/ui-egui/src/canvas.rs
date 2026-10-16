@@ -2973,7 +2973,7 @@ pub(crate) mod tests {
         let g = cadcraft_geom::Vec3::new;
         let mesh =
             cadcraft_geom::Mesh3 { verts: Vec::new(), tris: Vec::new(), edges: vec![vec![g(0.0, 0.0, 20.0), g(10.0, 0.0, 20.0)]], open: false };
-        let s = cadcraft_doc::Solid3d { brep: "".into(), mesh: std::sync::Arc::new(mesh), xform: cadcraft_geom::Mat4::IDENTITY };
+        let s = cadcraft_doc::Solid3d { brep: "".into(), mesh: std::sync::Arc::new(mesh), xform: cadcraft_geom::Mat4::IDENTITY, ..Default::default() };
         let d = app.session.doc_mut().unwrap();
         d.add(&cadcraft_doc::Space::Model, cadcraft_doc::Common::default(), cadcraft_doc::EntityKind::Solid3d(s)).unwrap()
     }
@@ -2993,7 +2993,7 @@ pub(crate) mod tests {
         let mut xform = cadcraft_geom::Mat4::IDENTITY;
         xform.m[2][3] = 5.0;
         let mesh = cadcraft_geom::Mesh3 { verts: Vec::new(), tris: Vec::new(), edges, open: false };
-        cadcraft_doc::Solid3d { brep: "".into(), mesh: std::sync::Arc::new(mesh), xform }
+        cadcraft_doc::Solid3d { brep: "".into(), mesh: std::sync::Arc::new(mesh), xform, ..Default::default() }
     }
 
     /// The app looking along `dir` at world point `at`, 60 units high on screen, LINE asking for

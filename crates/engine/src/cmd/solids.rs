@@ -92,7 +92,7 @@ pub(super) fn kernel(e: cadcraft_kernel::KernelError) -> EngineError {
 }
 
 pub(super) fn solid(b: Built) -> EntityKind {
-    EntityKind::Solid3d(Solid3d { brep: Arc::from(b.brep), mesh: Arc::new(b.mesh), xform: Mat4::IDENTITY })
+    EntityKind::Solid3d(Solid3d { brep: Arc::from(b.brep), mesh: Arc::new(b.mesh), xform: Mat4::IDENTITY, ..Default::default() })
 }
 
 pub(super) fn add(s: &mut Session, b: Built) -> Result<Value> {
@@ -520,7 +520,7 @@ pub(crate) fn subtract(s: &mut Session, from: &[Handle], remove: &[Handle]) -> R
 
 fn combine(a: &Solid3d, b: &Solid3d, op: BoolOp) -> Result<Solid3d> {
     let r = cadcraft_kernel::boolean(op, placed(a), placed(b)).map_err(kernel)?;
-    Ok(Solid3d { brep: Arc::from(r.brep), mesh: Arc::new(r.mesh), xform: Mat4::IDENTITY })
+    Ok(Solid3d { brep: Arc::from(r.brep), mesh: Arc::new(r.mesh), xform: Mat4::IDENTITY, ..Default::default() })
 }
 
 fn finish(s: &mut Session, keep: Handle, r: Solid3d, all: &[Handle]) -> Result<Option<Value>> {

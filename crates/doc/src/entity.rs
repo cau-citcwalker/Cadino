@@ -961,7 +961,7 @@ fn default_text_h() -> f64 {
 mod region;
 pub use region::*;
 mod solid3d;
-pub use solid3d::Solid3d;
+pub use solid3d::{Part, Solid3d};
 
 /// A raw DXF group: kept for round-tripping entities we do not model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

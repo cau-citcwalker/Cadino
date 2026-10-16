@@ -32,6 +32,8 @@ mod pline_opts;
 pub mod plotters;
 mod props;
 pub use props::MatchProps;
+mod exchange3d;
+mod furniture;
 mod qselect;
 mod selecttools;
 mod settings;
@@ -181,6 +183,8 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(view::specs());
         v.extend(view3d::specs());
         v.extend(solids::specs());
+        v.extend(exchange3d::specs());
+        v.extend(furniture::specs());
         v.extend(solids2::specs());
         v.extend(draw::specs());
         v.extend(draw2::specs());
@@ -228,8 +232,34 @@ pub fn resolve_alias(name: &str) -> String {
     if let Some(id) = file::user_alias(&l) {
         return id;
     }
-    command_specs().iter().find(|c| c.aliases.iter().any(|a| a.eq_ignore_ascii_case(&l))).map(|c| c.id.to_string()).unwrap_or(l)
+    if let Some(c) = command_specs().iter().find(|c| c.aliases.iter().any(|a| a.eq_ignore_ascii_case(&l))) {
+        return c.id.to_string();
+    }
+    // Rhino's command names, so 3D work reads as it does there.
+    RHINO_NAMES.iter().find(|(r, _)| *r == l).map(|(_, id)| (*id).to_string()).filter(|id| find_command(id).is_some()).unwrap_or(l)
 }
+
+/// Rhino command names → ours.
+const RHINO_NAMES: &[(&str, &str)] = &[
+    ("extrudecrv", "extrude"),
+    ("extrudesrf", "extrude"),
+    ("booleanunion", "union"),
+    ("booleandifference", "subtract"),
+    ("booleanintersection", "intersect"),
+    ("booleansplit", "slice"),
+    ("sweep1", "sweep"),
+    ("planarsrf", "planesurf"),
+    ("polyline", "pline"),
+    ("curve", "spline"),
+    ("interpcrv", "spline"),
+    ("rectangle", "rectang"),
+    ("setview", "vpoint"),
+    ("rotate3d", "3drotate"),
+    ("selall", "ai_selall"),
+    ("filletedges", "filletedge"),
+    ("chamferedges", "chamferedge"),
+    ("4view", "viewports.rhino"),
+];
 
 // ---------- param helpers ----------
 
@@ -312,4 +342,20 @@ pub(crate) fn targets(s: &Session, p: &Value) -> Result<Vec<Handle>> {
 }
 pub(crate) fn ok() -> Result<Value> {
     Ok(Value::Null)
+}
+
+#[cfg(test)]
+mod rhino_name_tests {
+    use super::resolve_alias;
+
+    #[test]
+    fn rhino_names_reach_our_commands() {
+        assert_eq!(resolve_alias("BooleanDifference"), "subtract");
+        assert_eq!(resolve_alias("ExtrudeCrv"), "extrude");
+        assert_eq!(resolve_alias("PlanarSrf"), "planesurf");
+        // Ours and AutoCAD's names come first.
+        assert_eq!(resolve_alias("box"), "box");
+        // A Rhino name whose command doesn't exist yet stays as typed.
+        assert!(super::find_command(&resolve_alias("Rotate3D")).is_none() || resolve_alias("Rotate3D") == "3drotate");
+    }
 }

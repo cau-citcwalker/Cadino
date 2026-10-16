@@ -16,6 +16,8 @@ use cadcraft_geom::{Mat4, Mesh3};
 use crate::dxf_ext::{APP, MAX_PAYLOAD, xdata};
 
 const MARK: &str = "SOLID3D";
+/// Before a solid's part name and material in its xdata.
+const PART: &str = "PART";
 /// Named-object-dictionary key of a solid's B-rep XRECORD, before the solid's handle (hex).
 pub(crate) const KEY: &str = "CADCRAFT_BREP_";
 /// Longest string written in one group.
@@ -30,6 +32,18 @@ pub(crate) fn tags(s: &Solid3d, target: Version) -> Vec<Tag> {
     }
     out.extend([Tag::s(1001, APP), Tag::s(1000, MARK)]);
     out.extend(s.xform.m.iter().flatten().map(|v| Tag::f(1040, *v)));
+    if !s.part.is_empty() {
+        // xdata strings hold 255 bytes at most.
+        let cut = |t: &str| {
+            t.chars()
+                .scan(0usize, |n, c| {
+                    *n += c.len_utf8();
+                    (*n <= 250).then_some(c)
+                })
+                .collect::<String>()
+        };
+        out.extend([Tag::s(1000, PART), Tag::s(1000, cut(&s.part.name)), Tag::s(1000, cut(&s.part.material))]);
+    }
     out
 }
 
@@ -114,7 +128,15 @@ pub(crate) fn read(tags: &[Tag]) -> Option<EntityKind> {
     // A DWG converted back to DXF has an empty line of modeler data. The mesh comes later
     // ([`mesh_all`]).
     let brep = if brep.trim().is_empty() { String::new() } else { brep };
-    Some(EntityKind::Solid3d(Solid3d { brep: Arc::from(brep), mesh: Arc::new(Mesh3::default()), xform }))
+    let part = x
+        .iter()
+        .position(|t| t.code == 1000 && t.str().trim() == PART)
+        .map(|i| {
+            let s = |k: usize| x.get(i + k).filter(|t| t.code == 1000).map(Tag::str).unwrap_or_default();
+            cadcraft_doc::Part { name: s(1), material: s(2) }
+        })
+        .unwrap_or_default();
+    Some(EntityKind::Solid3d(Solid3d { brep: Arc::from(brep), mesh: Arc::new(Mesh3::default()), xform, part }))
 }
 
 /// Give a solid read without its B-rep the one in its XRECORD (`breps`: solid handle → the
@@ -145,7 +167,8 @@ mod tests {
     }
 
     fn drawing(brep: &str) -> (Drawing, Solid3d) {
-        let mut s = Solid3d { brep: Arc::from(brep), ..Default::default() };
+        let part = cadcraft_doc::Part { name: "측판 Side".into(), material: "Birch plywood 18".into() };
+        let mut s = Solid3d { brep: Arc::from(brep), part, ..Default::default() };
         s.transform(&Mat3::rotate_about(Vec2::new(1.0, 2.0), 0.5));
         let mut d = Drawing::default();
         d.add(&Space::Model, Default::default(), EntityKind::Solid3d(s.clone())).unwrap();
@@ -173,6 +196,7 @@ mod tests {
         let got = solid(&back);
         assert_eq!(&*got.brep, brep().as_str());
         assert_eq!(got.xform, s.xform);
+        assert_eq!(got.part, s.part, "the part's name and material");
         // Saved again, the record is written once (not also kept as another program's).
         assert_eq!(crate::write_dxf(&back).matches(KEY).count(), 1);
     }

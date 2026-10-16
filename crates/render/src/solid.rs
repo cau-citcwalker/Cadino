@@ -171,7 +171,7 @@ mod tests {
     use crate::{Kind, Options, build};
 
     fn solid(verts: Vec<Vec3>, tris: Vec<[u32; 3]>, edges: Vec<Vec<Vec3>>) -> Solid3d {
-        Solid3d { brep: Arc::from(""), mesh: Arc::new(Mesh3 { verts, tris, edges, open: false }), xform: Default::default() }
+        Solid3d { brep: Arc::from(""), mesh: Arc::new(Mesh3 { verts, tris, edges, open: false }), ..Default::default() }
     }
 
     /// A unit cube's 12 edges and 12 outward triangles, each face with its own corners as the

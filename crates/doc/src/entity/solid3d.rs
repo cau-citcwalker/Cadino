@@ -18,6 +18,22 @@ pub struct Solid3d {
     /// Model → world.
     #[serde(default)]
     pub xform: Mat4,
+    /// What the solid is as a furniture part (cut lists); empty when not set.
+    #[serde(default)]
+    pub part: Part,
+}
+
+/// A part's name and material (for example "Side panel", "Birch plywood 18").
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Part {
+    pub name: String,
+    pub material: String,
+}
+
+impl Part {
+    pub fn is_empty(&self) -> bool {
+        self.name.is_empty() && self.material.is_empty()
+    }
 }
 
 impl Solid3d {
