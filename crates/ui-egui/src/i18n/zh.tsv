@@ -1131,3 +1131,14 @@
 	SW Isometric	西南等轴测
 	Shaded	着色
 	Top	俯视
+	Wedge	楔体
+	Slice	剖切
+	Shell	抽壳
+	Chamfer Edge	倒角边
+	Chamfer Edges	倒角边
+	Fillet Edge	圆角边
+	Fillet Edges	圆角边
+	Planar Surface	平面曲面
+	Planar	平面
+	Surfaces	曲面
+	Shaded with Edges	带边着色

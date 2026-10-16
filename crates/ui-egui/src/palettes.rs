@@ -278,13 +278,19 @@ pub const MODELING: &[(&str, &[Tool], &[Tool])] = &[
     (
         "Primitives",
         &[(Icon::Blocks, "box", "Box"), (Icon::Circle, "cylinder", "Cylinder"), (Icon::Polygon, "pyramid", "Pyramid")],
-        &[(Icon::Ellipse, "sphere", "Sphere"), (Icon::Donut, "torus", "Torus"), (Icon::Arc, "cone", "Cone")],
+        &[(Icon::Ellipse, "sphere", "Sphere"), (Icon::Donut, "torus", "Torus"), (Icon::Arc, "cone", "Cone"), (Icon::Wedge, "wedge", "Wedge")],
     ),
     (
         "Solid",
         &[(Icon::Extend, "extrude", "Extrude"), (Icon::Rotate, "revolve", "Revolve")],
         &[(Icon::Spline, "sweep", "Sweep"), (Icon::Offset, "loft", "Loft")],
     ),
+    (
+        "Solid Editing",
+        &[(Icon::Slice, "slice", "Slice"), (Icon::Shell, "shell", "Shell")],
+        &[(Icon::ChamferEdge, "chamferedge", "Chamfer Edge"), (Icon::Fillet, "filletedge", "Fillet Edge")],
+    ),
+    ("Surfaces", &[(Icon::PlaneSurf, "planesurf", "Planar Surface")], &[]),
     ("Boolean", &[(Icon::Join, "union", "Union"), (Icon::Trim, "subtract", "Subtract"), (Icon::Region, "intersect", "Intersect")], &[]),
     ("View", &[(Icon::Orbit, "3dorbit", "Orbit"), (Icon::ZoomExtents, "zoom.extents", "Zoom Extents")], &[]),
 ];
@@ -1096,5 +1102,31 @@ pub(crate) fn properties_section(app: &mut CadApp, ui: &mut egui::Ui) {
     report_bad(app, bad);
     if let Some(p) = custom_set {
         let _ = app.run("blocks.reference.set", p);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Modeling tool set runs commands that exist, its solid and surface commands among them,
+    /// and every button's icon draws something.
+    #[test]
+    fn modeling_tools_run_known_commands_and_draw_their_icons() {
+        let tools: Vec<Tool> = MODELING.iter().flat_map(|(_, large, small)| large.iter().chain(*small).copied()).collect();
+        for (_, cmd, _) in &tools {
+            assert!(command_known(cmd), "{cmd}");
+        }
+        for cmd in ["wedge", "pyramid", "sweep", "loft", "slice", "shell", "chamferedge", "planesurf"] {
+            assert!(tools.iter().any(|(_, c, _)| *c == cmd), "{cmd}");
+        }
+        let ctx = egui::Context::default();
+        for (icon, cmd, _) in tools {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                icons::paint(ui.painter(), Rect::from_min_size(pos2(0.0, 0.0), vec2(24.0, 24.0)), icon, false)
+            });
+            out.textures_delta.clear();
+            assert!(!out.shapes.is_empty(), "{cmd}");
+        }
     }
 }

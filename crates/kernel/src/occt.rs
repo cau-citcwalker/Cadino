@@ -5,7 +5,7 @@
 //! these functions in a worker process (see `worker`).
 
 use std::collections::hash_map::RandomState;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::hash::BuildHasher;
 use std::io::Write;
@@ -18,7 +18,7 @@ use opencascade::bounding_box;
 use opencascade::mesh::Mesher;
 use opencascade::primitives::{Compound, Edge, Face, Shape, ShapeType, Shell, Solid, Wire};
 
-use crate::curve::{Run, closed};
+use crate::curve::{Cut, Run, closed, unit};
 use crate::{BoolOp, Built, Curve, KernelError, Placed, Primitive, Result, Seg, similarity};
 
 fn dv(p: Vec3) -> DVec3 {
@@ -78,30 +78,48 @@ fn pyramid(base: Vec3, sides: u32, r: f64, rt: f64, h: f64) -> Shape {
         let t = if rt == 0.0 { base + Vec3::new(0.0, 0.0, h) } else { corner(rt, k, h) };
         let out = (q - p).cross(t - p);
         let out = if out.dot(inside - p) > 0.0 { -out } else { out };
-        s = s.subtract(&half_space(&s, p, out)).into();
+        s = s.subtract(&half_space(p, out, holding(&s, p))).into();
     }
     s
 }
 
-/// The half-space on `n`'s side of the plane through `p`: a box large enough to hold `s`.
-fn half_space(s: &Shape, p: Vec3, n: Vec3) -> Shape {
-    let size = match bounds(s) {
+/// How far from `p` a [`half_space`] must reach to take in all of `s`.
+fn holding(s: &Shape, p: Vec3) -> f64 {
+    match bounds(s) {
         Some((lo, hi)) => 2.0 * (v3((lo + hi) * 0.5) - p).len() + 2.0 * (hi - lo).length(),
-        None => 0.0,
+        None => 1e-3,
     }
-    .max(1e-3);
-    let b = Shape::box_from_corners(dvec3(-size, -size, 0.0), dvec3(size, size, size));
-    let n = n * (1.0 / n.len());
-    // Turn its bottom face (on the XY plane, facing +Z inside) square to n.
+}
+
+/// The half-space on `n`'s side of the plane through `p`, as far as `size` from `p` across the
+/// plane and along `n`: a box, so it takes in everything on that side within `size` of `p`.
+fn half_space(p: Vec3, n: Vec3, size: f64) -> Shape {
+    let size = if size.is_finite() { size.max(1e-6) } else { 1e-3 };
+    // Its bottom face (on the XY plane, facing +Z inside) turned square to n.
+    turned(Shape::box_from_corners(dvec3(-size, -size, 0.0), dvec3(size, size, size)), n).translated(dv(p))
+}
+
+/// The shape turned about the origin so that +Z points along `n`.
+fn turned(b: Shape, n: Vec3) -> Shape {
+    let Some(n) = unit(n) else { return b };
     let axis = Vec3::Z.cross(n);
-    let b = if axis.len() > 1e-12 {
+    if axis.len() > 1e-12 {
         b.rotated(dv(axis), n.z.clamp(-1.0, 1.0).acos())
     } else if n.z < 0.0 {
         b.rotated(DVec3::X, PI)
     } else {
         b
-    };
-    b.translated(dv(p))
+    }
+}
+
+/// What a sweep stretch loses at a corner: past the mitre plane, only where the stretch
+/// overshoots the corner. That is a box along the stretch from just before the corner (its inner
+/// side pokes past the plane there, at most reach × tan(turn / 2) back) to the end of its
+/// extension, and two profile reaches either side of the path.
+fn cutter(c: &Cut) -> Shape {
+    let (w, back, on) = (2.0 * c.reach, c.past, c.past + c.reach);
+    let b = turned(Shape::box_from_corners(dvec3(-w, -w, -back), dvec3(w, w, on)), c.along).translated(dv(c.at));
+    b.intersect(&half_space(c.at, c.normal, 2.0 * (w + back + on))).into()
 }
 
 fn edge(s: &Seg) -> Edge {
@@ -154,6 +172,8 @@ fn join(pieces: Vec<Shape>, solid: bool) -> Shape {
     it.fold(first, |acc, p| acc.union(&p).into())
 }
 
+/// ponytail: a ruled loft of more than two sections is pairwise lofts fused, with a crease at
+/// each inner section (as AutoCAD's Ruled); one ruled loft call if the bindings expose it.
 pub fn loft(sections: &[Curve], ruled: bool) -> Result<Built> {
     let wires: Vec<Wire> = sections.iter().map(wire).collect();
     let solid = sections.iter().all(Curve::is_closed);
@@ -169,9 +189,8 @@ pub fn sweep(runs: &[Run], solid: bool) -> Result<Built> {
         let path = wire(&r.path);
         let mut s: Shape =
             if solid { Face::from_wire(&wire(&r.profile)).sweep_along(&path).into() } else { wire(&r.profile).sweep_along(&path).into() };
-        for (p, n) in &r.cuts {
-            let cut = half_space(&s, *p, *n);
-            s = s.subtract(&cut).into();
+        for c in &r.cuts {
+            s = s.subtract(&cutter(c)).into();
         }
         pieces.push(s);
     }
@@ -193,7 +212,7 @@ pub fn boolean(op: BoolOp, a: Placed, b: Placed) -> Result<Built> {
 
 pub fn slice(s: Placed, origin: Vec3, normal: Vec3) -> Result<Vec<Option<Built>>> {
     let shape = placed(s)?;
-    let h = half_space(&shape, origin, normal);
+    let h = half_space(origin, normal, holding(&shape, origin));
     let piece = |r: Shape| if r.faces().next().is_none() { Ok(None) } else { built(r).map(Some) };
     Ok(vec![piece(shape.intersect(&h).into())?, piece(shape.subtract(&h).into())?])
 }
@@ -402,18 +421,24 @@ fn mesh(shape: &Shape) -> Result<Mesh3> {
             }
         }
     }
-    out.edges = chain(&segs, key);
+    // Each polyline is one B-rep edge: chains stop at the shape's vertices.
+    let corners: HashSet<_> = shape.edges().flat_map(|e| [key(v3(e.start_point())), key(v3(e.end_point()))]).collect();
+    out.edges = chain(&segs, key, &corners);
     out.open = !matches!(shape.shape_type(), ShapeType::Solid | ShapeType::CompoundSolid) && shared.values().any(|n| n % 2 == 1);
     Ok(out)
 }
 
-/// Join segments that share end points into polylines.
-fn chain<K: std::hash::Hash + Eq + Copy>(segs: &[(Vec3, Vec3)], key: impl Fn(Vec3) -> K) -> Vec<Vec<Vec3>> {
+/// Join segments that share end points into polylines, one per B-rep edge: a chain runs on only
+/// through a point exactly two segments meet at that is not one of the `corners` (the shape's
+/// vertices), so it ends where edges meet (three at a box corner, two at a flat face's corner) and
+/// a closed edge (a circle) is a closed polyline from its vertex round to it.
+fn chain<K: std::hash::Hash + Eq + Copy>(segs: &[(Vec3, Vec3)], key: impl Fn(Vec3) -> K, corners: &HashSet<K>) -> Vec<Vec<Vec3>> {
     let mut at: HashMap<K, Vec<usize>> = HashMap::new();
     for (i, (a, b)) in segs.iter().enumerate() {
         at.entry(key(*a)).or_default().push(i);
         at.entry(key(*b)).or_default().push(i);
     }
+    let through = |k: &K| !corners.contains(k) && at.get(k).is_some_and(|v| v.len() == 2);
     let mut used = vec![false; segs.len()];
     let mut out = Vec::new();
     for (i, (a, b)) in segs.iter().enumerate() {
@@ -427,6 +452,9 @@ fn chain<K: std::hash::Hash + Eq + Copy>(segs: &[(Vec3, Vec3)], key: impl Fn(Vec
         for forward in [true, false] {
             while let Some(end) = (if forward { line.back() } else { line.front() }).copied() {
                 let k = key(end);
+                if !through(&k) {
+                    break;
+                }
                 let next = at.get(&k).and_then(|v| v.iter().copied().find(|j| !used.get(*j).copied().unwrap_or(true)));
                 let Some(j) = next else { break };
                 if let Some(u) = used.get_mut(j) {
@@ -524,6 +552,33 @@ mod tests {
     }
 
     #[test]
+    fn edges_are_one_polyline_per_brep_edge() {
+        let b = primitive(&Primitive::Box { a: Vec3::ZERO, b: Vec3::new(10.0, 20.0, 30.0) }).unwrap();
+        assert_eq!(b.mesh.edges.len(), 12, "{:?}", b.mesh.edges);
+        assert!(b.mesh.edges.iter().all(|e| e.len() == 2), "{:?}", b.mesh.edges);
+        // A cylinder's circles are closed polylines of their own, apart from its seam.
+        let c = primitive(&Primitive::Cylinder { base: Vec3::ZERO, radius: 3.0, height: 5.0 }).unwrap();
+        let circles: Vec<&Vec<Vec3>> = c.mesh.edges.iter().filter(|e| e.len() > 2).collect();
+        assert_eq!(circles.len(), 2, "{:?}", c.mesh.edges);
+        for e in circles {
+            assert!(e.first() == e.last(), "closed: {e:?}");
+            assert!(e.iter().all(|p| (p.z - e[0].z).abs() < 1e-9 && (p.xy().len() - 3.0).abs() < 1e-6), "{e:?}");
+        }
+        // A flat rectangle's corners join only two segments: still four edges, not one loop.
+        let pts = [Vec3::ZERO, Vec3::new(4.0, 0.0, 0.0), Vec3::new(4.0, 2.0, 0.0), Vec3::new(0.0, 2.0, 0.0)];
+        let rect: Vec<Seg> = (0..4).map(|i| Seg::Line { a: pts[i], b: pts[(i + 1) % 4] }).collect();
+        assert_eq!(plane_surface(&rect).unwrap().mesh.edges.len(), 4);
+        // Chained by hand: a junction of three ends every chain there; so does a corner.
+        let key = |p: Vec3| ((p.x * 1e6).round() as i64, (p.y * 1e6).round() as i64, (p.z * 1e6).round() as i64);
+        let v = |x: f64, y: f64| Vec3::new(x, y, 0.0);
+        let t = [(v(0.0, 0.0), v(1.0, 0.0)), (v(1.0, 0.0), v(2.0, 0.0)), (v(1.0, 1.0), v(1.0, 0.0))];
+        assert_eq!(chain(&t, key, &HashSet::new()).len(), 3);
+        let bend = [(v(0.0, 0.0), v(1.0, 0.0)), (v(1.0, 0.0), v(1.0, 1.0)), (v(1.0, 1.0), v(2.0, 1.0))];
+        assert_eq!(chain(&bend, key, &HashSet::new()), vec![vec![v(0.0, 0.0), v(1.0, 0.0), v(1.0, 1.0), v(2.0, 1.0)]]);
+        assert_eq!(chain(&bend, key, &HashSet::from([key(v(1.0, 0.0))])).len(), 2);
+    }
+
+    #[test]
     fn extrude_circle_profile() {
         let b = extrude(&[Seg::Circle { center: Vec3::ZERO, radius: 2.0, normal: Vec3::Z }], Vec3::new(0.0, 0.0, 5.0)).unwrap();
         assert!(b.mesh.tris.len() > 20);
@@ -570,6 +625,11 @@ mod modelling_tests {
 
     fn line(a: Vec3, b: Vec3) -> Curve {
         Curve::Segs(vec![Seg::Line { a, b }])
+    }
+
+    /// The volume a closed mesh encloses.
+    fn volume(m: &Mesh3) -> f64 {
+        m.tris.iter().filter_map(|t| m.tri(t)).map(|[a, b, c]| a.dot(b.cross(c)) / 6.0).sum::<f64>().abs()
     }
 
     #[test]
@@ -677,6 +737,50 @@ mod modelling_tests {
         assert!(wall.mesh.open);
         let (lo, hi) = bounds(&wall.mesh);
         assert!(near(lo, v(0.0, 0.0, -1.0), 1e-6) && near(hi, v(10.0, 10.0, 1.0), 1e-6), "{lo:?} {hi:?}");
+    }
+
+    #[test]
+    fn sweep_mitres_trim_only_near_their_corners() {
+        use std::f64::consts::PI;
+        // A mitred tube holds its profile's area (a unit square here) times the path's length.
+        let check = |path: Curve, len: f64| {
+            let s = crate::sweep(&Curve::Segs(square(0.5, 0.0)), &path).unwrap();
+            assert!(!s.mesh.open);
+            let vol = volume(&s.mesh);
+            assert!((vol / len - 1.0).abs() < 0.01, "volume {vol}, expected {len}");
+            s
+        };
+        // A slot: along X, a half circle, back along -X and down to the start. Each long side
+        // runs back across the mitre plane of a corner 4 away, which must not trim it there.
+        check(
+            Curve::Segs(vec![
+                Seg::Line { a: v(0.0, 0.0, 0.0), b: v(10.0, 0.0, 0.0) },
+                Seg::Arc { a: v(10.0, 0.0, 0.0), mid: v(12.0, 2.0, 0.0), b: v(10.0, 4.0, 0.0) },
+                Seg::Line { a: v(10.0, 4.0, 0.0), b: v(0.0, 4.0, 0.0) },
+                Seg::Line { a: v(0.0, 4.0, 0.0), b: v(0.0, 0.0, 0.0) },
+            ]),
+            24.0 + 2.0 * PI,
+        );
+        // A D: up the Y axis and a half circle back; the arc lies across both corners' mitres.
+        check(
+            Curve::Segs(vec![
+                Seg::Line { a: v(0.0, 0.0, 0.0), b: v(0.0, 10.0, 0.0) },
+                Seg::Arc { a: v(0.0, 10.0, 0.0), mid: v(5.0, 5.0, 0.0), b: v(0.0, 0.0, 0.0) },
+            ]),
+            10.0 + 5.0 * PI,
+        );
+        // Line, quarter bend, line, corner, line (the engine's test path): the start stays square,
+        // though its corner at (0, 0.5) is across the last corner's mitre plane (y = x).
+        let bent = check(
+            Curve::Segs(vec![
+                Seg::Line { a: v(0.0, 0.0, 0.0), b: v(10.0, 0.0, 0.0) },
+                Seg::Arc { a: v(10.0, 0.0, 0.0), mid: v(10.0 + 5.0 * 0.5_f64.sqrt(), 5.0 - 5.0 * 0.5_f64.sqrt(), 0.0), b: v(15.0, 5.0, 0.0) },
+                Seg::Line { a: v(15.0, 5.0, 0.0), b: v(15.0, 15.0, 0.0) },
+                Seg::Line { a: v(15.0, 15.0, 0.0), b: v(5.0, 15.0, 0.0) },
+            ]),
+            30.0 + 2.5 * PI,
+        );
+        assert!(bent.mesh.verts.iter().any(|p| near(*p, v(0.0, 0.5, 0.5), 1e-6)), "{:?}", bounds(&bent.mesh));
     }
 
     #[test]

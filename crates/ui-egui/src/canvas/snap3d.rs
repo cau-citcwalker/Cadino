@@ -23,7 +23,11 @@ const ROUND: f64 = 1e-4;
 
 /// The snap points of solid `s` in the world for snap modes `modes`, with their mode: the ends of
 /// its edges, the points halfway along open edges, and the centres of closed edges that are
-/// circles.
+/// circles. Each polyline of `mesh.edges` is one B-rep edge (the kernel's tessellation emits them
+/// so).
+/// ponytail: END, MID and CEN only; CEN only for whole circles (an arc edge has no centre) and a
+/// closed edge has no midpoint; add arc centres (and QUA, PER …) from the B-rep's curves when
+/// users ask.
 pub(super) fn candidates(s: &Solid3d, modes: u32) -> Vec<(Vec3, u32)> {
     let mut out = Vec::new();
     for e in &s.mesh.edges {
@@ -110,8 +114,12 @@ pub(super) fn screen_of(xf: &Xf, p: Vec3) -> Pos2 {
 /// references aren't snapped to.
 pub(super) fn nearest(doc: &Drawing, space: &Space, xf: &Xf, at: Pos2, aperture: f64, modes: u32) -> Option<(Vec3, u32)> {
     let mut best: Option<(f64, f64, Vec3, u32)> = None;
-    for e in doc.space(space)?.iter().filter(|e| doc.is_visible(e)) {
+    for e in doc.space(space)?.iter() {
+        // The kind first: the visibility check looks the layer up by name.
         let EntityKind::Solid3d(s) = &e.kind else { continue };
+        if !doc.is_visible(e) {
+            continue;
+        }
         for (p, m) in candidates(s, modes) {
             let (d, depth) = (f64::from(screen_of(xf, p).distance(at)), xf.dir.depth(p));
             if d <= aperture && best.is_none_or(|(bd, bz, ..)| d < bd || (d == bd && depth > bz)) {
@@ -125,11 +133,15 @@ pub(super) fn nearest(doc: &Drawing, space: &Space, xf: &Xf, at: Pos2, aperture:
 /// In a 3D view at a point prompt, snap the cursor at screen point `at` to the solids (see
 /// [`nearest`]) with the running object snaps or the override: a snap nearer on screen than the
 /// engine's plan one replaces it, its height in `canvas.snap_z`. Plan views keep the engine's
-/// snaps.
+/// snaps, and so does Tab cycling when it picked a candidate.
+/// ponytail: Tab cycles only the engine's (plan) candidates, not these; add the solids' points to
+/// the cycle if users want to Tab through them.
 pub(super) fn apply(app: &mut CadApp, xf: &Xf, at: Pos2) {
     app.canvas.snap_z = None;
     let wants_point = app.session.current_prompt().is_some_and(|p| cadcraft_engine::pointmod::accepts(&p));
-    if xf.is_plan() || !wants_point || app.session.pending_window.is_some() {
+    // Tab cycling keeps the engine candidate it picked; with none near, the solids still snap.
+    let cycled = app.canvas.snap_cycle.is_some() && app.canvas.snap.is_some();
+    if xf.is_plan() || !wants_point || app.session.pending_window.is_some() || cycled {
         return;
     }
     let osmode = app.session.snap_override().unwrap_or(app.session.settings.osmode);
@@ -157,6 +169,8 @@ pub(super) fn apply(app: &mut CadApp, xf: &Xf, at: Pos2) {
 
 /// Give the prompt the point the cursor is on: its snap, else `p`. A 3D snap's height goes with
 /// it in [`cadcraft_engine::Session::point_z`]; every other point is on the XY plane.
+/// ponytail: the command's rubber band from a 3D-snapped point still draws from its plan point
+/// (previews are 2D, at z = 0); draw previews in 3D when commands preview solids.
 pub(super) fn send_point(app: &mut CadApp, p: Vec2) -> cadcraft_engine::Result<()> {
     app.session.point_z = None;
     match (app.canvas.snap, app.canvas.snap_z) {

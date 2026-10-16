@@ -262,19 +262,54 @@ pub(crate) fn align(profile: &Curve, at: Vec3, dir: Vec3) -> Option<(Curve, f64)
         None => (box_centre(&pts)?, plane_normal(&pts)?, 0.0),
     };
     let r = Rot::between(if normal.dot(dir) < 0.0 { -normal } else { normal }, dir);
-    // Arcs bulge past their points: twice the furthest point is a safe bound.
-    let reach = pts.iter().map(|p| 2.0 * (*p - centre).len()).fold(radius, f64::max);
-    Some((profile.map(&|p| at + r.apply(p - centre), &|v| r.apply(v)), reach))
+    Some((profile.map(&|p| at + r.apply(p - centre), &|v| r.apply(v)), reach(profile, centre).max(radius)))
 }
 
-/// One stretch of a sweep path without corners: the profile where it starts, its path, and the
-/// planes that trim it where it meets its neighbours at corners, as (point, normal): the side the
-/// normal points to is cut away.
+/// How far the curve reaches from `centre` at most: exact for lines and circles; an arc up to a
+/// half circle lies in the circle on its chord, a longer one in its own circle; a spline's fit
+/// may bulge between its points, so twice its furthest point.
+fn reach(c: &Curve, centre: Vec3) -> f64 {
+    let d = |p: Vec3| (p - centre).len();
+    match c {
+        Curve::Segs(segs) => segs
+            .iter()
+            .map(|s| match *s {
+                Seg::Line { a, b } => d(a).max(d(b)),
+                Seg::Arc { a, mid, b } => match arc_turn(a, mid, b) {
+                    Some((c, _, turn)) if turn > PI => d(c) + (a - c).len(),
+                    _ => d((a + b) * 0.5) + (b - a).len() * 0.5,
+                },
+                Seg::Circle { center, radius, .. } => d(center) + radius,
+            })
+            .fold(0.0, f64::max),
+        Curve::Spline { points, .. } => points.iter().map(|p| 2.0 * d(*p)).fold(0.0, f64::max),
+    }
+}
+
+/// One stretch of a sweep path without corners: the profile where it starts, its path, and where
+/// it is trimmed to meet its neighbours at corners.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Run {
     pub profile: Curve,
     pub path: Curve,
-    pub cuts: Vec<(Vec3, Vec3)>,
+    pub cuts: Vec<Cut>,
+}
+
+/// A stretch's trim at a corner: what lies past the mitre plane where the stretch overshoots
+/// the corner (its extension and its inner side just before the corner) is cut away; the rest of
+/// the stretch stays, even where it comes back across the plane further away.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Cut {
+    /// The corner.
+    pub at: Vec3,
+    /// The mitre plane's normal, pointing to the side cut away.
+    pub normal: Vec3,
+    /// The unit direction the stretch runs on in past the corner.
+    pub along: Vec3,
+    /// How far the profile reaches from the path.
+    pub reach: f64,
+    /// How far the stretch runs on past the corner.
+    pub past: f64,
 }
 
 /// A turn between pieces sharper than this is a corner (radians).
@@ -301,7 +336,9 @@ fn corner(a: Vec3, b: Vec3) -> Result<Option<(Vec3, f64)>> {
 /// stretch the profile keeps its angle to the path (OpenCASCADE's corrected Frenet frame: no turn
 /// along lines, a turn about the axis along arcs).
 /// ponytail: mitred corners only (AutoCAD's default); a closed 3D path that twists can leave its
-/// closing mitre slightly mismatched.
+/// closing mitre slightly mismatched. A trim takes in a box round the overshoot (two profile
+/// reaches across), so a stretch that comes back inside that box past the mitre loses that part;
+/// a cutter swept from the overshoot itself if paths that tight matter.
 pub(crate) fn sweep_runs(profile: &Curve, path: &Curve) -> Result<Vec<Run>> {
     let bad = |m: &str| KernelError::Invalid(m.into());
     let (p0, t0) = path.start().ok_or_else(|| bad("the path needs a start (a circle path is two arcs)"))?;
@@ -325,12 +362,12 @@ pub(crate) fn sweep_runs(profile: &Curve, path: &Curve) -> Result<Vec<Run>> {
         if let Some((p, (m, turn))) = start {
             from = s0 - ts * past(turn);
             path.push(Seg::Line { a: from, b: s0 });
-            cuts.push((p, -m));
+            cuts.push(Cut { at: p, normal: -m, along: -ts, reach, past: past(turn) });
         }
         path.extend(run);
         if let Some((p, (m, turn))) = end {
             path.push(Seg::Line { a: q, b: q + te * past(turn) });
-            cuts.push((p, m));
+            cuts.push(Cut { at: p, normal: m, along: te, reach, past: past(turn) });
         }
         Ok(Run { profile: prof.map(&|p| from + frame.apply(p - p0), &|v| frame.apply(v)), path: Curve::Segs(path), cuts })
     };
@@ -405,7 +442,24 @@ mod tests {
         let Curve::Segs(s) = placed else { panic!() };
         let [Seg::Circle { center, normal, .. }] = s.as_slice() else { panic!("{s:?}") };
         assert!(near(*center, Vec3::ZERO) && near(*normal, Vec3::new(1.0, 0.0, 0.0)));
-        assert!(reach >= 2.0);
+        assert_eq!(reach, 2.0);
+        // A square reaches its corners; a half disc its arc (not twice its points).
+        let sq = Curve::Segs(
+            (0..4)
+                .map(|i| {
+                    let c = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 2.0, 0.0], [0.0, 2.0, 0.0]];
+                    line(c[i], c[(i + 1) % 4])
+                })
+                .collect(),
+        );
+        assert!((align(&sq, Vec3::ZERO, Vec3::Z).unwrap().1 - 2.0_f64.sqrt()).abs() < 1e-12);
+        let half = Curve::Segs(vec![
+            Seg::Arc { a: Vec3::new(-1.0, 0.0, 0.0), mid: Vec3::new(0.0, -1.0, 0.0), b: Vec3::new(1.0, 0.0, 0.0) },
+            line([1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]),
+        ]);
+        assert!((super::reach(&half, Vec3::ZERO) - 1.0).abs() < 1e-12);
+        let most = Seg::Arc { a: Vec3::new(0.0, 1.0, 0.0), mid: Vec3::new(0.0, -1.0, 0.0), b: Vec3::new(1.0, 0.0, 0.0) };
+        assert!((super::reach(&Curve::Segs(vec![most]), Vec3::new(1.0, 0.0, 0.0)) - 2.0).abs() < 1e-12, "three quarters of a circle");
         // A line on the XY plane, swept up: it stays flat, centred on the path.
         let l = Curve::Segs(vec![line([0.0, 0.0, 0.0], [4.0, 0.0, 0.0])]);
         let (placed, _) = align(&l, Vec3::new(10.0, 0.0, 0.0), Vec3::Z).unwrap();
@@ -424,7 +478,11 @@ mod tests {
         let m = Vec3::new(h, h, 0.0);
         let corner = Vec3::new(10.0, 0.0, 0.0);
         // The first stretch runs on past the corner and loses what is beyond the mitre.
-        let cut = |r: &Run| r.cuts.iter().map(|(p, n)| (*p, *n)).collect::<Vec<_>>();
+        let cut = |r: &Run| r.cuts.iter().map(|c| (c.at, c.normal)).collect::<Vec<_>>();
+        // Trimmed only near the corner, where it runs on: the profile's reach is its radius (1),
+        // and the extension runs past the corner that far beyond the outer edge's mitre (1 + 1).
+        assert!(runs.iter().flat_map(|r| &r.cuts).all(|c| c.reach == 1.0 && (c.past - 2.0).abs() < 1e-9), "{runs:?}");
+        assert!(near(runs[0].cuts[0].along, Vec3::new(1.0, 0.0, 0.0)) && near(runs[1].cuts[0].along, Vec3::new(0.0, -1.0, 0.0)));
         assert!(matches!(cut(&runs[0]).as_slice(), [(p, n)] if near(*p, corner) && near(*n, m)), "{:?}", runs[0].cuts);
         let Curve::Segs(p) = &runs[0].path else { panic!() };
         assert_eq!(p.len(), 2);

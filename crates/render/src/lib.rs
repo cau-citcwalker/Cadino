@@ -109,10 +109,16 @@ pub struct DisplayList {
     /// faces, which hide what is behind them. Other fills (hatches, text, wipeouts) only hide
     /// by drawing order, as in 2D.
     pub faces: Vec<std::ops::Range<u32>>,
-    /// Shaded model space: the solids' edges as [`Kind::Polyline`] primitives in `verts`, not in
-    /// `prims`. A depth-buffered canvas draws them over the faces where nothing nearer hides them
-    /// ("shaded with edges"); drawn in painter order they would show the hidden edges through.
+    /// Shaded model space with [`Options::edges`]: the solids' edges as [`Kind::Polyline`]
+    /// primitives in `verts`, not in `prims`. A depth-buffered canvas draws them over the faces
+    /// where nothing nearer hides them ("shaded with edges"); drawn in painter order they would
+    /// show the hidden edges through.
     pub edges: Vec<DPrim>,
+    /// Shaded model space: the depth of the XY plane per unit of view-plane x and y, so a 2D
+    /// point `q` lies at depth `plane_slope[0] q.x + plane_slope[1] q.y` (as in `vert_depth`);
+    /// zero for other lists. A depth-buffered canvas gives wide lines' corners their depth with
+    /// it, so a line keeps its whole width over a sloped wipeout.
+    pub plane_slope: [f64; 2],
 }
 
 /// A glyph of plotted text: the font glyph and, in world coordinates, where it sits. It is
@@ -246,6 +252,9 @@ pub struct Options {
     pub view_dir: ViewDir,
     /// 3D solids as shaded faces instead of edges (VSCURRENT).
     pub shaded: bool,
+    /// With [`Options::shaded`]: the solids' edges too, drawn over the faces by a depth-buffered
+    /// canvas ([`DisplayList::edges`]; VSCURRENT Shaded with Edges). Off: plain Shaded.
+    pub edges: bool,
 }
 
 impl Options {
@@ -271,6 +280,7 @@ impl Default for Options {
             cancel: None,
             view_dir: ViewDir::PLAN,
             shaded: false,
+            edges: false,
         }
     }
 }
@@ -582,6 +592,7 @@ fn build_space(d: &Drawing, space: &Space, opts: &Options, plotting: bool) -> Di
         transparency: 0,
         depth: plane_depth(opts, matches!(space, Space::Model)),
     };
+    b.list.plane_slope = b.depth.unwrap_or_default();
     if let Space::Paper(name) = space {
         b.list.sheet = paper::sheet(d, name);
     }
@@ -784,6 +795,9 @@ pub fn viewport_content(d: &Drawing, space: &Space, handle: Handle, area: Bounds
         named: None,
         shared_budget: None,
         transparency: 0,
+        // ponytail: layout viewport contents carry no depth, so shaded solids seen through a
+        // viewport draw in painter order (lines over faces); give viewports a view direction
+        // and depths when 3D in layouts matters.
         depth: None,
     };
     contents(&mut b, d, vp, area, &Clip::Rect(area));
@@ -1014,6 +1028,7 @@ pub fn build_entities<'a, I: IntoIterator<Item = &'a Entity>>(d: &Drawing, ents:
         transparency: 0,
         depth: plane_depth(opts, true),
     };
+    b.list.plane_slope = b.depth.unwrap_or_default();
     for e in ents {
         entity(&mut b, &top_ctx(d, opts.view_dir.plane_xf(), e.handle, &[], &[]), e);
     }

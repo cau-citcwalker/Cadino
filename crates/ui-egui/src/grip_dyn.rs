@@ -105,6 +105,8 @@ pub fn submit(app: &mut CadApp) -> bool {
     let p = resolve(&dims, &vals, cursor);
     app.cmd.buffer.clear();
     app.canvas.grip_dyn = GripDyn::default();
+    // A typed point is on the XY plane: no height left from a 3D snap.
+    app.session.point_z = None;
     if let Err(e) = app.session.input(Input::Point(p)) {
         app.session.echo(e.to_string());
     }
@@ -265,9 +267,11 @@ mod tests {
         run_frame(&mut app, &ctx, vec![Event::PointerMoved(at + vec2(1.0, 0.0))]);
         let c = app.canvas.cursor.unwrap();
         assert!((c.len() - 20.0).abs() < 1e-9, "{c:?}");
-        // Enter places it there.
+        // Enter places it there, on the XY plane: a height left from a 3D snap is dropped.
+        app.session.point_z = Some(5.0);
         run_frame(&mut app, &ctx, key(egui::Key::Enter));
         assert!(app.session.running.is_none());
+        assert_eq!(app.session.point_z, None);
         let b = line_end(&app);
         assert!((b.len() - 20.0).abs() < 1e-9 && b.dist(c) < 1e-9, "{b:?} vs {c:?}");
 

@@ -1248,3 +1248,14 @@ menu	View	عرض
 	SW Isometric	متساوي القياس جنوبي غربي
 	Shaded	مظلل
 	Top	علوي
+	Wedge	إسفين
+	Slice	تقطيع
+	Shell	تجويف
+	Chamfer Edge	شطف حافة
+	Chamfer Edges	شطف الحواف
+	Fillet Edge	تدوير حافة
+	Fillet Edges	تدوير الحواف
+	Planar Surface	سطح مستو
+	Planar	مستو
+	Surfaces	الأسطح
+	Shaded with Edges	مظلل مع الحواف

@@ -387,6 +387,8 @@ pub fn submit(app: &mut CadApp) {
         }
         return;
     }
+    // Typed points (and Dynamic Input's) are on the XY plane: no height left from a 3D snap.
+    app.session.point_z = None;
     app.cmdline(&text);
 }
 
@@ -678,6 +680,18 @@ mod tests {
 
     fn press(app: &mut CadApp, ctx: &egui::Context, at: Pos2, pressed: bool) {
         frame(app, ctx, vec![Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: egui::Modifiers::default() }]);
+    }
+
+    /// A point typed at the command line (or into Dynamic Input) is on the XY plane: a height left
+    /// from a 3D snap is dropped before the point goes to the command.
+    #[test]
+    fn typed_point_drops_a_3d_snap_height() {
+        let mut app = CadApp::new(Session::new(), crate::Services::default());
+        app.session.cmdline("line").unwrap();
+        app.session.point_z = Some(20.0);
+        app.cmd.buffer = "3,4".into();
+        submit(&mut app);
+        assert_eq!((app.session.last_point, app.session.point_z), (cadcraft_geom::Vec2::new(3.0, 4.0), None));
     }
 
     #[test]

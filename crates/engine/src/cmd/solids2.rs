@@ -3,6 +3,8 @@
 //! mesh is open. As AutoCAD's default DELOBJ does, the curves a solid is made from are erased and
 //! those a surface is made from stay.
 
+use std::collections::HashSet;
+
 use cadcraft_doc::{EntityKind, Handle};
 use cadcraft_geom::{EPS, Vec2, Vec3};
 use cadcraft_kernel::{Built, Curve, MAX_PYRAMID_SIDES, Primitive, Seg};
@@ -11,11 +13,13 @@ use serde_json::{Value, json};
 use super::curves::{KW, handle_param, is_locked, pick_at};
 use super::machines::{SelOutcome, SelectPhase};
 use super::solids::{
-    Ask, BOX, ProfileM, ProfileOp, Q, add, box_corners, circle_path, curve_of, kernel, locked_err, p3, p3_req, per_solid, placed, solid, solids,
+    Ask, BOX, ProfileM, ProfileOp, Q, add, box_corners, circle_path, curve_of, kernel, locked_err, or_skip, p3_req, per_solid, placed, solid, solids,
 };
 use super::*;
 use crate::{Accept, EngineError, Input, Interactive, Prompt, Result, Session, Step};
 
+// ponytail: base centre, radius and height only; the JSON form takes `sides` and `topRadius`.
+// AutoCAD's Edge, Sides, Inscribed and Top radius keywords when people draw pyramids by hand.
 const PYRAMID: &[Q] =
     &[Q::Point("center", "Specify center point of base"), Q::Dist("radius", "Specify base radius"), Q::Dist("height", "Specify height")];
 
@@ -80,13 +84,8 @@ fn run_pyramid(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// `hs` without repeats, in order.
 fn once(hs: Vec<Handle>) -> Vec<Handle> {
-    let mut out: Vec<Handle> = Vec::with_capacity(hs.len());
-    for h in hs {
-        if !out.contains(&h) {
-            out.push(h);
-        }
-    }
-    out
+    let mut seen = HashSet::with_capacity(hs.len());
+    hs.into_iter().filter(|h| seen.insert(*h)).collect()
 }
 
 fn hexes(hs: &[Handle]) -> Vec<String> {
@@ -106,16 +105,15 @@ fn type_name(s: &Session, h: Handle) -> String {
     s.doc().ok().and_then(|d| d.entity(h).map(|e| e.kind.type_name().to_lowercase())).unwrap_or_else(|| "object".into())
 }
 
+/// LOFT: every section is used; those on locked layers are only read, never erased.
+/// ponytail: cross sections only (Smooth or Ruled); AutoCAD's Guides, Path and surface
+/// continuity options when lofts need steering.
 fn run_loft(s: &mut Session, p: &Value) -> Result<Value> {
     let hs = once(targets(s, p)?);
     let ruled = bool_or(p, "ruled", false);
-    let (mut sections, mut used, mut locked) = (Vec::new(), Vec::new(), 0usize);
+    let (mut sections, mut used) = (Vec::new(), Vec::new());
     for h in hs {
         let Some(kind) = s.doc()?.entity(h).map(|e| e.kind.clone()) else { continue };
-        if is_locked(s, h) {
-            locked += 1;
-            continue;
-        }
         let Some(c) = curve_of(&kind)? else {
             return Err(bad(
                 "loft",
@@ -125,19 +123,21 @@ fn run_loft(s: &mut Session, p: &Value) -> Result<Value> {
         sections.push(c);
         used.push(h);
     }
-    let Some(first) = used.first().copied().filter(|_| used.len() >= 2) else {
-        return Err(if locked > 0 { locked_err() } else { bad("loft", "select at least two cross sections") });
-    };
+    if used.len() < 2 {
+        return Err(bad("loft", "select at least two cross sections"));
+    }
     let b = cadcraft_kernel::loft(&sections, ruled).map_err(kernel)?;
     let surface = b.mesh.open;
-    let h = add_like(s, first, b)?;
+    let (locked, free): (Vec<Handle>, Vec<Handle>) = used.iter().partition(|u| is_locked(s, **u));
+    // On the current layer, as AutoCAD's LOFT: the sections' layers may be locked.
+    let h = s.add_entity(solid(b))?;
     if !surface {
         let d = s.doc_mut()?;
-        for u in &used {
+        for u in &free {
             d.remove_entity(*u);
         }
     }
-    Ok(json!({ "handle": h.hex(), "surface": surface, "sections": used.len(), "locked": locked }))
+    Ok(json!({ "handle": h.hex(), "surface": surface, "sections": used.len(), "locked": locked.len() }))
 }
 
 /// A curve object as a sweep path: a circle runs from its rightmost point.
@@ -148,6 +148,8 @@ fn path_of(kind: &EntityKind) -> Result<Option<Curve>> {
     }
 }
 
+/// ponytail: the profile goes square to the path at its box centre; AutoCAD's Alignment, Base
+/// point, Scale and Twist options when sweeps need them.
 fn run_sweep(s: &mut Session, p: &Value) -> Result<Value> {
     let ph =
         handle_param(p, "path").ok_or_else(|| bad("sweep", "`path` (the handle of a line, arc, circle, polyline, spline or helix) is required"))?;
@@ -155,25 +157,31 @@ fn run_sweep(s: &mut Session, p: &Value) -> Result<Value> {
     let path = path_of(&path_kind)?
         .ok_or_else(|| bad("sweep", format!("a {} can't be a path: use a line, arc, circle, polyline, spline or helix", type_name(s, ph))))?;
     let hs: Vec<Handle> = once(targets(s, p)?).into_iter().filter(|h| *h != ph).collect();
-    let (mut built, mut skipped, mut locked) = (Vec::new(), 0usize, 0usize);
+    // A degenerate or unsuitable profile is skipped; with nothing made, its reason is the error.
+    let (mut built, mut skipped, mut locked, mut why) = (Vec::new(), 0usize, 0usize, None);
     for h in hs {
         let Some(kind) = s.doc()?.entity(h).map(|e| e.kind.clone()) else { continue };
         if is_locked(s, h) {
             locked += 1;
             continue;
         }
-        let Some(c) = curve_of(&kind)? else {
-            skipped += 1;
-            continue;
+        let shape = match curve_of(&kind) {
+            Ok(Some(c)) => or_skip(cadcraft_kernel::sweep(&c, &path), &mut why)?,
+            Ok(None) => None,
+            Err(e) => {
+                why.get_or_insert(e);
+                None
+            }
         };
-        built.push((h, cadcraft_kernel::sweep(&c, &path).map_err(kernel)?));
+        match shape {
+            Some(b) => built.push((h, b)),
+            None => skipped += 1,
+        }
     }
     if built.is_empty() {
-        return Err(if locked > 0 {
-            locked_err()
-        } else {
-            bad("sweep", "select curves to sweep (lines, arcs, circles, polylines, splines, helices)")
-        });
+        return Err(why.unwrap_or_else(|| {
+            if locked > 0 { locked_err() } else { bad("sweep", "select curves to sweep (lines, arcs, circles, polylines, splines, helices)") }
+        }));
     }
     let all_solid = built.iter().all(|(_, b)| !b.mesh.open);
     let mut made = Vec::with_capacity(built.len());
@@ -206,8 +214,12 @@ fn run_shell(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "shelled": n, "locked": locked }))
 }
 
+/// ponytail: one closed curve per surface; AutoCAD's regions with holes (outer and inner loops)
+/// when the kernel takes faces with inner wires.
 fn run_planesurf(s: &mut Session, p: &Value) -> Result<Value> {
-    if let Some(a) = p3(p, "corner1") {
+    // Corners given (even malformed ones) are the corners form: never the selection instead.
+    if p.get("corner1").is_some_and(|v| !v.is_null()) {
+        let a = p3_req("planesurf", p, "corner1")?;
         let c = point_req("planesurf", p, "corner2")?;
         let at = |x: f64, y: f64| Vec3::new(x, y, a.z);
         let pts = [at(a.x, a.y), at(c.x, a.y), at(c.x, c.y), at(a.x, c.y)];
@@ -215,24 +227,37 @@ fn run_planesurf(s: &mut Session, p: &Value) -> Result<Value> {
         return add(s, cadcraft_kernel::plane_surface(&segs).map_err(kernel)?);
     }
     let hs = once(targets(s, p)?);
-    let (mut built, mut skipped, mut locked) = (Vec::new(), 0usize, 0usize);
+    let (mut built, mut skipped, mut locked, mut why) = (Vec::new(), 0usize, 0usize, None);
     for h in hs {
         let Some(kind) = s.doc()?.entity(h).map(|e| e.kind.clone()) else { continue };
         if is_locked(s, h) {
             locked += 1;
             continue;
         }
-        match curve_of(&kind)?.filter(Curve::is_closed) {
-            Some(Curve::Segs(segs)) => built.push((h, cadcraft_kernel::plane_surface(&segs).map_err(kernel)?)),
-            _ => skipped += 1,
+        let shape = match curve_of(&kind) {
+            Ok(Some(c)) if c.is_closed() => match c {
+                Curve::Segs(segs) => or_skip(cadcraft_kernel::plane_surface(&segs), &mut why)?,
+                Curve::Spline { .. } => None,
+            },
+            Ok(_) => None,
+            Err(e) => {
+                why.get_or_insert(e);
+                None
+            }
+        };
+        match shape {
+            Some(b) => built.push((h, b)),
+            None => skipped += 1,
         }
     }
     if built.is_empty() {
-        return Err(if locked > 0 {
-            locked_err()
-        } else {
-            bad("planesurf", "select closed planar curves (circles, closed polylines, single-loop regions) or give `corner1` and `corner2`")
-        });
+        return Err(why.unwrap_or_else(|| {
+            if locked > 0 {
+                locked_err()
+            } else {
+                bad("planesurf", "select closed planar curves (circles, closed polylines, single-loop regions) or give `corner1` and `corner2`")
+            }
+        }));
     }
     let mut made = Vec::with_capacity(built.len());
     for (h, b) in built {
@@ -241,6 +266,8 @@ fn run_planesurf(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "handles": made, "skipped": skipped, "locked": locked }))
 }
 
+/// ponytail: a vertical plane through two points only; AutoCAD's 3-point, Object, Surface, Zaxis,
+/// View and XY/YZ/ZX planes when slicing needs other planes (the kernel takes any plane already).
 fn run_slice(s: &mut Session, p: &Value) -> Result<Value> {
     let hs = targets(s, p)?;
     let (a, b) = (point_req("slice", p, "point1")?, point_req("slice", p, "point2")?);
@@ -250,9 +277,14 @@ fn run_slice(s: &mut Session, p: &Value) -> Result<Value> {
     // The plane stands on the line through the two points; its normal points left of it.
     let d = (b - a).normalized();
     let normal = Vec3::new(-d.y, d.x, 0.0);
-    let keep_side = match str_param(p, "keep").map(str::to_ascii_lowercase).as_deref() {
-        None | Some("both") => None,
-        Some("side") => {
+    let keep = match p.get("keep") {
+        None | Some(Value::Null) => "both".to_string(),
+        Some(Value::String(k)) => k.to_ascii_lowercase(),
+        Some(k) => return Err(bad("slice", format!("`keep` is \"both\" or \"side\", not {k}"))),
+    };
+    let keep_side = match keep.as_str() {
+        "both" => None,
+        "side" => {
             let side = point_req("slice", p, "side")?;
             let off = normal.xy().dot(side - a);
             if off.abs() <= EPS * (1.0 + (side - a).len()) {
@@ -260,7 +292,7 @@ fn run_slice(s: &mut Session, p: &Value) -> Result<Value> {
             }
             Some(off > 0.0)
         }
-        Some(k) => return Err(bad("slice", format!("`keep` is \"both\" or \"side\", not \"{k}\""))),
+        k => return Err(bad("slice", format!("`keep` is \"both\" or \"side\", not \"{k}\""))),
     };
     let mut xs = solids(s, &hs)?;
     let all = xs.len();
@@ -588,6 +620,17 @@ mod plain_tests {
             assert!(s.execute(id, &p).is_err(), "{id} {p}");
         }
         assert_eq!(s.doc().unwrap().model.iter().count(), 1, "the drawing is as it was");
+        // The bad value is the error: not the selection, nor a default in its place.
+        let x = s.add_entity(EntityKind::Solid3d(Solid3d::default())).unwrap();
+        for k in [json!(3), json!(true), json!(["side"]), json!("left")] {
+            let r = s.execute("slice", &json!({ "handles": [x.hex()], "point1": [0, 0], "point2": [1, 0], "keep": k }));
+            assert!(err(r).contains("`keep`"), "{k}");
+        }
+        for corner in [json!([0, "y"]), json!([0, 0, "z"]), json!(true)] {
+            let r = s.execute("planesurf", &json!({ "corner1": corner, "corner2": [1, 1], "handles": [c.hex()] }));
+            assert!(err(r).contains("corner1"), "{corner}");
+        }
+        assert_eq!(s.doc().unwrap().model.iter().count(), 2);
     }
 
     #[test]
@@ -625,7 +668,8 @@ mod plain_tests {
         let x = s.add_entity(EntityKind::Solid3d(Solid3d::default())).unwrap();
         s.doc_mut().unwrap().layer_mut("0").unwrap().locked = true;
         let hs = json!([a.hex(), b.hex()]);
-        assert!(err(s.execute("loft", &json!({ "handles": hs }))).contains("locked"));
+        // LOFT reads locked sections (never erasing them): here both are at one elevation.
+        assert!(err(s.execute("loft", &json!({ "handles": hs }))).contains("different elevations"));
         assert!(err(s.execute("sweep", &json!({ "handles": [a.hex()], "path": b.hex() }))).contains("locked"));
         assert!(err(s.execute("planesurf", &json!({ "handles": hs }))).contains("locked"));
         for (id, p) in [
@@ -776,6 +820,42 @@ mod tests {
         s.add_entity(EntityKind::Circle(cadcraft_doc::Circle { center: Vec3::new(x, 0.0, z), radius: r })).unwrap()
     }
 
+    /// The volume a closed mesh encloses.
+    fn volume(x: &Solid3d) -> f64 {
+        let m = &x.mesh;
+        m.tris.iter().filter_map(|t| m.tri(t)).map(|[a, b, c]| a.dot(b.cross(c)) / 6.0).sum::<f64>().abs()
+    }
+
+    #[test]
+    fn loft_reads_locked_sections_and_keeps_them() {
+        let mut s = Session::new();
+        let (a, m, b) = (circle_at(&mut s, 0.0, 0.0, 5.0), circle_at(&mut s, 0.0, 5.0, 8.0), circle_at(&mut s, 0.0, 10.0, 5.0));
+        s.doc_mut().unwrap().modify_entity(m, |e| e.common.layer = "Defpoints".into()).unwrap();
+        s.doc_mut().unwrap().layer_mut("Defpoints").unwrap().locked = true;
+        let r = s.execute("loft", &json!({ "handles": [a.hex(), m.hex(), b.hex()], "ruled": true })).unwrap();
+        assert_eq!((r["sections"].as_u64(), r["locked"].as_u64()), (Some(3), Some(1)), "{r}");
+        let d = s.doc().unwrap();
+        assert!(d.entity(m).is_some() && d.entity(a).is_none() && d.entity(b).is_none(), "only the locked section stays");
+        // The locked middle section shapes the loft: its radius is 8 at z = 5.
+        let x = &shapes(&s)[0];
+        let r5 = x.mesh.verts.iter().filter(|p| (p.z - 5.0).abs() < 1e-6).map(|p| p.xy().len()).fold(0.0, f64::max);
+        assert!((r5 - 8.0).abs() < 1e-3, "{r5}");
+        // The loft is on the current layer, not a section's (which may be locked).
+        let h = r["handle"].as_str().and_then(cadcraft_doc::Handle::parse_hex).unwrap();
+        assert_eq!(s.doc().unwrap().entity(h).unwrap().common.layer, "0");
+    }
+
+    #[test]
+    fn a_degenerate_profile_is_skipped_by_planesurf() {
+        let mut s = Session::new();
+        let good = circle_at(&mut s, 0.0, 0.0, 5.0);
+        let flat = s.execute("line", &json!({ "points": [[20, 0], [20, 0]] })).ok().and_then(|r| r["handles"][0].as_str().map(str::to_owned));
+        let mut hs = vec![json!(good.hex())];
+        hs.extend(flat.map(Value::from));
+        let r = s.execute("planesurf", &json!({ "handles": hs })).unwrap();
+        assert_eq!(r["handles"].as_array().map(Vec::len), Some(1), "{r}");
+    }
+
     #[test]
     fn wedge_and_pyramid() {
         let mut s = Session::new();
@@ -839,6 +919,18 @@ mod tests {
         // The mesh's polygons sit just inside the round tube.
         assert!(near_by(xs[0].bounds(), (0.0, -0.5), (15.5, 15.5), 0.01), "{:?}", xs[0].bounds());
         assert_eq!(s.doc().unwrap().model.iter().count(), 1, "profile and path are erased");
+        // The start cap is whole: the last corner's mitre plane (y = x) passes through it, but
+        // only trims near that corner.
+        let top = xs[0].mesh.verts.iter().filter(|p| p.x.abs() < 1e-6).map(|p| p.y).fold(f64::MIN, f64::max);
+        assert!(top > 0.45, "{top}");
+        // A unit square along the same path holds the path's length (30 + 2.5π) in volume.
+        let mut s = Session::new();
+        let sq = poly(&mut s, &[(40.0, 0.0, 0.0), (41.0, 0.0, 0.0), (41.0, 1.0, 0.0), (40.0, 1.0, 0.0)], true, 0.0);
+        let path =
+            poly(&mut s, &[(0.0, 0.0, 0.0), (10.0, 0.0, 0.41421356237309503), (15.0, 5.0, 0.0), (15.0, 15.0, 0.0), (5.0, 15.0, 0.0)], false, 0.0);
+        s.execute("sweep", &json!({ "handles": [sq.hex()], "path": path.hex() })).unwrap();
+        let v = volume(&shapes(&s)[0]);
+        assert!((v / (30.0 + 2.5 * std::f64::consts::PI) - 1.0).abs() < 0.01, "{v}");
         // An open profile along a helix: a surface; the curves stay.
         let mut s = Session::new();
         let helix = cadcraft_doc::Helix {

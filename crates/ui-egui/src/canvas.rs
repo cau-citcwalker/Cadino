@@ -452,7 +452,7 @@ fn ensure_list(app: &mut CadApp, xf: &Xf, views: &[(Bounds2, f64)], ctx: &egui::
             (h, vp.view_center.x.to_bits(), vp.view_center.y.to_bits(), vp.view_height.to_bits()).hash(&mut s);
         }
         // The visual style changes the list too.
-        st.shaded.hash(&mut s);
+        (st.shaded, st.shaded_edges).hash(&mut s);
         s.finish()
     };
     // The view direction is part of the view: orbiting builds in the background (see `view_xfs`).
@@ -523,9 +523,9 @@ fn ensure_list(app: &mut CadApp, xf: &Xf, views: &[(Bounds2, f64)], ctx: &egui::
         view: build_window(views),
         transparency: app.session.settings.transparency_display,
         skip_viewport: split,
-        cancel: None,
         view_dir,
         shaded: st.shaded,
+        edges: st.shaded_edges,
         ..Default::default()
     };
     if view_only {
@@ -585,7 +585,7 @@ struct VpContent {
     list: DisplayList,
     /// What the list was built from: drawing, revision, document, viewport, tessellation band,
     /// lineweight and transparency display, and visual style.
-    key: Option<(u64, u64, usize, Handle, i32, bool, bool, bool)>,
+    key: Option<(u64, u64, usize, Handle, i32, bool, bool, bool, bool)>,
     /// The viewport's view (centre, height) the list was built for, and the paper area it covers.
     view: (Vec2, f64),
     area: Bounds2,
@@ -652,7 +652,7 @@ fn ensure_vp_content(app: &mut CadApp, xf_paper: &Xf, ctx: &egui::Context) -> Op
     };
     let px = 1.0 / xf_paper.scale.max(1e-300);
     let band = px.max(1e-300).log2().floor() as i32;
-    let key = (st.uid, st.revision, std::sync::Arc::as_ptr(&st.doc) as usize, h, band, lwdisplay, transparency, st.shaded);
+    let key = (st.uid, st.revision, std::sync::Arc::as_ptr(&st.doc) as usize, h, band, lwdisplay, transparency, st.shaded, st.shaded_edges);
     let now = crate::now_ms();
     let view = (vp.view_center, vp.view_height);
     if view != c.last_view {
@@ -688,9 +688,9 @@ fn ensure_vp_content(app: &mut CadApp, xf_paper: &Xf, ctx: &egui::Context) -> Op
             view: Some(area),
             skip_viewport: None,
             transparency,
-            cancel: None,
             view_dir: cadcraft_geom::ViewDir::PLAN,
             shaded: st.shaded,
+            edges: st.shaded_edges,
             ..Default::default()
         };
         c.list = cadcraft_render::viewport_content(&st.doc, &st.space, h, area, &opts);
@@ -2137,8 +2137,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     if app.ui.show_viewcube && sheet.is_none() {
         draw_viewcube(app, ui, rect);
     }
-    let shaded = app.session.state().is_ok_and(|st| st.shaded);
-    viewport_label(&painter, rect, xf.dir, shaded);
+    viewport_label(app, &painter, rect, xf.dir);
     // Typing and Escape reach the command line even when its overlay is hidden.
     crate::cmdline::keyboard(app, ui.ctx());
     // Command line overlay.
@@ -2214,7 +2213,7 @@ fn draw_tiles(app: &CadApp, ui: &egui::Ui, tiles: &[(Rect, cadcraft_engine::Mode
         if let Some(list) = &app.canvas.list {
             draw_list(&p, &xf, list, bg, app.session.settings.lwdisplay);
         }
-        viewport_label(&p, *r, xf.dir, app.session.state().is_ok_and(|st| st.shaded));
+        viewport_label(app, &p, *r, xf.dir);
     }
     let p = ui.painter();
     for (r, tile) in tiles {
@@ -2271,6 +2270,8 @@ fn override_cursor(app: &mut CadApp, raw: Vec2, xf: &Xf) {
     let deferred = prompt.as_ref().is_some_and(|p| p.deferred);
     let s = &app.session.settings;
     let osmode = over.unwrap_or(s.osmode) | if s.osnaphatch { snap::mode::HATCH } else { 0 };
+    // In a 3D view solids are snapped at their height (snap3d), never at their z = 0 shadow.
+    let osmode = osmode | if xf.is_plan() { 0 } else { snap::mode::NO_SOLIDS };
     let Ok(st) = app.session.state() else { return };
     let hit = match cycle {
         Some(i) => {
@@ -2563,10 +2564,14 @@ fn draw_ucs_icon(p: &egui::Painter, rect: Rect) {
 }
 
 /// The viewport label: the view shown (see [`crate::viewcube::view_name`]) and the visual style.
-fn viewport_label(p: &egui::Painter, rect: Rect, view: ViewDir, shaded: bool) {
+fn viewport_label(app: &CadApp, p: &egui::Painter, rect: Rect, view: ViewDir) {
     let t = Tokens::get();
     let at = pos2(rect.left() + 10.0, rect.top() + 8.0);
-    let style = if shaded { crate::tl!("Shaded") } else { crate::tl!("2D Wireframe") };
+    let style = match app.session.state().map(|st| (st.shaded, st.shaded_edges)) {
+        Ok((true, true)) => crate::tl!("Shaded with Edges"),
+        Ok((true, false)) => crate::tl!("Shaded"),
+        _ => crate::tl!("2D Wireframe"),
+    };
     p.text(at, egui::Align2::LEFT_TOP, format!("+  |  {}  |  {style}", crate::viewcube::view_name(view)), crate::theme::small(), t.canvas_ink);
 }
 
@@ -3109,6 +3114,52 @@ pub(crate) mod tests {
         assert_eq!((app.session.last_point, app.session.point_z), (Vec2::new(10.0, 0.0), None));
     }
 
+    /// In a 3D view, the candidate Tab cycled to stays: a solid's point nearer on screen doesn't
+    /// take the cursor back, and the click gives the cycled point with no height.
+    #[test]
+    fn a_tab_cycled_snap_stays_over_a_nearer_solid_point() {
+        let mut f = Frames::default();
+        let top = cadcraft_geom::Vec3::new(10.0, 0.0, 20.0);
+        let mut app = app_snapping(&mut f, [-1.0, -1.0, 1.0], top, snap::mode::END);
+        raised_edge(&mut app);
+        let xf = app.canvas.xf.unwrap();
+        let at = snap3d::screen_of(&xf, top) + vec2(3.0, -2.0);
+        let q = at + vec2(5.0, 4.0);
+        line_under(&mut app, &xf, q, q + vec2(150.0, 80.0));
+        let end = xf.to_world(q);
+        f.run(&mut app, vec![egui::Event::PointerMoved(at)]);
+        assert_eq!(app.canvas.snap_z, Some(20.0), "the solid's vertex is nearer than the line's end");
+        app.canvas.snap_tab = true;
+        f.run(&mut app, vec![egui::Event::PointerMoved(at)]);
+        assert_eq!((app.canvas.snap.map(|h| h.point), app.canvas.snap_z), (Some(end), None));
+        f.click(&mut app, at);
+        assert_eq!((app.session.last_point, app.session.point_z), (end, None));
+    }
+
+    /// Looking for solid snaps skips the other objects before looking their layer up (by name,
+    /// along the layer table): lines on a layer behind thousands of others cost next to nothing.
+    #[test]
+    fn solid_snaps_skip_other_objects_before_their_layer() {
+        let g = cadcraft_geom::Vec3::new;
+        let mut d = cadcraft_doc::Drawing::new_metric();
+        let common = cadcraft_doc::Common { layer: "Drawing lines 9999".into(), ..Default::default() };
+        for i in 0..50_000 {
+            let l = cadcraft_doc::Line { a: g(f64::from(i), 0.0, 0.0), b: g(f64::from(i), 1.0, 0.0) };
+            d.add(&cadcraft_doc::Space::Model, common.clone(), cadcraft_doc::EntityKind::Line(l)).unwrap();
+        }
+        d.add(&cadcraft_doc::Space::Model, cadcraft_doc::Common::default(), cadcraft_doc::EntityKind::Solid3d(snap_solid())).unwrap();
+        // Layers named alike ahead of the lines' one: each lookup compares names to their end.
+        d.layers.splice(0..0, (0..4000).map(|i| cadcraft_doc::Layer::new(&format!("Drawing lines {i:04}"))));
+        let xf = Xf::new(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0)), Vec2::ZERO, 5.0)
+            .looking(ViewDir::new(cadcraft_geom::Vec3::new(-1.0, -1.0, 1.0)));
+        let p = g(0.0, 0.0, 15.0);
+        let t = std::time::Instant::now();
+        let hit = snap3d::nearest(&d, &cadcraft_doc::Space::Model, &xf, snap3d::screen_of(&xf, p), 10.0, snap::mode::END);
+        let took = t.elapsed();
+        assert_eq!(hit, Some((p, snap::mode::END)));
+        assert!(took < std::time::Duration::from_millis(250), "{took:?}");
+    }
+
     /// The app with an empty drawing looking along `dir`, its list built (at once, not in the
     /// background).
     fn app_looking(f: &mut Frames, dir: [f64; 3]) -> CadApp {
@@ -3311,6 +3362,9 @@ pub(crate) mod tests {
         app.canvas.list = None;
         let text = painted_text(&mut app, &ctx, at);
         assert!(text.contains("+  |  Custom View  |  Shaded") && text.contains("FRONT"), "{text}");
+        app.session.state_mut().unwrap().shaded_edges = true;
+        let text = painted_text(&mut app, &ctx, at);
+        assert!(text.contains("+  |  Custom View  |  Shaded with Edges"), "{text}");
     }
 }
 

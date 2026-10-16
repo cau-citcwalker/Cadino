@@ -31,6 +31,9 @@ pub mod mode {
     pub const OFF: u32 = 16384;
     /// Not an OSMODE bit: snaps also find hatch objects (OSNAPHATCH = 1).
     pub const HATCH: u32 = 1 << 16;
+    /// Not an OSMODE bit: snaps leave 3D solids out. Set in a model view that is not plan, where
+    /// their edges in plan (at z = 0) are not where they show; the UI snaps to them in 3D there.
+    pub const NO_SOLIDS: u32 = 1 << 17;
     pub const ALL: [(u32, &str); 14] = [
         (END, "Endpoint"),
         (MID, "Midpoint"),
@@ -504,8 +507,10 @@ impl Sink<'_> {
     /// (whose primitives far from the cursor are skipped).
     fn object(&mut self, kind: &EntityKind, xf: Option<&Mat3>) {
         let osmode = self.osmode;
-        // OSNAPHATCH = 0: hatches are left out.
-        if osmode & mode::HATCH == 0 && matches!(kind, EntityKind::Hatch(_)) {
+        // OSNAPHATCH = 0: hatches are left out; so are solids in a 3D view.
+        if osmode & mode::HATCH == 0 && matches!(kind, EntityKind::Hatch(_))
+            || osmode & mode::NO_SOLIDS != 0 && matches!(kind, EntityKind::Solid3d(_))
+        {
             return;
         }
         let at = |p: Vec2| xf.map_or(p, |m| m.apply(p));

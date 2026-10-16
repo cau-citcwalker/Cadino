@@ -144,6 +144,11 @@ pub enum Icon {
     PickAdd,
     SelectObjects,
     QuickSelect,
+    Wedge,
+    PlaneSurf,
+    Slice,
+    ChamferEdge,
+    Shell,
 }
 
 struct Pen<'a> {
@@ -904,6 +909,43 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, dim: bool) {
             // A filter funnel with a spark.
             pen.poly(&[(3.0, 4.0), (19.0, 4.0), (13.0, 11.0), (13.0, 19.0), (9.0, 17.0), (9.0, 11.0)], true, b);
             pen.poly(&[(20.0, 10.0), (16.5, 15.5), (20.0, 15.5), (17.0, 21.0)], false, a);
+        }
+        // Solids drawn like the Blocks cube: isometric, x along (8, 4), y along (8, -4), z up.
+        Wedge => {
+            // Tall at the left, sloping down to the right.
+            pen.poly(&[(4.0, 16.0), (4.0, 7.0), (12.0, 3.0), (20.0, 16.0), (12.0, 20.0)], true, a);
+            pen.la(4.0, 7.0, 12.0, 20.0);
+        }
+        PlaneSurf => {
+            // A flat patch with its isoparms, from two picked corners.
+            pen.poly(&[(12.0, 5.0), (22.0, 11.0), (12.0, 17.0), (2.0, 11.0)], true, a);
+            pen.l(7.0, 8.0, 17.0, 14.0);
+            pen.l(17.0, 8.0, 7.0, 14.0);
+            pen.dot(2.0, 11.0);
+            pen.dot(22.0, 11.0);
+        }
+        Slice => {
+            // A cube cut by a plane.
+            pen.poly(&[(12.0, 3.0), (20.0, 7.0), (12.0, 11.0), (4.0, 7.0)], true, b);
+            pen.poly(&[(4.0, 7.0), (4.0, 16.0), (12.0, 20.0), (20.0, 16.0), (20.0, 7.0)], false, b);
+            pen.l(12.0, 11.0, 12.0, 20.0);
+            pen.poly(&[(6.0, 2.0), (18.0, 8.0), (18.0, 21.0), (6.0, 15.0)], true, a);
+        }
+        ChamferEdge => {
+            // A cube with its front edge bevelled.
+            pen.poly(&[(10.0, 10.0), (4.0, 7.0), (12.0, 3.0), (20.0, 7.0), (14.0, 10.0)], false, b);
+            pen.poly(&[(4.0, 7.0), (4.0, 16.0), (10.0, 19.0)], false, b);
+            pen.poly(&[(20.0, 7.0), (20.0, 16.0), (14.0, 19.0)], false, b);
+            pen.poly(&[(10.0, 10.0), (14.0, 10.0), (14.0, 19.0), (10.0, 19.0)], true, a);
+        }
+        Shell => {
+            // A cube hollowed out, open at the top: its inner walls.
+            pen.poly(&[(12.0, 3.0), (20.0, 7.0), (12.0, 11.0), (4.0, 7.0)], true, b);
+            pen.poly(&[(4.0, 7.0), (4.0, 16.0), (12.0, 20.0), (20.0, 16.0), (20.0, 7.0)], false, b);
+            pen.l(12.0, 11.0, 12.0, 20.0);
+            pen.poly(&[(12.0, 4.6), (16.8, 7.0), (12.0, 9.4), (7.2, 7.0)], true, a);
+            pen.poly(&[(7.2, 7.0), (7.2, 11.0), (12.0, 8.6), (16.8, 11.0), (16.8, 7.0)], false, a);
+            pen.la(12.0, 4.6, 12.0, 8.6);
         }
     }
 }

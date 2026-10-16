@@ -126,7 +126,7 @@ pub fn snap_candidates(d: &Drawing, space: &Space, cursor: Vec2, aperture: f64, 
         return Vec::new();
     }
     let osnap = |m: u32| crate::snap::osnap(d, space, cursor, aperture, m, base, deferred);
-    let extra = osmode & mode::HATCH;
+    let extra = osmode & (mode::HATCH | mode::NO_SOLIDS);
     let mut per_mode: Vec<SnapHit> = mode::ALL.iter().filter(|(b, _)| osmode & b != 0).filter_map(|(b, _)| osnap(*b | extra)).collect();
     per_mode.sort_by(|a, b| a.point.dist(cursor).total_cmp(&b.point.dist(cursor)));
     let mut out: Vec<SnapHit> = osnap(osmode).into_iter().collect();
@@ -345,6 +345,8 @@ impl Session {
                     let space = self.space();
                     let aperture = self.pixel_size() * self.settings.aperture.max(1.0);
                     let hatch = if self.settings.osnaphatch { mode::HATCH } else { 0 };
+                    // In a 3D view solids are snapped by the UI at their height, not at z = 0.
+                    let hatch = hatch | if self.state()?.screen_dir().is_plan() { 0 } else { mode::NO_SOLIDS };
                     let base = prompt.as_ref().and_then(|q| q.base);
                     let deferred = prompt.as_ref().is_some_and(|q| q.deferred);
                     let hit = crate::snap::osnap(self.doc()?, &space, p, aperture, mode | hatch, base, deferred);

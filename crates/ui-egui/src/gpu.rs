@@ -16,9 +16,11 @@
 //! everything is depth-tested (less or equal) and only solids' shaded faces and wipeouts write
 //! depth ([`MeshData::writes`]), pushed back a little so lines on them stay visible. Shaded model
 //! space carries vertex depths ([`DisplayList::vert_depth`]); every other list, the highlight
-//! and the drag sit at the nearest depth, so they pass and keep their drawing order as in 2D. The
-//! solids' edges ([`DisplayList::edges`]) are drawn only with a depth buffer, which hides the
-//! hidden ones. The pass clears depth every frame, as it does the stencil.
+//! and the drag sit at the nearest depth, so they pass and keep their drawing order as in 2D. A
+//! wide line's corners take the XY plane's depth where they are ([`MeshData::slope`]), so the
+//! whole width passes over a sloped wipeout. The solids' edges ([`DisplayList::edges`], built
+//! for Shaded with Edges) are drawn only with a depth buffer, which hides the hidden ones. The
+//! pass clears depth every frame, as it does the stencil.
 //!
 //! Infinite lines (xline/ray) and all overlays stay egui shapes (see `canvas.rs`), and the
 //! canvas falls back to the CPU path when no wgpu render state was handed to the app.
@@ -34,6 +36,9 @@ use egui_wgpu::wgpu::util::DeviceExt;
 /// Line/triangle vertex: position (2 × f32, relative to the origin) + sRGB colour (4 × u8,
 /// premultiplied by its alpha: transparent objects blend with what is under them) + depth (f32,
 /// 0 = nearest, see [`Depth`]).
+// ponytail: every drawing pays for depth, 2D ones too: 16 bytes a vertex instead of 12 and 36
+// an instance instead of 28 (a third more vertex memory); split depth into its own buffer, bound
+// only for lists with depth, if vertex memory on huge 2D drawings matters.
 const VERTEX_SIZE: usize = 16;
 /// Wide-line / point instance: a, b (2 × f32 each) + colour (4 × u8) + width in points (f32) +
 /// length along its polyline before `a`, in world units (f32; dashing) + the depths of a and b
@@ -43,12 +48,19 @@ const INSTANCE_SIZE: usize = 36;
 const CHUNK: usize = 4_194_300;
 /// Point markers are 1.5 × 1.5 points (as on the CPU path).
 const POINT_SIZE: f32 = 1.5;
-/// Vertex depths of a list span clip-space depth 0 (nearest) to this, leaving room behind the
-/// farthest for the faces' depth bias.
+/// Vertex depths of a list span clip-space depth [`DEPTH_NEAR`] (nearest) to `DEPTH_NEAR +
+/// DEPTH_SPAN`, leaving room behind the farthest for the faces' depth bias, and in front of the
+/// nearest for wide lines' corners, which reach past their ends (see [`MeshData::slope`]).
+/// Lists without depth sit at 0, in front of everything.
+const DEPTH_NEAR: f64 = 0.25;
 const DEPTH_SPAN: f64 = 0.5;
 /// How far faces that write depth are pushed back: a few depth steps plus two pixels of their
 /// depth slope, so an edge or line lying on a face (rasterised up to a pixel off it) passes the
 /// depth test, while what lies behind the face by any real distance stays hidden.
+// ponytail: depths are spread over the list's whole depth range and the bias is a constant 4
+// steps of a 24-bit buffer, so a drawing about 1e7 units deep resolves about 1 unit per step and
+// a line a few units behind a face shows through; spread the visible range only, or use a
+// 32-bit float buffer with reversed depth, if huge 3D drawings matter.
 const FACE_BIAS: wgpu::DepthBiasState = wgpu::DepthBiasState { constant: 4, slope_scale: 2.0, clamp: 0.0 };
 
 /// How the native window presents frames (`NativeOptions::wgpu_options.surface`).
@@ -132,6 +144,11 @@ pub struct MeshData {
     /// Line vertices at the end of `lines` drawn only with a depth buffer: the solids' edges
     /// over shaded faces ([`DisplayList::edges`]).
     pub edge_lines: usize,
+    /// Clip-space depth per world unit of x and y on the XY plane ([`DisplayList::plane_slope`];
+    /// zero for lists without depth). Wide lines and point markers (2D objects, on the plane)
+    /// give each quad corner the plane's depth there, not the depth at the line's centre, so a
+    /// sloped wipeout or face can't cut off one side of a wide line.
+    pub slope: [f32; 2],
     /// The vertex buffers already created from this data (see [`MeshData::upload_now`]); the
     /// paint callback then only swaps them in.
     uploaded: Option<Uploaded>,
@@ -195,8 +212,8 @@ fn push_instance(out: &mut Vec<u8>, a: [f32; 2], b: [f32; 2], c: [u8; 4], width:
 }
 
 /// A display list's vertex depths ([`DisplayList::vert_depth`], [`DisplayList::tri_depth`]) as
-/// clip-space depth: 0 for the nearest vertex, [`DEPTH_SPAN`] for the farthest. A list without
-/// depths, or whose depths don't match its vertices, is all at 0.
+/// clip-space depth: [`DEPTH_NEAR`] for the nearest vertex, `DEPTH_NEAR + DEPTH_SPAN` for the
+/// farthest. A list without depths, or whose depths don't match its vertices, is all at 0.
 struct Depth<'a> {
     verts: &'a [f64],
     tris: &'a [f64],
@@ -222,9 +239,15 @@ impl<'a> Depth<'a> {
     }
     fn z(&self, d: Option<f64>) -> f32 {
         match d {
-            Some(d) if d.is_finite() && self.scale > 0.0 => ((self.near - d) * self.scale).clamp(0.0, DEPTH_SPAN) as f32,
+            Some(d) if d.is_finite() && self.scale > 0.0 => (DEPTH_NEAR + ((self.near - d) * self.scale).clamp(0.0, DEPTH_SPAN)) as f32,
             _ => 0.0,
         }
+    }
+    /// [`MeshData::slope`] for the XY plane's depth slope `g` ([`DisplayList::plane_slope`]):
+    /// nearer is smaller. Zero without depths, or when it doesn't fit an f32.
+    fn slope(&self, g: [f64; 2]) -> [f32; 2] {
+        let s = g.map(|v| (-v * self.scale) as f32);
+        if s.iter().all(|v| v.is_finite()) { s } else { [0.0; 2] }
     }
     fn vert(&self, i: usize) -> f32 {
         self.z(self.verts.get(i).copied())
@@ -257,6 +280,7 @@ pub fn build_mesh(list: &DisplayList, origin: Vec2, bg: Rgb, lwdisplay: bool) ->
         ..MeshData::default()
     };
     let depth = Depth::of(list);
+    m.slope = depth.slope(list.plane_slope);
     // The shaded faces among the primitives (ranges in order).
     let mut faces = list.faces.iter().peekable();
     for (i, prim) in list.prims.iter().enumerate() {
@@ -297,6 +321,10 @@ pub fn build_mesh(list: &DisplayList, origin: Vec2, bg: Rgb, lwdisplay: bool) ->
                     }
                 }
                 let to = m.tri_vertices();
+                // ponytail: other fills (hatches, filled text, solids' transparent faces) only
+                // test depth, so they keep their 2D order and never z-fight; a solid drawn later
+                // and lying behind one (below z = 0) draws over it. Write their depth too, with
+                // a per-run order bias, if that matters.
                 if (face || mask) && depth.any() && from < to {
                     match m.writes.last_mut() {
                         Some(w) if w.end == from => w.end = to,
@@ -476,6 +504,7 @@ struct Layer {
     breaks: Vec<[usize; 3]>,
     writes: Vec<std::ops::Range<usize>>,
     edge_lines: usize,
+    slope: [f32; 2],
 }
 
 struct Resources {
@@ -507,7 +536,7 @@ const SHADER: &str = r#"
 struct View {
     a: vec4<f32>, // offset x, offset y (world), scale (device px per unit), 1 = linear output
     b: vec4<f32>, // canvas centre x, y (device px), screen w, h (device px)
-    c: vec4<f32>, // pixels per point, dash period in points (0 = solid)
+    c: vec4<f32>, // pixels per point, dash period in points (0 = solid), XY-plane depth per world x, y
     d: vec4<f32>, // transform linear part: a, b, c, d (x' = a x + c y, y' = b x + d y)
     e: vec4<f32>, // transform translation x, y (world, origin-relative)
 };
@@ -582,8 +611,15 @@ fn vs_quad(
     let t = select(0.0, 1.0, vi == 1u || vi == 4u || vi == 5u);
     let s = select(-1.0, 1.0, vi == 2u || vi == 3u || vi == 5u);
     let along = mix(pa - dir * hw, pb + dir * hw, t);
+    let corner = along + n * hw * s;
+    // The corner at the XY plane's depth there (wide lines are 2D objects): its offset from the
+    // line's end in world units (y up) times the plane's depth slope. Lists without depth have
+    // no slope. ponytail: the offset ignores the layer's transform; only the untransformed
+    // drawing carries depth, undo the transform here if a transformed layer ever does.
+    let off = corner - mix(pa, pb, t);
+    let z = mix(za, zb, t) + dot(view.c.zw, vec2<f32>(off.x, -off.y) / max(view.a.z, 1e-20));
     var o: VOut;
-    o.pos = px_to_clip_at(along + n * hw * s, mix(za, zb, t));
+    o.pos = px_to_clip_at(corner, clamp(z, 0.0, 1.0));
     o.color = out_color(color);
     o.along = start * view.a.z + mix(-hw, len + hw, t);
     return o;
@@ -650,6 +686,7 @@ impl Resources {
                 breaks: Vec::new(),
                 writes: Vec::new(),
                 edge_lines: 0,
+                slope: [0.0; 2],
             }
         };
         // A render pass with a stencil buffer needs every pipeline to name its format; only the
@@ -848,6 +885,7 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
                 res.breaks = m.breaks;
                 res.writes = m.writes;
                 res.edge_lines = m.edge_lines;
+                res.slope = m.slope;
                 res.key = Some(self.key);
             }
         }
@@ -855,7 +893,7 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
         let [w, h] = screen.size_in_pixels;
         let a = [self.offset[0], self.offset[1], self.scale * ppp, if linear_out { 1.0 } else { 0.0 }];
         let b = [self.center[0] * ppp, self.center[1] * ppp, w.max(1) as f32, h.max(1) as f32];
-        let c = [ppp, self.dash, 0.0, 0.0];
+        let c = [ppp, self.dash, res.slope[0], res.slope[1]];
         let [ma, mb, mc, md, tx, ty] = self.xform;
         let d = [ma, mb, mc, md];
         let e = [tx, ty, 0.0, 0.0];
@@ -1124,11 +1162,12 @@ mod tests {
     fn depths_run_from_the_nearest_and_faces_write() {
         let l = shaded_list();
         let m = build_mesh(&l, Vec2::ZERO, Rgb(255, 255, 255), false);
-        // Depths 0..=6 span 0.5..=0 (nearest first).
+        // Depths 0..=6 span 0.75..=0.25 (nearest first).
         let z = |bytes: &[u8], i: usize| f32_at(bytes, i * VERTEX_SIZE + 12);
-        assert_eq!([z(&m.lines, 0), z(&m.lines, 2)], [0.5, 0.0], "the line behind, the one in front");
-        assert_eq!(z(&m.tris, 0), 0.25, "the face's corner at depth 3");
-        assert!((z(&m.tris, 1) - 1.0 / 12.0).abs() < 1e-7, "the one at depth 5");
+        assert_eq!([z(&m.lines, 0), z(&m.lines, 2)], [0.75, 0.25], "the line behind, the one in front");
+        assert_eq!(z(&m.tris, 0), 0.5, "the face's corner at depth 3");
+        assert!((z(&m.tris, 1) - (0.25 + 1.0 / 12.0)).abs() < 1e-7, "the one at depth 5");
+        assert_eq!(m.slope, [0.0; 2], "no plane slope given");
         // The face and the wipeout write depth (one run: they follow each other); the edges
         // follow the lines.
         assert_eq!(m.writes, vec![0..9]);
@@ -1145,11 +1184,22 @@ mod tests {
         let m = build_mesh(&bad, Vec2::ZERO, Rgb(255, 255, 255), false);
         assert!(m.writes.is_empty() && m.edge_lines == 0);
         assert!((0..m.tri_vertices()).all(|i| z(&m.tris, i) == 0.0));
-        // Wide lines carry the depth of both ends.
+        // Wide lines carry the depth of both ends, and the plane's slope for their corners:
+        // nearer is smaller, over the 6 units of depth the list spans.
         let mut wide = shaded_list();
         wide.prims[1].lw = 1.0;
+        wide.plane_slope = [1.0, -2.0];
         let m = build_mesh(&wide, Vec2::ZERO, Rgb(255, 255, 255), true);
-        assert_eq!([f32_at(&m.quads, 28), f32_at(&m.quads, 32)], [0.5, 0.5]);
+        assert_eq!([f32_at(&m.quads, 28), f32_at(&m.quads, 32)], [0.75, 0.75]);
+        assert_eq!(m.slope, [-0.5 / 6.0, 1.0 / 6.0].map(|v: f64| v as f32));
+        // A slope too steep for an f32, or a list without depth: no slope.
+        wide.plane_slope = [f64::MAX, 0.0];
+        assert_eq!(build_mesh(&wide, Vec2::ZERO, Rgb(255, 255, 255), true).slope, [0.0; 2]);
+        wide.plane_slope = [f64::NAN, 1.0];
+        assert_eq!(build_mesh(&wide, Vec2::ZERO, Rgb(255, 255, 255), true).slope, [0.0; 2]);
+        let mut flat = list();
+        flat.plane_slope = [1.0, 1.0];
+        assert_eq!(build_mesh(&flat, Vec2::ZERO, Rgb(255, 255, 255), true).slope, [0.0; 2]);
     }
 
     #[test]
@@ -1163,9 +1213,10 @@ mod tests {
     }
 
     /// Render `list` into a white 64 × 64 target with a `format` depth/stencil buffer, one
-    /// world unit per pixel; the sum of each pixel's colour channels, row by row from the top.
+    /// world unit per pixel, lineweights shown or not (`lwdisplay`); the sum of each pixel's
+    /// colour channels, row by row from the top.
     #[allow(clippy::unwrap_used)]
-    fn render(list: &DisplayList, format: wgpu::TextureFormat) -> Vec<u32> {
+    fn render(list: &DisplayList, format: wgpu::TextureFormat, lwdisplay: bool) -> Vec<u32> {
         const SIZE: u32 = 64;
         let rs = egui_kittest::wgpu::create_render_state(egui_kittest::wgpu::default_wgpu_setup(), Default::default());
         let faults = Arc::new(GpuFaults::default());
@@ -1188,7 +1239,7 @@ mod tests {
         let ds = texture(format, wgpu::TextureUsages::RENDER_ATTACHMENT);
         let (color_view, ds_view) = (color.create_view(&Default::default()), ds.create_view(&Default::default()));
         let slot: MeshSlot = Arc::default();
-        *slot.lock().unwrap() = Some(build_mesh(list, Vec2::ZERO, Rgb(255, 255, 255), false));
+        *slot.lock().unwrap() = Some(build_mesh(list, Vec2::ZERO, Rgb(255, 255, 255), lwdisplay));
         let cb = CanvasCallback {
             key: 1,
             slot,
@@ -1259,7 +1310,7 @@ mod tests {
         // 765 = white.
         let at = |px: &[u32], x: usize, y: usize| px[y * 64 + x];
         let (black, grey, white) = (|v: u32| v < 100, |v: u32| (200..600).contains(&v), |v: u32| v > 700);
-        let px = render(&shaded_list(), wgpu::TextureFormat::Depth24PlusStencil8);
+        let px = render(&shaded_list(), wgpu::TextureFormat::Depth24PlusStencil8, false);
         assert!(grey(at(&px, 8, 32)) && black(at(&px, 24, 32)), "the line behind the face is hidden by it");
         assert!(grey(at(&px, 40, 8)) && grey(at(&px, 40, 20)), "the line in front shows over the face");
         // The edges on the sloped face show all along them; the one behind it stays hidden.
@@ -1275,9 +1326,51 @@ mod tests {
         assert!(black(at(&px, 24, 36)) && black(at(&px, 30, 36)), "the hidden edge");
         assert!(white(at(&px, 4, 4)));
         // Without a depth buffer: drawing order as before (lines over fills), no edges.
-        let px = render(&shaded_list(), wgpu::TextureFormat::Stencil8);
+        let px = render(&shaded_list(), wgpu::TextureFormat::Stencil8, false);
         assert!(grey(at(&px, 24, 32)), "the line draws over the face");
         assert!(black(at(&px, 30, 36)) && black(at(&px, 28, 24)) && black(at(&px, 26, 38)), "no edges");
+    }
+
+    /// A shaded 3D view of 2D objects: a wipeout over most of the view and, after it, a grey
+    /// line 12 points wide along x at y 32, both on the XY plane, which comes nearer toward the
+    /// top (depth y / 16).
+    fn wide_line_over_wipeout() -> DisplayList {
+        let v = Vec2::new;
+        let g = [0.0, 1.0 / 16.0];
+        let p = |kind, start, len, lw| DPrim { handle: Handle(1), color: Rgb(128, 128, 128), aci7: false, lw, transparency: 0, kind, start, len };
+        let tris = vec![v(4.0, 4.0), v(60.0, 4.0), v(60.0, 60.0), v(4.0, 4.0), v(60.0, 60.0), v(4.0, 60.0)];
+        let verts = vec![v(8.0, 32.0), v(56.0, 32.0)];
+        let depth = |q: &Vec2| g[0] * q.x + g[1] * q.y;
+        let mut l = DisplayList {
+            vert_depth: verts.iter().map(depth).collect(),
+            tri_depth: tris.iter().map(depth).collect(),
+            verts,
+            tris,
+            prims: vec![p(Kind::Mask, 0, 6, 0.0), p(Kind::Polyline, 0, 2, 3.2)],
+            plane_slope: g,
+            ..Default::default()
+        };
+        l.bounds = Bounds2::new(v(0.0, 0.0), v(64.0, 64.0));
+        l
+    }
+
+    #[test]
+    fn wide_lines_keep_their_whole_width_over_sloped_wipeouts() {
+        let at = |px: &[u32], x: usize, y: usize| px[y * 64 + x];
+        let grey = |v: u32| (200..600).contains(&v);
+        let l = wide_line_over_wipeout();
+        assert_eq!(wide_width(3.2, true), Some(12.0));
+        for format in [wgpu::TextureFormat::Depth24PlusStencil8, wgpu::TextureFormat::Stencil8] {
+            let px = render(&l, format, true);
+            // Screen rows 26 to 37 (world y 26 to 38): both halves of the line, the nearer one
+            // (the top) too, which a depth taken at the line's centre loses to the wipeout.
+            for y in 27..=36 {
+                for x in [12, 32, 52] {
+                    assert!(grey(at(&px, x, y)), "{format:?}: ({x}, {y}) = {}", at(&px, x, y));
+                }
+            }
+            assert!(at(&px, 32, 22) > 700 && at(&px, 32, 41) > 700, "{format:?}: white beside the line");
+        }
     }
 
     #[test]

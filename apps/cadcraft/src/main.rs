@@ -186,6 +186,9 @@ const APP_ID: &str = "ai.storyteller.cadcraft";
 
 /// Stencil bits of the window's render pass (see `NativeOptions::stencil_buffer`).
 const STENCIL_BITS: u8 = 8;
+/// Depth bits of the window's render pass (`NativeOptions::depth_buffer`): with the stencil,
+/// `Depth24PlusStencil8`, which depth-tests shaded 3D views on the GPU canvas.
+const DEPTH_BITS: u8 = 24;
 
 #[cfg(target_os = "macos")]
 const APP_ICON_PNG: &[u8] = include_bytes!("../../../assets/app-icon/cadcraft-macos-512.png");
@@ -275,8 +278,10 @@ fn main() -> eframe::Result {
             .with_title_shown(false)
             .with_app_id(APP_ID),
         persist_window: false,
-        // A stencil buffer clips the contents of clipped layout viewports on the GPU.
+        // A stencil buffer clips the contents of clipped layout viewports on the GPU; a depth
+        // buffer hides what is behind shaded solids.
         stencil_buffer: STENCIL_BITS,
+        depth_buffer: DEPTH_BITS,
         ..Default::default()
     };
     if let Some(icon) = app_icon() {
@@ -346,7 +351,7 @@ fn main() -> eframe::Result {
                 app.frame_cap = Some(cadcraft_ui_egui::gpu::FrameCap::new(240));
             }
             if let Some(rs) = &cc.wgpu_render_state {
-                app.set_wgpu(rs, eframe::egui_wgpu::depth_format_from_bits(0, STENCIL_BITS));
+                app.set_wgpu(rs, eframe::egui_wgpu::depth_format_from_bits(DEPTH_BITS, STENCIL_BITS));
             }
             if let Some(port) = control_port {
                 let rx = control_server::start(port, cc.egui_ctx.clone());
@@ -381,12 +386,19 @@ fn main() -> eframe::Result {
 
 #[cfg(test)]
 mod tests {
-    use super::{config_dir_from, control_flag, control_port_from, filters_for_save, follow_desktop};
+    use super::{DEPTH_BITS, STENCIL_BITS, config_dir_from, control_flag, control_port_from, filters_for_save, follow_desktop};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
     fn env<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
         move |k| vars.iter().find(|(n, _)| *n == k).map(|(_, v)| OsString::from(v))
+    }
+
+    #[test]
+    fn the_window_pass_has_a_depth_stencil_buffer() {
+        // The format eframe makes from the same bits is the one the canvas is told about.
+        let format = eframe::egui_wgpu::depth_format_from_bits(DEPTH_BITS, STENCIL_BITS);
+        assert_eq!(format, Some(eframe::wgpu::TextureFormat::Depth24PlusStencil8));
     }
 
     #[test]

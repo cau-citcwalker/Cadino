@@ -6,6 +6,7 @@
 //! one whose mesh is open). A boolean's result replaces the first solid (keeping its properties)
 //! and erases the others.
 
+use std::collections::HashSet;
 use std::f64::consts::{PI, TAU};
 use std::path::Path;
 use std::sync::Arc;
@@ -99,10 +100,13 @@ pub(super) fn add(s: &mut Session, b: Built) -> Result<Value> {
     Ok(json!({ "handle": h.hex() }))
 }
 
-/// A point as `[x, y]` or `[x, y, z]` (z = 0 when left out).
+/// A point as `[x, y]` or `[x, y, z]` (z = 0 when left out; `None` when z is not a number).
 pub(super) fn p3(p: &Value, key: &str) -> Option<Vec3> {
     let v = p.get(key)?;
-    let z = v.as_array().and_then(|a| a.get(2)).and_then(Value::as_f64).unwrap_or(0.0);
+    let z = match v.as_array().and_then(|a| a.get(2)) {
+        Some(z) => z.as_f64()?,
+        None => 0.0,
+    };
     let q = point_value(v)?.to3(z);
     q.is_finite().then_some(q)
 }
@@ -225,9 +229,11 @@ pub(super) fn curve_of(k: &EntityKind) -> Result<Option<Curve>> {
     Ok(Some(match k {
         EntityKind::Line(l) => Curve::Segs(vec![Seg::Line { a: l.a, b: l.b }]),
         EntityKind::Arc(a) => {
-            let end = if a.end > a.start { a.end } else { a.end + TAU };
-            let at = |t: f64| Vec3::new(a.center.x + a.radius * t.cos(), a.center.y + a.radius * t.sin(), a.center.z);
-            Curve::Segs(vec![Seg::Arc { a: at(a.start), mid: at((a.start + end) / 2.0), b: at(end) }])
+            // Counterclockwise from start to end with the angles normalised (files can hold ones
+            // past a turn), as the arc draws.
+            let g = cadcraft_geom::Arc::new(a.center.xy(), a.radius, a.start, a.end);
+            let z = a.center.z;
+            Curve::Segs(vec![Seg::Arc { a: g.start_point().to3(z), mid: g.mid_point().to3(z), b: g.end_point().to3(z) }])
         }
         EntityKind::Circle(c) => Curve::Segs(vec![Seg::Circle { center: c.center, radius: c.radius, normal: Vec3::Z }]),
         EntityKind::LwPolyline(p) if p.vertices.len() >= 2 => Curve::Segs(poly_segs(&p.vertices, p.elevation, p.closed)?),
@@ -322,13 +328,14 @@ fn helix_curve(h: &Helix) -> Curve {
 }
 
 /// A curve object as a kernel profile of lines and arcs (closed or, unless `closed_only`, open);
-/// `None` for other objects.
+/// `None` for other objects (splines and helices too: a profile is lines and arcs).
 fn profile(k: &EntityKind, closed_only: bool) -> Result<Option<Vec<Seg>>> {
     let open = match k {
         EntityKind::Line(_) | EntityKind::Arc(_) => true,
         EntityKind::LwPolyline(p) => !p.closed,
         EntityKind::Polyline3d(p) => !p.closed,
-        _ => false,
+        EntityKind::Circle(_) | EntityKind::Region(_) => false,
+        _ => return Ok(None),
     };
     if closed_only && open {
         return Ok(None);
@@ -343,11 +350,26 @@ pub(super) fn locked_err() -> EngineError {
     EngineError::Other("The objects are on a locked layer.".into())
 }
 
+/// One object's shape in a command over a selection: `None` when the kernel refused that object
+/// (a degenerate or unsuitable curve: the object is skipped, and the first reason is kept in
+/// `why` for when nothing is made), an error when the kernel failed (nothing then changes).
+pub(super) fn or_skip<T>(r: cadcraft_kernel::Result<T>, why: &mut Option<EngineError>) -> Result<Option<T>> {
+    match r {
+        Ok(v) => Ok(Some(v)),
+        Err(e @ cadcraft_kernel::KernelError::Invalid(_)) => {
+            why.get_or_insert(kernel(e));
+            Ok(None)
+        }
+        Err(e) => Err(kernel(e)),
+    }
+}
+
 /// Each profile among `hs` with the solid or surface `make` builds from it, in the profile's space
 /// (keeping its layer and other properties). A profile that made a solid is erased; one that made
 /// a surface stays (as AutoCAD's default DELOBJ does). Objects that aren't curves (or closed ones
-/// when `closed_only`), and those on locked layers, are skipped. Every shape is made before the
-/// drawing changes, so an error leaves it as it was.
+/// when `closed_only`), degenerate ones (no length or area, not flat) and those on locked layers
+/// are skipped; when nothing is made, the first degenerate one's reason is the error. Every shape
+/// is made before the drawing changes, so an error leaves it as it was.
 fn from_profiles(
     s: &mut Session,
     cmd: &str,
@@ -356,11 +378,12 @@ fn from_profiles(
     make: impl Fn(&[Seg]) -> cadcraft_kernel::Result<Built>,
 ) -> Result<Value> {
     let mut built = Vec::new();
-    let (mut skipped, mut locked) = (0usize, 0usize);
+    let (mut skipped, mut locked, mut why) = (0usize, 0usize, None);
     let d = s.doc()?;
-    for (i, h) in hs.iter().enumerate() {
+    let mut seen = HashSet::with_capacity(hs.len());
+    for h in hs {
         // A handle given twice is one profile.
-        if hs.get(..i).is_some_and(|before| before.contains(h)) {
+        if !seen.insert(*h) {
             continue;
         }
         let (Some(e), Some(space)) = (d.entity(*h), d.space_of(*h)) else { continue };
@@ -368,11 +391,18 @@ fn from_profiles(
             locked += 1;
             continue;
         }
-        let Some(prof) = profile(&e.kind, closed_only)? else {
-            skipped += 1;
-            continue;
+        let shape = match profile(&e.kind, closed_only) {
+            Ok(Some(prof)) => or_skip(make(&prof), &mut why)?,
+            Ok(None) => None,
+            Err(err) => {
+                why.get_or_insert(err);
+                None
+            }
         };
-        built.push((*h, space, e.common.clone(), make(&prof).map_err(kernel)?));
+        match shape {
+            Some(b) => built.push((*h, space, e.common.clone(), b)),
+            None => skipped += 1,
+        }
     }
     if built.is_empty() {
         let what = if closed_only {
@@ -380,7 +410,7 @@ fn from_profiles(
         } else {
             "select lines, arcs, circles, polylines or single-loop regions"
         };
-        return Err(if locked > 0 { locked_err() } else { bad(cmd, what) });
+        return Err(why.unwrap_or_else(|| if locked > 0 { locked_err() } else { bad(cmd, what) }));
     }
     let d = s.doc_mut()?;
     let mut made = Vec::with_capacity(built.len());
@@ -411,11 +441,11 @@ fn run_revolve(s: &mut Session, p: &Value) -> Result<Value> {
 /// The 3D solids (and surfaces) among `hs`, in order, each once.
 pub(super) fn solids(s: &Session, hs: &[Handle]) -> Result<Vec<(Handle, Solid3d)>> {
     let d = s.doc()?;
+    let mut seen = HashSet::with_capacity(hs.len());
     Ok(hs
         .iter()
-        .enumerate()
-        .filter(|(i, h)| !hs.get(..*i).is_some_and(|before| before.contains(h)))
-        .filter_map(|(_, h)| match &d.entity(*h)?.kind {
+        .filter(|h| seen.insert(**h))
+        .filter_map(|h| match &d.entity(*h)?.kind {
             EntityKind::Solid3d(x) => Some((*h, x.clone())),
             _ => None,
         })
@@ -606,6 +636,8 @@ impl Interactive for Ask {
     }
     fn preview(&self, _s: &Session, cursor: Vec2) -> Vec<EntityKind> {
         // The base outline as the cursor moves: BOX's rectangle, the others' base circle.
+        // ponytail: drawn at z = 0 even when the first point is on a 3D object (`point_z`); 3D
+        // preview objects (an elevation, or the solid itself) when that misleads in 3D views.
         let Some(b) = self.base else { return Vec::new() };
         match (self.id, self.vals.len()) {
             ("box" | "wedge", 1) => vec![super::helpers::lwpoly(super::helpers::rect_vertices(b, cursor), true)],
@@ -893,11 +925,66 @@ mod plain_tests {
         });
         assert!(r.is_err());
         assert_eq!(*s.doc().unwrap(), before);
-        // So does a profile with no area.
+        // A profile with no area alone: its reason is the error, and nothing changes.
         let flat = s.add_entity(super::super::helpers::lwpoly(vec![pv(0.0, 0.0, 0.0), pv(5.0, 0.0, 0.0)], true)).unwrap();
         let before = s.doc().unwrap().clone();
-        assert!(from_profiles(&mut s, "extrude", &[a, flat], false, |_| Ok(Built::default())).is_err());
+        let r = from_profiles(&mut s, "extrude", &[flat], false, |_| Ok(Built::default()));
+        assert!(r.err().is_some_and(|e| e.to_string().contains("no area")));
         assert_eq!(*s.doc().unwrap(), before);
+    }
+
+    #[test]
+    fn degenerate_objects_in_a_selection_are_skipped() {
+        let mut s = Session::new();
+        let good = circle(&mut s, 0.0);
+        let flat = s.add_entity(super::super::helpers::lwpoly(vec![pv(0.0, 0.0, 0.0), pv(5.0, 0.0, 0.0)], true)).unwrap();
+        let point = s.add_entity(EntityKind::Line(cadcraft_doc::Line { a: Vec3::ZERO, b: Vec3::ZERO })).unwrap();
+        let bent = s
+            .add_entity(EntityKind::Polyline3d(cadcraft_doc::Polyline3d {
+                points: vec![Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 1.0), Vec3::new(0.0, 1.0, 0.0)],
+                closed: true,
+            }))
+            .unwrap();
+        let spline = s.add_entity(EntityKind::Spline(Spline::default())).unwrap();
+        // The kernel refuses the zero-length line and the bent 3D polyline before modelling.
+        let make = |prof: &[Seg]| match prof {
+            [Seg::Circle { .. }] => Ok(Built::default()),
+            _ => Err(cadcraft_kernel::KernelError::Invalid("not flat".into())),
+        };
+        let r = from_profiles(&mut s, "extrude", &[good, flat, point, bent, spline], false, make).unwrap();
+        assert_eq!((r["handles"].as_array().map(Vec::len), r["skipped"].as_u64()), (Some(1), Some(4)), "{r}");
+        let d = s.doc().unwrap();
+        assert!(d.entity(good).is_none() && [flat, point, bent, spline].iter().all(|h| d.entity(*h).is_some()));
+        // A kernel failure (not a refusal) still fails the whole command.
+        let c = circle(&mut s, 9.0);
+        let before = s.doc().unwrap().clone();
+        assert!(from_profiles(&mut s, "extrude", &[c], false, |_| Err(cadcraft_kernel::KernelError::Failed("x".into()))).is_err());
+        assert_eq!(*s.doc().unwrap(), before);
+    }
+
+    #[test]
+    fn arcs_past_a_turn_are_normalised() {
+        // 0 to 450 degrees is the quarter from 0 to 90, not the three quarters the other way.
+        let a = cadcraft_doc::Arc { center: Vec3::new(1.0, 1.0, 2.0), radius: 2.0, start: 0.0, end: 2.5 * PI };
+        let Some(Curve::Segs(segs)) = curve_of(&EntityKind::Arc(a)).unwrap() else { panic!("not segments") };
+        let [Seg::Arc { a, mid, b }] = segs.as_slice() else { panic!("{segs:?}") };
+        let h = 2.0 * std::f64::consts::FRAC_1_SQRT_2;
+        assert!((*a - Vec3::new(3.0, 1.0, 2.0)).len() < 1e-9 && (*b - Vec3::new(1.0, 3.0, 2.0)).len() < 1e-9, "{segs:?}");
+        assert!((*mid - Vec3::new(1.0 + h, 1.0 + h, 2.0)).len() < 1e-9, "{segs:?}");
+        // Negative angles too: -90 to 0 is the quarter below the centre.
+        let a = cadcraft_doc::Arc { center: Vec3::ZERO, radius: 1.0, start: -0.5 * PI, end: 0.0 };
+        let Some(Curve::Segs(segs)) = curve_of(&EntityKind::Arc(a)).unwrap() else { panic!("not segments") };
+        assert!(matches!(segs.as_slice(), [Seg::Arc { mid, .. }] if mid.y < -0.5 && mid.x > 0.5), "{segs:?}");
+    }
+
+    #[test]
+    fn dedup_is_linear_in_the_handles_given() {
+        // Hostile: the same handle a hundred thousand times, and as many that hold nothing.
+        let mut s = Session::new();
+        let x = solid(&mut s);
+        let mut hs = vec![x; 100_000];
+        hs.extend((1..100_000u64).map(|i| Handle(0x10_0000 + i)));
+        assert_eq!(solids(&s, &hs).unwrap().len(), 1);
     }
 
     #[test]

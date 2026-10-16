@@ -372,6 +372,8 @@ pub fn handle(app: &mut CadApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
                 }
                 return ok(json!({"world": [wp.x, wp.y]}));
             }
+            // A point given here is on the XY plane: no height left from a 3D snap.
+            app.session.point_z = None;
             let r = match s("button").unwrap_or("left") {
                 "right" => app.session.input(Input::Enter),
                 _ if app.session.prompting() => app.session.input(Input::Point(wp)),
@@ -480,6 +482,7 @@ pub fn handle(app: &mut CadApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
                 transparency: app.session.settings.transparency_display,
                 view_dir,
                 shaded: st.shaded,
+                edges: st.shaded_edges,
                 ..Default::default()
             };
             let list = cadcraft_render::build(&st.doc, &st.space, &opts);
@@ -616,6 +619,18 @@ mod tests {
         assert!(req.begin());
         let _ = req.reply.send(json!({"ok": true}));
         assert_eq!(pending.wait(Duration::ZERO), json!({"ok": true}));
+    }
+
+    /// A control-channel click gives its point on the XY plane: a height left from a 3D snap is
+    /// dropped before the point goes to the command.
+    #[test]
+    fn pointer_click_drops_a_3d_snap_height() {
+        let mut app = CadApp::new(cadcraft_engine::Session::new(), crate::Services::default());
+        app.session.cmdline("line").unwrap();
+        app.session.point_z = Some(20.0);
+        let (req, _reply) = ControlRequest::new("ui.pointer", json!({"x": 3.0, "y": 4.0}));
+        let _ = handle(&mut app, &egui::Context::default(), &req);
+        assert_eq!((app.session.last_point, app.session.point_z), (Vec2::new(3.0, 4.0), None));
     }
 
     #[test]

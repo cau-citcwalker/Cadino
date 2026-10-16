@@ -124,6 +124,10 @@ pub(crate) fn draw(b: &mut Builder, ctx: &Ctx, s: &Solid3d, color: Ink, lw: f32)
     {
         b.list.faces.push(from..to);
     }
+    // Plain Shaded draws no edges; Shaded with Edges ([`crate::Options::edges`]) does.
+    if !b.opts.edges {
+        return;
+    }
     let ink = shade(base, color, EDGE_LEVEL);
     for e in &s.mesh.edges {
         let (pts, z): (Vec<Vec2>, Vec<f64>) = e.iter().map(|p| xf.apply(*p)).map(|w| (proj(w), toward.dot(w))).unzip();
@@ -229,6 +233,11 @@ mod tests {
         Options { view_dir: ViewDir::new(dir), shaded, ..Options::default() }
     }
 
+    /// Shaded with Edges.
+    fn with_edges(dir: Vec3) -> Options {
+        Options { edges: true, ..view(dir, true) }
+    }
+
     #[test]
     fn plan_wireframe_is_the_footprint() {
         let list = build(&drawing(), &Space::Model, &Options::default());
@@ -331,6 +340,7 @@ mod tests {
         for o in [Options::default(), view(Vec3::new(-1.0, -1.0, 1.0), false)] {
             let list = build(&d, &Space::Model, &o);
             assert!(list.vert_depth.is_empty() && list.tri_depth.is_empty() && list.faces.is_empty() && list.edges.is_empty());
+            assert_eq!(list.plane_slope, [0.0; 2]);
         }
         // A 2D drawing shaded in plan: the same list, every vertex at depth 0.
         let mut flat = Drawing::default();
@@ -348,7 +358,7 @@ mod tests {
         line(&mut d, Vec2::new(2.0, 2.0), Vec2::new(3.0, 3.0));
         line(&mut d, Vec2::new(-3.0, -3.0), Vec2::new(-2.0, -2.0));
         let dir = Vec3::new(-1.0, -1.0, 1.0);
-        let list = build(&d, &Space::Model, &view(dir, true));
+        let list = build(&d, &Space::Model, &with_edges(dir));
         assert_depth_consistent(&list);
         let lines: Vec<&[f64]> =
             list.prims.iter().filter(|p| p.kind == Kind::Polyline).map(|p| &list.vert_depth[p.start as usize..(p.start + p.len) as usize]).collect();
@@ -359,6 +369,10 @@ mod tests {
         // A 2D point's depth is its world point's (on z = 0).
         let v = ViewDir::new(dir);
         assert!((behind[0] - v.depth(Vec3::new(2.0, 2.0, 0.0))).abs() < 1e-12);
+        // The XY plane's depth slope gives every 2D point's depth.
+        let line_start = list.prims.iter().find(|p| p.kind == Kind::Polyline).map(|p| p.start as usize).unwrap_or_default();
+        let (g, q) = (list.plane_slope, list.verts[line_start]);
+        assert!((g[0] * q.x + g[1] * q.y - behind[0]).abs() < 1e-12, "{g:?}");
         // The cube's faces are marked, and its 12 edges go over them, at their corners' depths.
         assert_eq!(list.faces.len(), 1);
         assert_eq!(list.edges.len(), 12);
@@ -375,11 +389,12 @@ mod tests {
                 d.add(&Space::Model, Default::default(), EntityKind::Solid3d(cube())).unwrap();
             }
         }
-        let list = build(&d, &Space::Model, &view(Vec3::new(1.0, -1.0, 1.0), true));
+        let list = build(&d, &Space::Model, &with_edges(Vec3::new(1.0, -1.0, 1.0)));
         assert_depth_consistent(&list);
         assert_eq!((list.faces.len(), list.edges.len()), (3, 36));
-        let one = crate::build_entities(&d, d.model.iter().map(|e| e.as_ref()), &view(Vec3::new(1.0, -1.0, 1.0), true));
+        let one = crate::build_entities(&d, d.model.iter().map(|e| e.as_ref()), &with_edges(Vec3::new(1.0, -1.0, 1.0)));
         assert_eq!((&one.vert_depth, &one.tri_depth, &one.faces), (&list.vert_depth, &list.tri_depth, &list.faces));
+        assert_eq!(one.plane_slope, list.plane_slope);
     }
 
     #[test]
@@ -396,6 +411,23 @@ mod tests {
         // Lit alike from either side.
         let shade = |dir| build(&open, &Space::Model, &view(dir, true)).prims[0].color;
         assert_eq!(shade(Vec3::Z), shade(-Vec3::Z));
+    }
+
+    #[test]
+    fn plain_shaded_draws_no_edges() {
+        let dir = Vec3::new(-1.0, -1.0, 1.0);
+        let plain = build(&drawing(), &Space::Model, &view(dir, true));
+        let edged = build(&drawing(), &Space::Model, &with_edges(dir));
+        assert_depth_consistent(&plain);
+        assert!(plain.edges.is_empty());
+        assert_eq!(edged.edges.len(), 12);
+        // The faces are the same either way; only the edges' vertices are added.
+        assert_eq!((&plain.prims, &plain.tris, &plain.faces), (&edged.prims, &edged.tris, &edged.faces));
+        assert_eq!(edged.verts.len() - plain.verts.len(), 24);
+        // Edges mean nothing without shading: the wireframe is unchanged.
+        let wire = |edges| build(&drawing(), &Space::Model, &Options { edges, ..view(dir, false) });
+        let (a, b) = (wire(false), wire(true));
+        assert!(b.edges.is_empty() && a.prims == b.prims && a.verts == b.verts);
     }
 
     #[test]

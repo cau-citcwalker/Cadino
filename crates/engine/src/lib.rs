@@ -1454,6 +1454,8 @@ impl Session {
     /// script line (see [`Session::script`]), so `MOVE L  0,0 5,5` ends the selection with the
     /// second space and `ERASE L ` with the trailing one. Input after the command ends is ignored.
     pub fn cmdline(&mut self, text: &str) -> Result<()> {
+        // Typed points are on the XY plane: a 3D snap's height went with the click that made it.
+        self.point_z = None;
         let t = text.trim_end_matches(['\r', '\n']);
         // The command line types spaces literally at free-text prompts: the line is one input.
         if self.current_prompt().is_some_and(|p| p.accept.text && !p.accept.point && !p.accept.number) {
@@ -1608,6 +1610,7 @@ impl Session {
             return Err(EngineError::BadParams { cmd: "script".into(), msg: "a script is already running; nested scripts are not supported".into() });
         }
         self.in_script = true;
+        self.point_z = None;
         let r = self.script_lines(text);
         self.in_script = false;
         r

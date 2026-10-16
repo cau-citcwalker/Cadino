@@ -1260,3 +1260,14 @@ menu	Modify	Ändra
 	SW Isometric	Isometrisk SV
 	Shaded	Skuggad
 	Top	Ovanifrån
+	Wedge	Kil
+	Slice	Skär
+	Shell	Urholka
+	Chamfer Edge	Fasa kant
+	Chamfer Edges	Fasa kanter
+	Fillet Edge	Runda kant
+	Fillet Edges	Runda kanter
+	Planar Surface	Plan yta
+	Planar	Plan
+	Surfaces	Ytor
+	Shaded with Edges	Skuggad med kanter

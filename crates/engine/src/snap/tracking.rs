@@ -536,7 +536,8 @@ impl Tracker {
         // 2. A path crossing an object.
         if cfg.running(mode::INT | mode::APP) {
             let ix = crate::spatial::index(d, space);
-            let prims = super::gather(d, space, &ix, cursor, aperture, mode::NEA).map(|(_, p)| p).unwrap_or_default();
+            let prims =
+                super::gather(d, space, &ix, cursor, aperture, mode::NEA | (cfg.osmode & mode::NO_SOLIDS)).map(|(_, p)| p).unwrap_or_default();
             for prim in prims.iter().take(200) {
                 let extend = cfg.running(mode::APP) && super::extendable(prim);
                 for seg in super::prim_segments(prim) {
@@ -591,7 +592,7 @@ pub fn candidate(
         return None;
     }
     let ix = crate::spatial::index(d, space);
-    let prims = super::gather(d, space, &ix, cursor, aperture, mode::NEA).map(|(_, p)| p).unwrap_or_default();
+    let prims = super::gather(d, space, &ix, cursor, aperture, mode::NEA | (cfg.osmode & mode::NO_SOLIDS)).map(|(_, p)| p).unwrap_or_default();
     candidate_from_prims(cursor, hit, aperture, cfg, base, &prims)
 }
 
@@ -777,20 +778,23 @@ pub struct CursorQuery {
 impl crate::Session {
     /// The cursor at a point prompt, snapped: running object snaps first (resting on a snap point
     /// acquires it for tracking), then grid snap, then tracking paths (polar, object snap
-    /// tracking, Extension, Parallel, Apparent Intersection), then ortho.
+    /// tracking, Extension, Parallel, Apparent Intersection), then ortho. In a model view that
+    /// is not plan, 3D solids are left out (the UI snaps to them in 3D).
     pub fn snap_cursor(&mut self, raw: Vec2, q: &CursorQuery) -> CursorSnap {
         // Snap and grid spacing are the drawing's (SNAPUNIT/GRIDUNIT live in its header).
         let s = self.drafting_settings();
         let angbase = self.angle_settings().angbase;
         let Ok(st) = self.state() else { return CursorSnap { point: raw, ..Default::default() } };
         let (doc, space) = (st.doc.clone(), st.edit_space());
+        let no_solids = if st.screen_dir().is_plan() { 0 } else { mode::NO_SOLIDS };
         if !raw.is_finite() {
             return CursorSnap { point: raw, ..Default::default() };
         }
         // Polar angles relative to the last segment when the base point is where it ends.
         let last = self.last_segment.filter(|(_, b)| q.base.is_some_and(|base| base.near(*b, 1e-9 * (1.0 + b.len())))).map(|(a, b)| a.angle_to(b));
-        let cfg = TrackConfig::relative_to(&s, angbase, last);
-        let osmode = s.osmode | if s.osnaphatch { mode::HATCH } else { 0 };
+        let mut cfg = TrackConfig::relative_to(&s, angbase, last);
+        cfg.osmode |= no_solids;
+        let osmode = s.osmode | no_solids | if s.osnaphatch { mode::HATCH } else { 0 };
         let ix = crate::spatial::index(&doc, &space);
         let (hit, near_prims) = super::osnap_with_neighborhood(&doc, &space, &ix, raw, q.aperture, osmode, q.base, q.deferred);
         let cand = match (osmode & mode::HATCH, near_prims.as_deref()) {

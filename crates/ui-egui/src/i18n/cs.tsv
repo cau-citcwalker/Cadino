@@ -1232,3 +1232,14 @@ menu	Modify	Modifikace
 	SW Isometric	JZ izometrie
 	Shaded	Stínovaný
 	Top	Shora
+	Wedge	Klín
+	Slice	Řez
+	Shell	Skořepina
+	Chamfer Edge	Zkosit hranu
+	Chamfer Edges	Zkosit hrany
+	Fillet Edge	Zaoblit hranu
+	Fillet Edges	Zaoblit hrany
+	Planar Surface	Rovinná plocha
+	Planar	Rovinná
+	Surfaces	Plochy
+	Shaded with Edges	Stínovaný s hranami
