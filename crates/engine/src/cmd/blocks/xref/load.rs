@@ -172,6 +172,7 @@ pub(crate) fn find(path: &str, dir: Option<&Path>) -> Option<PathBuf> {
 
 /// Read a drawing file through the host's io hooks.
 fn read(file: &Path) -> Result<Drawing, String> {
+    crate::limits::files("xref").map_err(|e| e.to_string())?;
     let hooks = super::super::super::file::io().ok_or("file formats are not available in this build")?;
     #[cfg(not(target_arch = "wasm32"))]
     {

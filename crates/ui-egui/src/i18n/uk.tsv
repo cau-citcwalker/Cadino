@@ -1444,3 +1444,26 @@
 	Port {port} is in use	Порт {port} зайнятий
 	Port {port} could not be opened: {error}	Не вдалося відкрити порт {port}: {error}
 @plural	{n} model	{n} модель|{n} моделі|{n} моделей
+# AI assistant messages (cadcraft_ai::text).
+	Stopped	Зупинено
+	The AI assistant needs the desktop app	ШІ-помічник працює лише в настільному застосунку
+	Choose a model in Options ▸ AI.	Виберіть модель у Параметри ▸ ШІ.
+	Add your {provider} API key in Options ▸ AI.	Додайте свій ключ API {provider} у Параметри ▸ ШІ.
+	Switched to {model}: the conversation starts over.	Перемкнено на {model}: розмова починається заново.
+	The custom instructions changed: the conversation starts over.	Власні інструкції змінено: розмова починається заново.
+	Stopped after {rounds} rounds.	Зупинено після {rounds} раундів.
+	Stopped after {rounds} tool rounds; send a message to continue.	Зупинено після {rounds} раундів інструментів; надішліть повідомлення, щоб продовжити.
+	{error}. Trying again in {seconds} s ({attempt}/{attempts})	{error}. Повторна спроба через {seconds} с ({attempt}/{attempts})
+	{error}. Check the API key in Options ▸ AI.	{error}. Перевірте ключ API у Параметри ▸ ШІ.
+	Can't reach {base}. Is the local model server (Ollama, LM Studio…) running?	Не вдається з’єднатися з {base}. Чи запущено локальний сервер моделей (Ollama, LM Studio…)?
+	This model does not take images; the assistant goes on without them.	Ця модель не приймає зображень; помічник продовжує без них.
+	The reply reached the model's length limit.	Відповідь досягла обмеження довжини моделі.
+	The provider's content filter stopped the reply.	Фільтр вмісту постачальника зупинив відповідь.
+	The reply reached max_tokens ({max_tokens}); raise it in Options ▸ AI.	Відповідь досягла max_tokens ({max_tokens}); збільште його в Параметри ▸ ШІ.
+	Claude declined this request.	Claude відхилив цей запит.
+	Claude declined this request ({reason}).	Claude відхилив цей запит ({reason}).
+	Connected: {count} models	З’єднано: моделей — {count}
+	The system keychain is not available: {error}	Системне сховище ключів недоступне: {error}
+	Could not save the key in the system keychain: {error}	Не вдалося зберегти ключ у системному сховищі ключів: {error}
+	Could not remove the key from the system keychain: {error}	Не вдалося вилучити ключ із системного сховища ключів: {error}
+	Asking the system keychain…	Звернення до системного сховища ключів…

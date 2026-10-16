@@ -83,6 +83,7 @@ fn read_drawing(path: &str) -> Result<Drawing> {
 }
 
 fn read_file(_path: &str) -> Result<Vec<u8>> {
+    crate::limits::files("insert")?;
     #[cfg(not(target_arch = "wasm32"))]
     {
         std::fs::read(_path).map_err(|e| bad("insert", format!("{_path}: {e}")))

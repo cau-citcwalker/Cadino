@@ -5,6 +5,10 @@
 //!
 //! Lines are bounded ([`MAX_LINE`]): a longer one is refused and the connection closed, without
 //! buffering the rest. So is the number of connections served at once ([`MAX_CONNECTIONS`]).
+//!
+//! A line that is not JSON ends the connection: a web page can't send JSON lines to a loopback
+//! port, only an HTTP request, whose first line is never JSON, so its body (which can be a JSON
+//! line) is never read.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -18,8 +22,9 @@ use cadcraft_ui_egui::{CadApp, ControlRequest};
 use serde_json::{Value, json};
 
 /// Longest accepted request line (bytes, without the newline). Generous, so requests that carry
-/// whole drawings or images as base64 still fit.
-const MAX_LINE: usize = 256 * 1024 * 1024;
+/// drawings or images as base64 still fit; with [`MAX_CONNECTIONS`] it bounds what the server
+/// holds at once (1 GiB).
+const MAX_LINE: usize = 64 * 1024 * 1024;
 /// Connections served at once; further ones get an error line and are closed.
 const MAX_CONNECTIONS: usize = 16;
 
@@ -185,7 +190,10 @@ fn serve(stream: TcpStream, tx: Sender<ControlRequest>, ctx: egui::Context) {
                 }
                 r
             }
-            Err(e) => json!({"ok": false, "error": format!("bad JSON: {e}")}),
+            Err(e) => {
+                let _ = writeln!(out, "{}", json!({"ok": false, "error": format!("bad JSON: {e}; closing the connection")}));
+                break;
+            }
         };
         if writeln!(out, "{reply}").is_err() {
             break;
@@ -247,6 +255,26 @@ mod tests {
             let v: Value = serde_json::from_str(&line).unwrap();
             assert_eq!((v["id"].as_i64(), v["method"].as_str()), (Some(id), Some(method)), "{line}");
         }
+    }
+
+    /// A web page's request to the loopback port (a no-cors POST needs no preflight): its JSON
+    /// body never runs, as the request line before it is not JSON.
+    #[test]
+    fn an_http_request_never_reaches_the_app() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = channel::<ControlRequest>();
+        std::thread::spawn(move || accept_loop(listener, tx, egui::Context::default(), &AtomicBool::new(false)));
+        let mut c = TcpStream::connect(addr).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let body = "{\"id\":1,\"method\":\"app.quit\"}\n";
+        let request = format!("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+        c.write_all(request.as_bytes()).unwrap();
+        let mut replies = String::new();
+        let _ = c.read_to_string(&mut replies);
+        assert_eq!(replies.lines().count(), 1, "one error, then the connection closed: {replies}");
+        assert!(replies.contains("bad JSON"), "{replies}");
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "nothing reached the app");
     }
 
     fn free_port() -> u16 {

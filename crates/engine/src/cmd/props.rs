@@ -97,6 +97,9 @@ pub(super) fn entity_props(d: &cadcraft_doc::Drawing, e: &cadcraft_doc::Entity) 
         if !b.is_empty() {
             o.insert("bounds".into(), json!([[b.min.x, b.min.y], [b.max.x, b.max.y]]));
         }
+        if let Some(b) = bbox3(&e.kind) {
+            o.insert("bbox3".into(), b);
+        }
         match &e.kind {
             EntityKind::Line(l) => {
                 o.insert("length".into(), json!(l.a.xy().dist(l.b.xy())));
@@ -155,6 +158,22 @@ pub(super) fn transparency_value(t: Transparency) -> Value {
         Transparency::Percent(p) => json!(p),
         other => json!(other.name()),
     }
+}
+
+/// A 3D solid's world bounding box `[[minx, miny, minz], [maxx, maxy, maxz]]` (after its
+/// transform); `None` for other objects and a solid without a mesh.
+/// ponytail: from the display mesh, which a curved face's true extent can exceed by the
+/// tessellation tolerance; `cadcraft_kernel::boxes` is exact but runs the kernel worker.
+pub(super) fn bbox3(k: &EntityKind) -> Option<Value> {
+    let EntityKind::Solid3d(x) = k else { return None };
+    let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for p in x.mesh.points().map(|p| x.world(p)).filter(|p| p.is_finite()) {
+        for (v, (l, h)) in [p.x, p.y, p.z].into_iter().zip(lo.iter_mut().zip(hi.iter_mut())) {
+            *l = l.min(v);
+            *h = h.max(v);
+        }
+    }
+    (lo[0] <= hi[0]).then(|| json!([lo, hi]))
 }
 
 /// "ByLayer", "ByBlock" or a percentage 0..=90 (a number, or a string such as "50" or "50%").

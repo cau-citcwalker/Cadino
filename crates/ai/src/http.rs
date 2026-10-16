@@ -1,14 +1,15 @@
 //! HTTP for the providers: one request, the retry rules, and the reply as a reader.
 
+use std::cell::RefCell;
 use std::io::Read;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::Event;
+use crate::{Event, text};
 
-pub(crate) const DESKTOP_ONLY: &str = "The AI assistant needs the desktop app";
 /// Whole (non-streamed) replies are read up to this size.
 const MAX_BODY: u64 = 16 << 20;
 /// Sends after the first, while nothing of the reply was streamed.
@@ -30,6 +31,10 @@ pub(crate) enum Failure {
         status: u16,
         msg: String,
     },
+    /// Nothing answered at a URL other than a cloud provider's own (a local server that isn't
+    /// running, a wrong host): not sent again.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    Unreachable(String),
     Cancelled,
 }
 
@@ -39,10 +44,35 @@ impl Failure {
     }
     pub(crate) fn message(self) -> String {
         match self {
-            Failure::Retry { msg, .. } | Failure::Fatal { msg, .. } => msg,
-            Failure::Cancelled => "Stopped".into(),
+            Failure::Retry { msg, .. } | Failure::Fatal { msg, .. } | Failure::Unreachable(msg) => msg,
+            Failure::Cancelled => text::STOPPED.into(),
         }
     }
+}
+
+thread_local! {
+    /// The run's Stop flag, seen by the transport while it waits for the server ([`watch`]).
+    static CANCEL: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+}
+
+/// Requests on this thread end as soon as `cancel` is set, also while they wait for the server,
+/// until the guard is dropped.
+pub(crate) fn watch(cancel: &Arc<AtomicBool>) -> Watch {
+    Watch(CANCEL.replace(Some(Arc::clone(cancel))))
+}
+
+pub(crate) struct Watch(Option<Arc<AtomicBool>>);
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        CANCEL.set(self.0.take());
+    }
+}
+
+/// Whether the request on this thread was stopped.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn cancelled() -> bool {
+    CANCEL.with_borrow(|c| c.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)))
 }
 
 /// A reply: its status, whether it is a whole JSON document (not a stream), and the body.
@@ -66,7 +96,11 @@ pub(crate) fn retrying<T>(
             Err(Failure::Retry { msg, after }) if n < RETRIES => {
                 let ms = after.map_or(BACKOFF_MS << n, |s| s.min(60) * 1000);
                 n += 1;
-                on_event(Event::Notice(format!("{msg}. Trying again in {} s ({n}/{RETRIES})", ms.div_ceil(1000))));
+                let notice = text::RETRYING
+                    .replace("{seconds}", &ms.div_ceil(1000).to_string())
+                    .replace("{attempt}", &n.to_string())
+                    .replace("{attempts}", &RETRIES.to_string());
+                on_event(Event::Notice(notice.replace("{error}", &msg)));
                 let until = Instant::now() + Duration::from_millis(ms);
                 while let Some(left) = until.checked_duration_since(Instant::now()) {
                     if cancel.load(Ordering::Relaxed) {
@@ -94,7 +128,7 @@ pub(crate) fn check(r: Reply) -> Result<Reply, Failure> {
     let msg = format!("HTTP {}: {}", r.status, api.unwrap_or_else(|| text.trim().chars().take(300).collect()));
     Err(match r.status {
         408 | 409 | 429 | 500 | 502 | 503 | 504 | 529 => Failure::Retry { msg, after: r.retry_after },
-        401 => Failure::Fatal { status: 401, msg: format!("{}. Check the API key in Options ▸ AI.", msg.trim_end_matches('.')) },
+        401 => Failure::Fatal { status: 401, msg: text::CHECK_KEY.replace("{error}", msg.trim_end_matches('.')) },
         status => Failure::Fatal { status, msg },
     })
 }
@@ -112,7 +146,9 @@ pub(crate) fn get_json(url: &str, headers: &[(&'static str, String)]) -> Result<
 }
 
 /// POST `body` (JSON) to `url`, or GET it when `body` is `None`. Any status comes back as a
-/// [`Reply`]; a failure to connect or send is a retry.
+/// [`Reply`]; a failure to connect or send is a retry on a cloud provider's own URL, and
+/// [`Failure::Unreachable`] elsewhere; no answer within 180 s is a retry there and fatal
+/// elsewhere. Redirects are not followed (they would carry the API key to another host).
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn send(body: Option<&str>, url: &str, headers: &[(&'static str, String)]) -> Result<Reply, Failure> {
     native::send(body, url, headers)
@@ -120,7 +156,7 @@ pub(crate) fn send(body: Option<&str>, url: &str, headers: &[(&'static str, Stri
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn send(_body: Option<&str>, _url: &str, _headers: &[(&'static str, String)]) -> Result<Reply, Failure> {
-    Err(Failure::fatal(DESKTOP_ONLY))
+    Err(Failure::fatal(text::DESKTOP_ONLY))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -132,19 +168,23 @@ mod native {
     use ureq::unversioned::transport::{Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout, Transport, time};
     use ureq::{Agent, Timeout};
 
-    use super::{Failure, Reply};
+    use super::{Failure, Reply, cancelled};
+    use crate::ProviderKind;
 
     const CONNECT: Duration = Duration::from_secs(15);
     /// The longest wait for the next bytes of a reply.
-    const READ: Duration = Duration::from_secs(180);
+    const READ: Duration = Duration::from_secs(if cfg!(test) { 3 } else { 180 });
+    /// A wait for bytes is cut into these, so Stop ends it at once.
+    const SLICE: Duration = Duration::from_millis(250);
 
     static AGENT: LazyLock<Agent> = LazyLock::new(|| {
-        let config = Agent::config_builder().http_status_as_error(false).timeout_connect(Some(CONNECT)).build();
+        let config = Agent::config_builder().http_status_as_error(false).timeout_connect(Some(CONNECT)).max_redirects(0).build();
         Agent::with_parts(config, PerRead(DefaultConnector::new()), DefaultResolver::default())
     });
 
     /// ureq times a reply body as a whole; this caps each wait for bytes instead, so a stalled
-    /// stream ends while a long, live one goes on.
+    /// stream ends while a long, live one goes on, and waits in slices, so Stop ends a wait for a
+    /// server that says nothing yet (a local model reading a long prompt sends no headers).
     #[derive(Debug)]
     struct PerRead(DefaultConnector);
 
@@ -167,7 +207,22 @@ mod native {
         }
         fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
             let cap: time::Duration = READ.into();
-            self.0.await_input(if timeout.after > cap { NextTimeout { after: cap, reason: Timeout::RecvBody } } else { timeout })
+            let timeout = if timeout.after > cap { NextTimeout { after: cap, reason: Timeout::RecvBody } } else { timeout };
+            if *timeout.after <= SLICE {
+                return self.0.await_input(timeout);
+            }
+            let until = std::time::Instant::now() + *timeout.after;
+            loop {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    return Err(ureq::Error::Timeout(timeout.reason));
+                }
+                let slice = left.min(SLICE);
+                match self.0.await_input(NextTimeout { after: slice.into(), reason: timeout.reason }) {
+                    Err(ureq::Error::Timeout(_)) if slice < left && !cancelled() => {}
+                    r => return r,
+                }
+            }
         }
         fn is_open(&mut self) -> bool {
             self.0.is_open()
@@ -194,7 +249,16 @@ mod native {
                 req.call()
             }
         };
+        // A local server that isn't running refuses at once: say so instead of retrying for 14 s.
+        // One that doesn't answer in 180 s is busy with something else: sending it again only
+        // queues the same prompt behind it.
+        let cloud = [ProviderKind::Anthropic, ProviderKind::OpenAi].iter().any(|p| url.starts_with(p.default_base_url()));
         let resp = sent.map_err(|e| match e {
+            _ if cancelled() => Failure::Cancelled,
+            ureq::Error::Io(_) | ureq::Error::ConnectionFailed | ureq::Error::HostNotFound if !cloud => {
+                Failure::Unreachable(format!("Cannot reach {url} ({e})"))
+            }
+            ureq::Error::Timeout(_) if !cloud => Failure::fatal(format!("No answer from {url} ({e})")),
             ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed | ureq::Error::HostNotFound => {
                 Failure::Retry { msg: format!("Cannot reach {url} ({e})"), after: None }
             }

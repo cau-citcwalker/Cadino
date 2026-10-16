@@ -963,6 +963,7 @@ fn findfile(a: &[Value]) -> R {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_text_file(path: &str) -> Option<String> {
+    crate::limits::files("lisp").ok()?;
     let bytes = std::fs::read(path).ok()?;
     // Cap what a routine can pull into memory.
     if bytes.len() > 64 * 1024 * 1024 {
@@ -976,7 +977,7 @@ pub fn read_text_file(_path: &str) -> Option<String> {
 }
 #[cfg(not(target_arch = "wasm32"))]
 fn can_write(path: &str) -> bool {
-    std::path::Path::new(path).parent().is_none_or(|d| d.as_os_str().is_empty() || d.exists())
+    crate::limits::files_denied().is_none() && std::path::Path::new(path).parent().is_none_or(|d| d.as_os_str().is_empty() || d.exists())
 }
 #[cfg(target_arch = "wasm32")]
 fn can_write(_path: &str) -> bool {
@@ -985,6 +986,9 @@ fn can_write(_path: &str) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 fn write_text_file(path: &str, text: &str, append: bool) {
     use std::io::Write;
+    if crate::limits::files_denied().is_some() {
+        return;
+    }
     let f = std::fs::OpenOptions::new().create(true).write(true).append(append).truncate(!append).open(path);
     if let Ok(mut f) = f {
         let _ = f.write_all(text.as_bytes());
@@ -994,7 +998,7 @@ fn write_text_file(path: &str, text: &str, append: bool) {
 fn write_text_file(_path: &str, _text: &str, _append: bool) {}
 #[cfg(not(target_arch = "wasm32"))]
 fn file_exists(path: &str) -> bool {
-    std::path::Path::new(path).is_file()
+    crate::limits::files_denied().is_none() && std::path::Path::new(path).is_file()
 }
 #[cfg(target_arch = "wasm32")]
 fn file_exists(_path: &str) -> bool {

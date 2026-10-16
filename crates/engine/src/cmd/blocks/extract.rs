@@ -201,6 +201,7 @@ fn csv(columns: &[String], rows: &[Vec<Cell>], sep: char) -> String {
 }
 
 fn write_file(path: &str, text: &str) -> Result<()> {
+    crate::limits::files("dataextraction")?;
     #[cfg(not(target_arch = "wasm32"))]
     {
         std::fs::write(path, text).map_err(|e| EngineError::Other(format!("{path}: {e}")))

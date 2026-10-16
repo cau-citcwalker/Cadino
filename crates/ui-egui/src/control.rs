@@ -473,7 +473,10 @@ pub fn handle(app: &mut CadApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w as f32, h as f32)));
             ok(Value::Null)
         }
-        "ui.screenshot" => Outcome::Screenshot { path: s("path").map(str::to_string) },
+        "ui.screenshot" => match (s("path"), cadcraft_engine::limits::files_denied()) {
+            (Some(_), Some(why)) => err(why),
+            (path, _) => Outcome::Screenshot { path: path.map(str::to_string) },
+        },
         "ui.render" => {
             let w = f("width").unwrap_or(1600.0).clamp(16.0, 8192.0) as u32;
             let h = f("height").unwrap_or(1000.0).clamp(16.0, 8192.0) as u32;
@@ -512,6 +515,9 @@ pub fn handle(app: &mut CadApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
             };
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(path) = s("path") {
+                if let Some(why) = cadcraft_engine::limits::files_denied() {
+                    return err(why);
+                }
                 if let Err(e) = std::fs::write(path, &png) {
                     return err(e);
                 }

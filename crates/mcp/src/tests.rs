@@ -227,3 +227,58 @@ fn render_named_views() {
     let e = crate::Backend::call(s.backend(), "ui.render", json!({"view": "sideways"})).unwrap_err();
     assert_eq!(e, "unknown view `sideways`");
 }
+
+/// The assistant's file guard names real commands, and every command whose parameters mention a
+/// file is refused with file access off: by id, or through a file parameter (`FILE_KEYS`).
+#[test]
+fn file_commands_are_real_and_complete() {
+    use cadcraft_ai::{FILE_COMMANDS, FILE_KEYS};
+    // Commands whose docs mention a path or file that the id deny-list leaves to something else.
+    const ALLOWED: &[(&str, &str)] = &[
+        ("new", "`template` is a file key; without it, the user's own QNEWTEMPLATE"),
+        ("aliasedit", "`file` is a file key"),
+        ("cutlist", "`csv` is a file key"),
+        ("insert", "`file` is a file key; otherwise a block of this drawing"),
+        ("dataextraction", "`file` is a file key"),
+        ("eattext", "`file` is a file key"),
+        ("compare", "`path` is a file key; otherwise an open drawing"),
+        ("stylesmanager", "`path` is a file key"),
+        ("plottermanager", "`path` is a file key"),
+        ("linetype", "`file` is a file key"),
+        ("-linetype", "`file` is a file key"),
+        ("hatch.patterns", "`file` is a file key"),
+        ("tableexport", "`path` is a file key; otherwise the CSV comes back as text"),
+        ("sweep", "`path` is a curve's handle"),
+        ("array", "`path` is a curve's handle"),
+        ("arraypath", "`path` is a curve's handle"),
+        ("xref", "lists the attached files; typed XREF is refused as -XREF"),
+    ];
+    let catalog = crate::Backend::call(&mut Headless::default(), "engine.commands", json!({})).unwrap();
+    let catalog = catalog.as_array().unwrap();
+    let ids: Vec<&str> = catalog.iter().filter_map(|c| c["id"].as_str()).collect();
+    for id in FILE_COMMANDS.iter().chain(ALLOWED.iter().map(|(id, _)| id)) {
+        assert!(ids.contains(id), "`{id}` is not a command");
+    }
+    let missed: Vec<&str> = catalog
+        .iter()
+        .filter(|c| {
+            let words = c["params"].as_str().unwrap_or_default().split(|ch: char| !ch.is_ascii_alphanumeric());
+            words.map(str::to_ascii_lowercase).any(|w| matches!(w.as_str(), "path" | "file" | "csv"))
+        })
+        .filter_map(|c| c["id"].as_str())
+        .filter(|id| !FILE_COMMANDS.contains(id) && !ALLOWED.iter().any(|(a, _)| a == id))
+        .collect();
+    assert!(missed.is_empty(), "file commands neither refused nor allowed with a reason: {missed:?}");
+    assert!(FILE_KEYS.contains(&"path") && FILE_KEYS.contains(&"file"));
+}
+
+/// What the prompts tell a model about placing in 3D holds: COPY (and MOVE) take a Z delta.
+#[test]
+fn copy_takes_a_z_delta_as_the_prompts_say() {
+    let mut s = Server::new(Box::new(Headless::default()));
+    let line = tool(&mut s, "execute", json!({"command": "line", "params": {"points": [[0, 0], [10, 0]]}}));
+    let copy = tool(&mut s, "execute", json!({"command": "copy", "params": {"handles": line["handles"], "delta": [0, 0, 400]}}));
+    let lines = tool(&mut s, "query_entities", json!({"type": "Line"}));
+    let raised = lines["entities"].as_array().unwrap().iter().find(|e| e["handle"] == copy["handles"][0]).unwrap();
+    assert_eq!((raised["geometry"]["a"]["z"].clone(), raised["geometry"]["b"]["z"].clone()), (json!(400.0), json!(400.0)), "{raised}");
+}

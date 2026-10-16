@@ -171,6 +171,32 @@ fn apply(items: &mut Vec<Item>, usage: &mut [u64; 3], e: Event) {
     }
 }
 
+/// One of the assistant's own messages ([`cadcraft_ai::text`]) in the interface language, its
+/// `{names}` filled with what the English one held; any other text (a provider's) as it is.
+pub(crate) fn translated(msg: &str) -> String {
+    let found = cadcraft_ai::text::ALL.iter().find_map(|t| filled(t, msg).map(|values| crate::i18n::format(t, &values)));
+    found.unwrap_or_else(|| msg.to_string())
+}
+
+/// The values of `template`'s `{names}` in `msg`, when `msg` is `template` filled in.
+fn filled<'t>(template: &'t str, msg: &str) -> Option<Vec<(&'t str, String)>> {
+    let mut parts = template.split('{').peekable();
+    let mut rest = msg.strip_prefix(parts.next()?)?;
+    let mut values = Vec::new();
+    while let Some(part) = parts.next() {
+        let (name, literal) = part.split_once('}')?;
+        // The last value runs to the end; one before a literal, to its first occurrence.
+        let end = match parts.peek() {
+            None => rest.strip_suffix(literal)?.len(),
+            Some(_) if literal.is_empty() => return None,
+            Some(_) => rest.find(literal)?,
+        };
+        values.push((name, rest.get(..end)?.to_string()));
+        rest = rest.get(end + literal.len()..)?;
+    }
+    rest.is_empty().then_some(values)
+}
+
 /// Open the palette (ASSISTANT, AI, Tools ▸ AI Assistant) with the keyboard in its input. The
 /// first time it floats by the right edge of the drawing, as QuickCalc does; afterwards it
 /// returns where it was closed.
@@ -272,7 +298,9 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
                 if crate::icons::button(ui, crate::icons::Icon::Gear, 20.0, "AI Settings", false).clicked() {
                     app.ui.dialog = Some("options:ai".into());
                 }
-                if ui.add_enabled(!running, egui::Button::new(crate::tl!("New chat"))).clicked() {
+                let new_chat = ui.add_enabled(!running, egui::Button::new(crate::tl!("New chat")));
+                crate::control::record_widget(ui, &new_chat, "AI Assistant new chat", "button", None);
+                if new_chat.clicked() {
                     app.assistant.clear();
                 }
                 ui.add(egui::Label::new(RichText::new(title).color(t.text_dim).font(crate::theme::small())).truncate());
@@ -281,7 +309,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     });
     egui::Panel::bottom(egui::Id::new("cadcraft-assistant-input")).frame(margin).show(ui, |ui| {
         ui.add_space(2.0);
-        if !app.ai.is_configured() {
+        if !app.ai.is_configured(ui.ctx()) {
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(crate::tl!("No model is set up yet.")).color(t.text_dim));
                 if ui.button(crate::tl!("Set up a model…")).clicked() {
@@ -304,13 +332,20 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         if std::mem::take(&mut app.assistant.focus) {
             r.request_focus();
         }
+        // Observed for automation: which of the two shows says whether a message is being answered.
         ui.horizontal(|ui| {
             if running {
-                if ui.button(crate::tl!("Stop")).clicked() {
+                let stop = ui.button(crate::tl!("Stop"));
+                crate::control::record_widget(ui, &stop, "AI Assistant stop", "button", None);
+                if stop.clicked() {
                     app.assistant.stop();
                 }
-            } else if ui.add_enabled(!app.assistant.input.trim().is_empty(), egui::Button::new(crate::tl!("Send"))).clicked() || enter {
-                send(app, ui.ctx());
+            } else {
+                let button = ui.add_enabled(!app.assistant.input.trim().is_empty(), egui::Button::new(crate::tl!("Send")));
+                crate::control::record_widget(ui, &button, "AI Assistant send", "button", None);
+                if button.clicked() || enter {
+                    send(app, ui.ctx());
+                }
             }
         });
     });
@@ -395,11 +430,12 @@ fn item_ui(ui: &mut egui::Ui, i: usize, item: &mut Item) {
                 ui.add(egui::Image::new(&*tex).max_width(THUMB.min(ui.available_width())));
             }
         }
+        // In the language shown now: the assistant's messages arrive in English.
         Item::Notice(text) => {
-            ui.add(egui::Label::new(small(text, t.text_dim).italics()).wrap());
+            ui.add(egui::Label::new(small(&translated(text), t.text_dim).italics()).wrap());
         }
         Item::Error(text) => {
-            ui.add(egui::Label::new(RichText::new(text.as_str()).color(t.warn)).wrap());
+            ui.add(egui::Label::new(RichText::new(translated(text)).color(t.warn)).wrap());
         }
         Item::Usage([input, output, cached]) => {
             let s = crate::tf!("Tokens: {input} in · {output} out · {cached} cached", input = input, output = output, cached = cached);
@@ -620,5 +656,133 @@ mod tests {
         assert!(st.assistant.input.is_empty());
         assert!(matches!(st.assistant.items.first(), Some(Item::User(s)) if s == "line\n2"));
         assert!(st.assistant.items.iter().any(|i| matches!(i, Item::Error(e) if e.contains("model"))), "the missing model is reported");
+    }
+
+    /// Run `calls` as the assistant's tools would, serving them between "frames"; their answers.
+    fn serve(a: &mut CadApp, calls: Vec<(&'static str, Value)>) -> Vec<Result<Value, String>> {
+        let ctx = egui::Context::default();
+        let mut backend = InApp { tx: a.assistant_tx.clone(), ctx: ctx.clone() };
+        let worker = std::thread::spawn(move || calls.into_iter().map(|(m, p)| cadcraft_ai::tools::Backend::call(&mut backend, m, p)).collect());
+        for _ in 0..2000 {
+            if worker.is_finished() {
+                break;
+            }
+            a.drain_control(&ctx);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        worker.join().unwrap()
+    }
+
+    fn count(a: &CadApp, kind: &str) -> usize {
+        a.session.doc().unwrap().model.iter().filter(|e| e.kind.type_name() == kind).count()
+    }
+
+    /// While the user runs a command of their own, the assistant only looks: its typing would
+    /// go into that command, its Escape would cancel it, and its commands would land inside the
+    /// command's undo step.
+    #[test]
+    fn the_assistant_never_feeds_the_users_command() {
+        let mut a = app();
+        a.cmdline("line");
+        a.cmdline("100,100");
+        let answers = serve(
+            &mut a,
+            vec![
+                ("cmdline.input", json!({"text": "circle 0,0 5"})),
+                ("engine.execute", json!({"command": "circle", "params": {"center": [0, 0], "radius": 5}})),
+                ("cmdline.key", json!({"key": "escape"})),
+                ("drawing.inspect", json!({"entities": false})),
+                ("engine.execute", json!({"command": "entities", "params": {}})),
+            ],
+        );
+        for r in &answers[..3] {
+            assert!(r.as_ref().is_err_and(|e| e.contains("LINE")), "{r:?}");
+        }
+        assert!(answers[3..].iter().all(Result::is_ok), "{answers:?}");
+        assert_eq!((count(&a, "Line"), count(&a, "Circle")), (0, 0));
+        assert_eq!(a.session.running.as_ref().map(|r| r.id.as_str()), Some("line"), "the user's LINE goes on");
+        // Its own command it may answer, also across requests.
+        a.session.cancel();
+        let answers = serve(&mut a, vec![("cmdline.input", json!({"text": "line 0,0"})), ("cmdline.input", json!({"text": "10,0"}))]);
+        assert!(answers.iter().all(Result::is_ok), "{answers:?}");
+        assert_eq!(count(&a, "Line"), 1);
+        // Once the user starts one, that is theirs again.
+        a.session.cancel();
+        a.cmdline("circle");
+        let answers = serve(&mut a, vec![("cmdline.input", json!({"text": "0,0"}))]);
+        assert!(answers[0].as_ref().is_err_and(|e| e.contains("CIRCLE")), "{answers:?}");
+    }
+
+    /// The app itself keeps the assistant from files (unless allowed) and from closing drawings,
+    /// whatever the request: a guard on its tools can't see a file name typed at a prompt.
+    #[test]
+    fn the_assistant_reaches_no_file_and_closes_nothing() {
+        let mut a = app();
+        let dir = std::env::temp_dir().join(format!("cadcraft-assistant-files-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("shot.png").to_string_lossy().into_owned();
+        a.ui.recent_files = vec![dir.join("recent.dxf").to_string_lossy().into_owned()];
+        let answers = serve(
+            &mut a,
+            vec![
+                ("ui.render", json!({"width": 32, "height": 32, "path": png})),
+                ("engine.execute", json!({"command": "ui.recent.0"})),
+                ("engine.execute", json!({"command": "closeall"})),
+                ("cmdline.script", json!({"text": "close\n"})),
+            ],
+        );
+        for r in &answers {
+            assert!(r.as_ref().is_err_and(|e| e.contains("Options ▸ AI") || e.contains("left to the user")), "{r:?}");
+        }
+        assert!(!std::path::Path::new(&png).exists());
+        assert!(!a.opening.busy(), "the recent file was not opened");
+        assert_eq!(a.session.docs.len(), 1, "the drawing stays open");
+        assert_eq!(cadcraft_engine::limits::files_denied(), None, "only while serving the assistant");
+        a.ai.allow_files = true;
+        let answers = serve(&mut a, vec![("ui.render", json!({"width": 32, "height": 32, "path": png}))]);
+        assert!(answers[0].is_ok(), "{answers:?}");
+        assert!(std::path::Path::new(&png).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_assistants_messages_reach_the_palette_translated() {
+        crate::i18n::with_language("uk", || {
+            assert_eq!(translated(cadcraft_ai::text::STOPPED), "Зупинено");
+            let retry = cadcraft_ai::text::RETRYING
+                .replace("{error}", "HTTP 529: Overloaded. Try later")
+                .replace("{seconds}", "2")
+                .replace("{attempt}", "1")
+                .replace("{attempts}", "3");
+            assert_eq!(translated(&retry), "HTTP 529: Overloaded. Try later. Повторна спроба через 2 с (1/3)");
+            assert_eq!(translated(&cadcraft_ai::text::CONNECTED.replace("{count}", "12")), "З’єднано: моделей — 12");
+            assert_eq!(translated("HTTP 400: something else"), "HTTP 400: something else", "a provider's text stays");
+        });
+        assert_eq!(translated(cadcraft_ai::text::STOPPED), "Stopped");
+    }
+
+    /// The palette shows a notice in the interface language: the events arrive between frames,
+    /// where no language is set, so it is translated as it is drawn.
+    #[test]
+    fn the_palette_shows_notices_in_the_interface_language() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+        let mut a = app();
+        a.ui.interface_language = crate::i18n::Preference::Ukrainian;
+        a.integrated_titlebar = true;
+        a.ui.in_window_menu = false;
+        let mut usage = [0; 3];
+        apply(&mut a.assistant.items, &mut usage, Event::Notice(cadcraft_ai::text::STOPPED.into()));
+        let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui_state(
+            |ui, app: &mut CadApp| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            },
+            a,
+        );
+        h.run_steps(3);
+        h.state_mut().cmdline("AI");
+        h.run_steps(3);
+        assert!(h.query_by_label_contains("Зупинено").is_some());
     }
 }

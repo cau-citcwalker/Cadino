@@ -267,7 +267,12 @@ fn run_status(s: &mut Session, _p: &Value) -> Result<Value> {
 }
 
 fn entity_summary(e: &cadcraft_doc::Entity) -> Value {
-    json!({ "handle": e.handle.hex(), "type": e.kind.type_name(), "layer": e.common.layer, "color": e.common.color.name(), "transparency": super::props::transparency_value(e.common.transparency), "geometry": e.kind })
+    let mut v = json!({ "handle": e.handle.hex(), "type": e.kind.type_name(), "layer": e.common.layer, "color": e.common.color.name(), "transparency": super::props::transparency_value(e.common.transparency), "geometry": e.kind });
+    // A solid's size and place without reading its B-rep (`geometry.brep`) or mesh.
+    if let (Some(o), Some(b)) = (v.as_object_mut(), super::props::bbox3(&e.kind)) {
+        o.insert("bbox3".into(), b);
+    }
+    v
 }
 
 fn run_inspect(s: &mut Session, p: &Value) -> Result<Value> {

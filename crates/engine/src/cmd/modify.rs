@@ -3,7 +3,8 @@
 
 use cadcraft_doc::{Entity, EntityKind, Handle, Prim};
 use cadcraft_geom::{
-    Arc, Circle, Line, Mat3, PolyVertex, Polyline, Segment, TAU, Vec2, angle_in_sweep, ccw_sweep, intersect_ext, line_line_infinite, norm_angle,
+    Arc, Circle, Line, Mat3, Mat4, PolyVertex, Polyline, Segment, TAU, Vec2, Vec3, angle_in_sweep, ccw_sweep, intersect_ext, line_line_infinite,
+    norm_angle,
 };
 use serde_json::{Value, json};
 
@@ -24,12 +25,12 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("move", "Move", run_move)
             .menu(&["Modify", "Move"])
             .alias(&["m"])
-            .params("{handles?, from?: [x,y], to?: [x,y] | delta: [dx,dy]}")
+            .params("{handles?, from?: [x,y,z?], to?: [x,y,z?] | delta: [dx,dy,dz?]} (a dz moves in 3D; objects that must stay on the XY plane, such as regions, refuse it)")
             .interactive(|_| Ok(Box::new(DisplaceM::new(Op::Move)))),
         CommandSpec::new("copy", "Copy", run_copy)
             .menu(&["Modify", "Copy"])
             .alias(&["co", "cp"])
-            .params("{handles?, delta: [dx,dy] | from,to, count?: n}")
+            .params("{handles?, delta: [dx,dy,dz?] | from,to: [x,y,z?], count?: n}")
             .interactive(|_| Ok(Box::new(DisplaceM::new(Op::Copy)))),
         CommandSpec::new("rotate", "Rotate", run_rotate)
             .menu(&["Modify", "Rotate"])
@@ -103,6 +104,25 @@ pub fn specs() -> Vec<CommandSpec> {
 /// other than World it acts in 3D: [`Session::cplane_matrix`]).
 pub(crate) fn transform_entities(s: &mut Session, hs: &[Handle], m: &Mat3, copy: bool) -> Result<Vec<Handle>> {
     let in_3d = s.cplane_matrix(m);
+    transform_with(s, hs, m, in_3d, copy, "can't be transformed that way in this construction plane")
+}
+
+/// MOVE and COPY by `d`, in the current construction plane's coordinates: a height (`d.z`) moves
+/// along the plane's normal, in 3D. An object that can't leave its plane (a region) refuses the
+/// whole command rather than losing the height.
+pub(crate) fn displace(s: &mut Session, hs: &[Handle], d: Vec3, copy: bool) -> Result<Vec<Handle>> {
+    if !d.is_finite() {
+        return Err(EngineError::Other("The displacement is too large.".into()));
+    }
+    if d.z == 0.0 {
+        return transform_entities(s, hs, &Mat3::translate(d.xy()), copy);
+    }
+    let t = Mat4::translate(s.cplane().apply_vec(d));
+    transform_with(s, hs, &Mat3::IDENTITY, Some(t), copy, "can't be moved in Z (give the displacement without a Z value)")
+}
+
+/// [`transform_entities`] with `m` already taken into 3D (`in_3d`; `None`: the plan transform `m`).
+fn transform_with(s: &mut Session, hs: &[Handle], m: &Mat3, in_3d: Option<Mat4>, copy: bool, refused: &str) -> Result<Vec<Handle>> {
     let d = s.doc_mut()?;
     // Every object transformed first (objects in tilted planes move in 3D): one that can't take
     // the transform refuses the command before anything changes.
@@ -118,7 +138,7 @@ pub(crate) fn transform_entities(s: &mut Session, hs: &[Handle], m: &Mat3, copy:
                 let mut ne = (**e).clone();
                 if !ne.transform3(t) {
                     let what = e.kind.type_name().to_ascii_lowercase();
-                    return Err(EngineError::Other(format!("A {what} can't be transformed that way in this construction plane.")));
+                    return Err(EngineError::Other(format!("A {what} {refused}.")));
                 }
                 ne
             }
@@ -170,20 +190,30 @@ fn delta_of(cmd: &str, p: &Value) -> Result<Vec2> {
     Ok(b - a)
 }
 
+/// MOVE's and COPY's `delta` ([dx, dy] or [dx, dy, dz]), or `to` - `from`.
+fn delta3_of(cmd: &str, p: &Value) -> Result<Vec3> {
+    if let Some(d) = super::solids::p3(p, "delta") {
+        return Ok(d);
+    }
+    let a = super::solids::p3_req(cmd, p, "from")?;
+    let b = super::solids::p3_req(cmd, p, "to")?;
+    Ok(b - a)
+}
+
 fn run_move(s: &mut Session, p: &Value) -> Result<Value> {
     let hs = targets(s, p)?;
-    let d = delta_of("move", p)?;
-    let moved = transform_entities(s, &hs, &Mat3::translate(d), false)?;
+    let d = delta3_of("move", p)?;
+    let moved = displace(s, &hs, d, false)?;
     Ok(json!({ "moved": moved.len() }))
 }
 
 fn run_copy(s: &mut Session, p: &Value) -> Result<Value> {
     let hs = targets(s, p)?;
-    let d = delta_of("copy", p)?;
+    let d = delta3_of("copy", p)?;
     let n = p.get("count").and_then(Value::as_u64).unwrap_or(1).clamp(1, 10_000);
     let mut out = Vec::new();
     for k in 1..=n {
-        out.extend(transform_entities(s, &hs, &Mat3::translate(d * k as f64), true)?.into_iter().map(|h| h.hex()));
+        out.extend(displace(s, &hs, d * k as f64, true)?.into_iter().map(|h| h.hex()));
     }
     Ok(json!({ "handles": out }))
 }
@@ -1751,6 +1781,14 @@ struct SelectThen {
     ref_len: Option<f64>,
     copy_mode: bool,
     ask_erase: bool,
+    /// MOVE and COPY: the base point's height ([`Session::point_z`]), so a second point at
+    /// another height (`@0,0,100`, a 3D snap) moves in Z.
+    base_z: f64,
+}
+
+/// The height of the point being given (0 on the plane).
+fn given_z(s: &Session) -> f64 {
+    s.point_z.filter(|z| z.is_finite()).unwrap_or(0.0)
 }
 
 impl SelectThen {
@@ -1767,6 +1805,7 @@ impl SelectThen {
             ref_len: None,
             copy_mode: false,
             ask_erase: false,
+            base_z: 0.0,
         }
     }
     fn apply(&mut self, s: &mut Session) -> Result<Step> {
@@ -2050,23 +2089,24 @@ impl Interactive for SelectThen {
             }
             (_, 0, Input::Point(p)) => {
                 self.pts.push(p);
+                self.base_z = given_z(s);
                 Ok(Step::Continue)
             }
             (Op::Move, 1, Input::Point(p)) => {
-                let d = p - self.pts[0];
-                transform_entities(s, &self.objs, &Mat3::translate(d), false)?;
+                let d = (p - self.pts[0]).to3(given_z(s) - self.base_z);
+                displace(s, &self.objs, d, false)?;
                 s.set_selection(Vec::new());
                 Ok(Step::Done)
             }
             (Op::Move, 1, Input::Enter) => {
-                let d = self.pts[0];
-                transform_entities(s, &self.objs, &Mat3::translate(d), false)?;
+                let d = self.pts[0].to3(self.base_z);
+                displace(s, &self.objs, d, false)?;
                 s.set_selection(Vec::new());
                 Ok(Step::Done)
             }
             (Op::Copy, _, Input::Point(p)) => {
-                let d = p - self.pts[0];
-                transform_entities(s, &self.objs, &Mat3::translate(d), true)?;
+                let d = (p - self.pts[0]).to3(given_z(s) - self.base_z);
+                displace(s, &self.objs, d, true)?;
                 Ok(Step::Continue)
             }
             (Op::Copy, _, Input::Enter) => {
@@ -2966,12 +3006,12 @@ impl Interactive for DisplaceM {
     fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
         if self.displacement {
             let d = match i {
-                Input::Point(p) => p,
-                Input::Enter => Vec2::ZERO,
+                Input::Point(p) => p.to3(given_z(s)),
+                Input::Enter => Vec3::ZERO,
                 _ => return Ok(Step::Continue),
             };
-            if d != Vec2::ZERO {
-                transform_entities(s, &self.inner.objs, &Mat3::translate(d), self.inner.op == Op::Copy)?;
+            if d != Vec3::ZERO {
+                displace(s, &self.inner.objs, d, self.inner.op == Op::Copy)?;
             }
             s.set_selection(Vec::new());
             return Ok(Step::Done);

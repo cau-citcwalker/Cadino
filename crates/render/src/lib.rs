@@ -103,7 +103,8 @@ pub struct DisplayList {
     /// Shaded model space ([`Options::shaded`]): how far toward the viewer each vertex of `verts`
     /// and `tris` is (`ViewDir::depth` of its world point; 2D objects lie in their own planes), parallel to
     /// them. Empty for other lists, whose vertices all share one depth. A depth-buffered canvas
-    /// hides what is behind shaded faces with it; the CPU raster keeps painter order.
+    /// hides what is behind shaded faces with it; the CPU raster depth-tests only the faces
+    /// and edges, keeping painter order for the rest.
     pub vert_depth: Vec<f64>,
     pub tri_depth: Vec<f64>,
     /// Shaded model space: the primitives (ranges of `prims`, in order) that are solids' shaded

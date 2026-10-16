@@ -52,8 +52,18 @@ struct Fake {
     cancel: Option<Arc<AtomicBool>>,
 }
 
+/// The catalog [`Fake`] serves: a few file commands and others, with aliases (`qs`: the user's).
+const CATALOG: &str = r#"[{"id": "qsave", "aliases": ["save"], "userAliases": ["qs"]}, {"id": "wblock", "aliases": ["w"]},
+    {"id": "stepout", "aliases": ["StepExport"]}, {"id": "-xref", "aliases": ["-xr"]}, {"id": "insert", "aliases": ["i"]},
+    {"id": "circle", "aliases": ["c"]}, {"id": "options", "aliases": ["op", "preferences"]}, {"id": "close", "aliases": []},
+    {"id": "closeall", "aliases": []}, {"id": "aliasedit", "aliases": []}]"#;
+
 impl tools::Backend for Fake {
     fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        // Read once per run while file access is off; not part of what the tests check.
+        if method == "engine.commands" {
+            return Ok(serde_json::from_str(CATALOG).unwrap());
+        }
         self.calls.push((method.to_string(), params));
         if let Some(c) = &self.cancel {
             c.store(true, Ordering::Relaxed);
@@ -71,11 +81,15 @@ impl tools::Backend for Fake {
     }
 }
 
+fn no_stop() -> Arc<AtomicBool> {
+    Arc::new(AtomicBool::new(false))
+}
+
 fn anthropic(url: &str) -> Config {
     Config { base_url: url.into(), api_key: "k".into(), ..Config::default() }
 }
 
-fn go(cfg: &Config, conv: &mut Conversation, b: &mut Fake, cancel: &AtomicBool) -> (Result<(), String>, Vec<Event>) {
+fn go(cfg: &Config, conv: &mut Conversation, b: &mut Fake, cancel: &Arc<AtomicBool>) -> (Result<(), String>, Vec<Event>) {
     let mut events = Vec::new();
     let r = run(cfg, conv, "Draw a circle", b, cancel, &mut |e| events.push(e));
     (r, events)
@@ -102,7 +116,7 @@ fn anthropic_tool_round_trip() {
     );
     let (url, seen, server) = mock(vec![(200, SSE, first), (200, SSE, reply(&[text("Done.")], "end_turn"))]);
     let (mut conv, mut b) = (Conversation::new(), Fake::default());
-    let (r, events) = go(&anthropic(&url), &mut conv, &mut b, &AtomicBool::new(false));
+    let (r, events) = go(&anthropic(&url), &mut conv, &mut b, &no_stop());
     server.join().unwrap();
     assert_eq!(r, Ok(()));
     assert_eq!(b.calls, [("cmdline.input".to_string(), json!({"text": "circle 0,0 5"})), ("ui.render".to_string(), json!({"view": "iso"}))]);
@@ -127,7 +141,7 @@ fn anthropic_tool_round_trip() {
     assert!(body["system"][0]["text"].as_str().unwrap().starts_with(prompt::SYSTEM));
     let tools = body["tools"].as_array().unwrap();
     assert!(tools.iter().all(|t| t["eager_input_streaming"] == true && t["input_schema"]["type"] == "object"));
-    assert!(!tools.iter().any(|t| t["name"] == "save" || t["name"] == "open"), "files are off by default");
+    assert!(tools.iter().any(|t| t["name"] == "save") && tools.iter().any(|t| t["name"] == "open"), "the same tools whatever the settings");
     // The second request carries the assistant turn verbatim (thinking with its signature) and
     // every result in one user message.
     let msgs = seen[1].1["messages"].as_array().unwrap();
@@ -154,7 +168,7 @@ fn openai_compatible_tool_round_trip() {
     let mut conv = Conversation { messages: vec![json!({"role": "user", "content": "old"})], ..Conversation::default() };
     conv.model = Some((ProviderKind::Anthropic, "claude-opus-5-5".into()));
     let mut b = Fake::default();
-    let (r, events) = go(&cfg, &mut conv, &mut b, &AtomicBool::new(false));
+    let (r, events) = go(&cfg, &mut conv, &mut b, &no_stop());
     server.join().unwrap();
     assert_eq!(r, Ok(()));
     assert!(matches!(&events[0], Event::Notice(n) if n.contains("starts over")), "{events:?}");
@@ -181,7 +195,7 @@ fn overload_is_retried_and_a_bad_key_is_not() {
     let overloaded = json!({"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}).to_string();
     let (url, seen, server) = mock(vec![(529, "application/json", overloaded), (200, SSE, reply(&[text("Hi")], "end_turn"))]);
     let (mut conv, mut b) = (Conversation::new(), Fake::default());
-    let (r, events) = go(&anthropic(&url), &mut conv, &mut b, &AtomicBool::new(false));
+    let (r, events) = go(&anthropic(&url), &mut conv, &mut b, &no_stop());
     server.join().unwrap();
     assert_eq!(r, Ok(()));
     assert!(matches!(&events[0], Event::Notice(n) if n.contains("529") && n.contains("Overloaded")), "{events:?}");
@@ -191,7 +205,7 @@ fn overload_is_retried_and_a_bad_key_is_not() {
     let bad = json!({"type": "error", "error": {"type": "authentication_error", "message": "invalid x-api-key"}}).to_string();
     let (url, seen, server) = mock(vec![(401, "application/json", bad)]);
     let mut conv = Conversation::new();
-    let (r, _) = go(&anthropic(&url), &mut conv, &mut b, &AtomicBool::new(false));
+    let (r, _) = go(&anthropic(&url), &mut conv, &mut b, &no_stop());
     server.join().unwrap();
     let e = r.unwrap_err();
     assert!(e.contains("invalid x-api-key") && e.contains("Options ▸ AI"), "{e}");
@@ -208,7 +222,7 @@ fn a_refusal_appends_nothing() {
     ]);
     let (url, _, server) = mock(vec![(200, SSE, crate::anthropic::tests::sse(refusal.as_array().unwrap()))]);
     let (mut conv, mut b) = (Conversation::new(), Fake::default());
-    let (r, events) = go(&anthropic(&url), &mut conv, &mut b, &AtomicBool::new(false));
+    let (r, events) = go(&anthropic(&url), &mut conv, &mut b, &no_stop());
     server.join().unwrap();
     assert_eq!(r, Ok(()));
     assert!(events.iter().any(|e| matches!(e, Event::Error(m) if m.contains("cyber") && m.contains("Declined."))), "{events:?}");
@@ -235,9 +249,10 @@ fn cancel_leaves_a_valid_history() {
     assert_eq!(answered["content"][1]["is_error"], true);
     assert_eq!(answered["content"][1]["content"][0]["text"], CANCELLED);
 
-    // Stopped mid-stream: the partial reply is dropped.
+    // Stopped mid-stream: the partial reply is dropped, and so is the message it answered, so
+    // it doesn't go out again with the next one.
     let (url, _, server) = mock(vec![(200, SSE, reply(&[text("Hel"), text("lo")], "end_turn"))]);
-    let flag = AtomicBool::new(false);
+    let flag = no_stop();
     let mut conv = Conversation::new();
     let mut events = Vec::new();
     let r = run(&anthropic(&url), &mut conv, "Hi", &mut Fake::default(), &flag, &mut |e| {
@@ -249,7 +264,12 @@ fn cancel_leaves_a_valid_history() {
     server.join().unwrap();
     assert_eq!(r, Ok(()));
     assert_eq!(events, [Event::Text("Hel".into()), Event::Notice("Stopped".into())]);
-    assert_eq!(conv.messages.len(), 1, "only the user's message");
+    assert!(conv.is_empty(), "{:?}", conv.messages);
+    // Stopped before the first request.
+    let stopped = Arc::new(AtomicBool::new(true));
+    let (r, _) = go(&anthropic("http://127.0.0.1:9"), &mut conv, &mut Fake::default(), &stopped);
+    assert_eq!(r, Ok(()));
+    assert!(conv.is_empty());
 }
 
 #[test]
@@ -257,7 +277,7 @@ fn forty_tool_rounds_at_most() {
     let replies = (0..=MAX_ROUNDS).map(|i| (200, SSE, reply(&[tool_use(&format!("t{i}"), "cancel", &[])], "tool_use"))).collect();
     let (url, seen, server) = mock(replies);
     let (mut conv, mut b) = (Conversation::new(), Fake::default());
-    let (r, events) = go(&anthropic(&url), &mut conv, &mut b, &AtomicBool::new(false));
+    let (r, events) = go(&anthropic(&url), &mut conv, &mut b, &no_stop());
     server.join().unwrap();
     assert_eq!(r, Ok(()));
     assert_eq!((b.calls.len(), seen.lock().unwrap().len()), (MAX_ROUNDS, MAX_ROUNDS + 1));
@@ -269,31 +289,101 @@ fn forty_tool_rounds_at_most() {
 #[test]
 fn file_access_is_refused_unless_allowed() {
     let mut b = Fake::default();
+    let off = Guard::new(&mut b, false);
     let call = |name: &str, input: Value| Call { id: "1".into(), name: name.into(), input: Ok(input) };
+    let typed = |name: &str, text: &str| call(name, json!({ "text": text }));
     for c in [
         call("render", json!({"path": "C:/x.png"})),
         call("execute", json!({"command": "saveas", "params": {"path": "x.dxf"}})),
         call("execute", json!({"command": "x", "params": {"list": [{"path": "y"}]}})),
         call("save", json!({})),
+        call("open", json!({"path": "x.dxf"})),
+        // File commands without a path, by id or alias, and parameters naming files.
+        call("execute", json!({"command": "qsave"})),
+        call("execute", json!({"command": "SAVE", "params": {}})),
+        call("execute", json!({"command": "-xref", "params": {"option": "reload"}})),
+        call("execute", json!({"command": "insert", "params": {"name": "A", "file": "C:/a.dwg"}})),
+        call("execute", json!({"command": "cutlist", "params": {"csv": "bom.csv"}})),
+        call("execute", json!({"command": "lisp", "params": {"code": "(open \"x\" \"w\")"}})),
+        call("execute", json!({"command": "options", "params": {"SAVEFILEPATH": "C:/x"}})),
+        // File ▸ Open Recent opens without asking; a new alias could rename a file command; and
+        // the user's own aliases count as names.
+        call("execute", json!({"command": "ui.recent.0"})),
+        typed("command_line", "ui.recent.1"),
+        call("execute", json!({"command": "aliasedit", "params": {"set": {"zz": "qsave"}}})),
+        typed("command_line", "qs"),
+        // Typed: the command token, as id or alias, with AutoCAD's prefixes.
+        typed("command_line", "qsave"),
+        typed("command_line", "_.SAVE"),
+        typed("command_line", "w"),
+        typed("command_line", "stepexport out.stp"),
+        typed("command_line", "-XR reload *"),
+        typed("command_line", "line 0,0 'qsave"),
+        typed("command_line", "(command \"saveas\" \"x.dxf\")"),
+        typed("command_line", "insert {\"name\": \"A\", \"file\": \"a.dwg\"}"),
+        typed("script", "circle 0,0 5\n_qsave"),
+        typed("script", "zoom e save"),
     ] {
-        assert_eq!(execute(&mut b, &c, false), Output::error(FILES_OFF), "{c:?}");
+        assert_eq!(execute(&mut b, &c, &off, MAX_RESULT_CHARS), Output::error(FILES_OFF), "{c:?}");
     }
     assert!(b.calls.is_empty());
-    assert!(execute(&mut b, &call("render", json!({"path": "x.png"})), true).ok);
-    let names = |files| tool_list(true, files).iter().filter_map(|t| t["name"].as_str().map(str::to_string)).collect::<Vec<_>>();
-    assert!(!names(false).iter().any(|n| n == "open" || n == "save") && names(false).contains(&"screenshot".to_string()));
-    assert!(names(true).iter().any(|n| n == "save"));
+    for c in [
+        // A curve's handle is no file; a one-letter keyword after the command isn't W(BLOCK).
+        call("execute", json!({"command": "sweep", "params": {"handles": ["2A"], "path": "2B"}})),
+        call("execute", json!({"command": "insert", "params": {"name": "A", "at": [0, 0]}})),
+        call("execute", json!({"command": "options", "params": {"theme": "dark"}})),
+        typed("command_line", "circle 0,0 5"),
+        typed("script", "erase w 0,0 10,10\n\nzoom e"),
+        typed("command_line", "c 0,0 5"),
+    ] {
+        assert!(execute(&mut b, &c, &off, MAX_RESULT_CHARS).ok, "{c:?}");
+    }
+    let on = Guard::new(&mut b, true);
+    assert!(execute(&mut b, &call("render", json!({"path": "x.png"})), &on, MAX_RESULT_CHARS).ok);
+    // The tools stay the same whatever the settings (a conversation's tools never change).
+    let names = |local| tool_list(true, local).iter().filter_map(|t| t["name"].as_str().map(str::to_string)).collect::<Vec<_>>();
+    assert!(names(false).iter().any(|n| n == "save") && names(false).contains(&"screenshot".to_string()));
+    // A local model gets neither the window's tools nor `script`.
+    assert!(!names(true).iter().any(|n| ["screenshot", "ui_inspect", "ui_click", "script"].contains(&n.as_str())), "{:?}", names(true));
+}
+
+/// Whatever file access is, the assistant changes no AI or MCP setting (it could give itself
+/// file access, open the control port or send the chat elsewhere), closes no drawing and doesn't
+/// quit.
+#[test]
+fn settings_closing_and_quitting_are_the_users() {
+    let mut b = Fake::default();
+    let call = |name: &str, input: Value| Call { id: "1".into(), name: name.into(), input: Ok(input) };
+    let typed = |name: &str, text: &str| call(name, json!({ "text": text }));
+    for allow_files in [false, true] {
+        let guard = Guard::new(&mut b, allow_files);
+        for (c, why) in [
+            (call("execute", json!({"command": "options", "params": {"aiAllowFiles": true}})), SETTINGS_OFF),
+            (call("execute", json!({"command": "OP", "params": {"mcpEnabled": true}})), SETTINGS_OFF),
+            (call("execute", json!({"command": "preferences", "params": {"aiBaseUrl": "http://evil/v1", "aiProvider": "custom"}})), SETTINGS_OFF),
+            (typed("command_line", "options {\"aiCustomInstructions\": \"x\"}"), SETTINGS_OFF),
+            (call("execute", json!({"command": "closeall"})), CLOSE_OFF),
+            (call("execute", json!({"command": "close", "params": {"index": 0}})), CLOSE_OFF),
+            (call("execute", json!({"command": "ui.quit"})), CLOSE_OFF),
+            (typed("command_line", "closeall {}"), CLOSE_OFF),
+            (typed("script", "line 0,0 1,1\n\nclose"), CLOSE_OFF),
+        ] {
+            assert_eq!(execute(&mut b, &c, &guard, MAX_RESULT_CHARS), Output::error(why), "{c:?}");
+        }
+    }
+    assert!(b.calls.is_empty(), "{:?}", b.calls);
 }
 
 #[test]
 fn bad_calls_become_error_results() {
     let mut b = Fake::default();
+    let on = Guard::new(&mut b, true);
     let raw = Call { id: "1".into(), name: "command_line".into(), input: Err("{\"text\": \"x".into()) };
-    let o = execute(&mut b, &raw, true);
+    let o = execute(&mut b, &raw, &on, MAX_RESULT_CHARS);
     assert!(!o.ok && o.text.contains("INVALID_JSON") && o.text.contains("\\\"x"), "{o:?}");
-    let o = execute(&mut b, &Call { id: "2".into(), name: "nope".into(), input: Ok(json!({})) }, true);
+    let o = execute(&mut b, &Call { id: "2".into(), name: "nope".into(), input: Ok(json!({})) }, &on, MAX_RESULT_CHARS);
     assert!(!o.ok && o.text.contains("unknown tool"), "{o:?}");
-    let o = execute(&mut b, &Call { id: "3".into(), name: "command_line".into(), input: Ok(json!({"text": 5})) }, true);
+    let o = execute(&mut b, &Call { id: "3".into(), name: "command_line".into(), input: Ok(json!({"text": 5})) }, &on, MAX_RESULT_CHARS);
     assert!(!o.ok && o.text.contains("must match"), "{o:?}");
     assert!(b.calls.is_empty());
 }
@@ -301,7 +391,7 @@ fn bad_calls_become_error_results() {
 #[test]
 fn long_results_are_cut() {
     let long = "é".repeat(MAX_RESULT_CHARS + 5);
-    let o = mcp_output(&json!({"content": [{"type": "text", "text": long}], "isError": true}));
+    let o = mcp_output(&json!({"content": [{"type": "text", "text": long}], "isError": true}), MAX_RESULT_CHARS);
     assert!(!o.ok && o.text.starts_with(&"é".repeat(MAX_RESULT_CHARS)) && o.text.contains("5 more characters"), "{}", &o.text[o.text.len() - 80..]);
 }
 
@@ -314,4 +404,213 @@ fn provider_defaults_and_config_serde() {
     assert_eq!(Config { model: " ".into(), ..c }.model(), "gpt-5");
     assert_eq!(Config { base_url: "http://h:1/v1/".into(), ..Config::default() }.base(), "http://h:1/v1");
     assert!(!ProviderKind::Custom.needs_key() && ProviderKind::Custom.default_model().is_empty());
+}
+
+/// A local model whose server lost the tool format writes `<tool_call>` blocks as text: they run
+/// as calls, never show as text, and the history pairs each call with its result.
+#[test]
+fn tool_calls_written_as_text_run() {
+    let chunks = |c: &[&str]| -> String {
+        c.iter().map(|t| format!("data: {}\n\n", json!({"choices": [{"delta": {"content": t}}]}))).chain(["data: [DONE]\n\n".to_string()]).collect()
+    };
+    let first = chunks(&[
+        "Drawing it.\n<tool",
+        "_call>\n{\"name\": \"execute\", \"arguments\": {\"command\": \"circle\", ",
+        "\"params\": {\"center\": [0, 0], \"radius\": 5}}}\n</tool_call>",
+    ]);
+    let (url, seen, server) = mock(vec![(200, SSE, first), (200, SSE, chunks(&["Done."]))]);
+    let cfg = Config { provider: ProviderKind::Custom, base_url: url, model: "qwen".into(), ..Config::default() };
+    let (mut conv, mut b) = (Conversation::new(), Fake::default());
+    let (r, events) = go(&cfg, &mut conv, &mut b, &no_stop());
+    server.join().unwrap();
+    assert_eq!(r, Ok(()));
+    assert_eq!(b.calls, [("engine.execute".to_string(), json!({"command": "circle", "params": {"center": [0, 0], "radius": 5}}))]);
+    let shown: String = events.iter().filter_map(|e| if let Event::Text(t) = e { Some(t.as_str()) } else { None }).collect();
+    assert_eq!(shown, "Drawing it.Done.", "the tags never show; the palette shows the two turns apart");
+    let seen = seen.lock().unwrap();
+    assert!(seen[0].1["messages"][0]["content"].as_str().unwrap().starts_with(prompt::COMPACT));
+    let msgs = seen[1].1["messages"].as_array().unwrap();
+    assert_eq!(msgs[2]["content"], "Drawing it.");
+    assert_eq!(msgs[2]["tool_calls"][0]["function"]["name"], "execute");
+    assert_eq!(msgs[3]["tool_call_id"], msgs[2]["tool_calls"][0]["id"]);
+}
+
+/// A local server that isn't running fails at once with a hint, not after 14 s of retries.
+#[test]
+fn an_unreachable_local_server_fails_fast() {
+    let url = {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}/v1", l.local_addr().unwrap())
+    };
+    let cfg = Config { provider: ProviderKind::Custom, base_url: url.clone(), model: "qwen".into(), ..Config::default() };
+    let start = std::time::Instant::now();
+    let (r, events) = go(&cfg, &mut Conversation::new(), &mut Fake::default(), &no_stop());
+    assert_eq!(r, Err(text::CANT_REACH.replace("{base}", &url)));
+    assert!(events.is_empty(), "no retry notices: {events:?}");
+    assert!(start.elapsed() < std::time::Duration::from_secs(10), "{:?}", start.elapsed());
+    assert_eq!(list_models(&cfg), Err(text::CANT_REACH.replace("{base}", &url)));
+}
+
+/// The system prompt and tools sent with a conversation never change under it (Claude's thinking
+/// blocks are bound to them): file access changes nothing in the request, new custom
+/// instructions start over.
+#[test]
+fn settings_never_change_a_conversations_prompt_or_tools() {
+    let replies = (0..3).map(|_| (200, SSE, reply(&[text("Hi")], "end_turn"))).collect();
+    let (url, seen, server) = mock(replies);
+    let mut conv = Conversation::new();
+    let mut b = Fake::default();
+    let mut cfg = anthropic(&url);
+    let _ = go(&cfg, &mut conv, &mut b, &no_stop());
+    cfg.allow_files = true;
+    let (_, events) = go(&cfg, &mut conv, &mut b, &no_stop());
+    assert!(!events.iter().any(|e| matches!(e, Event::Notice(_))), "{events:?}");
+    cfg.custom_instructions = "Units are millimetres.".into();
+    let (_, events) = go(&cfg, &mut conv, &mut b, &no_stop());
+    server.join().unwrap();
+    assert_eq!(events.first(), Some(&Event::Notice(text::INSTRUCTIONS_CHANGED.into())));
+    let seen = seen.lock().unwrap();
+    let [first, second, third] = [&seen[0].1, &seen[1].1, &seen[2].1];
+    assert_eq!((&first["tools"], &first["system"]), (&second["tools"], &second["system"]), "the same bytes");
+    assert_eq!(second["messages"].as_array().map(Vec::len), Some(3), "the chat went on");
+    assert_eq!(third["messages"].as_array().map(Vec::len), Some(1), "and started over");
+    assert!(third["system"][0]["text"].as_str().unwrap().ends_with("Units are millimetres."));
+    assert_eq!(first["tools"], third["tools"]);
+}
+
+/// A base64 PNG of `w` × `h` (its header only, which is all the size check reads).
+fn png_header(w: u32, h: u32) -> String {
+    let mut b = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    b.extend(w.to_be_bytes());
+    b.extend(h.to_be_bytes());
+    b.extend([8, 6, 0, 0, 0]);
+    const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    b.chunks(3)
+        .flat_map(|c| {
+            let n = c.iter().enumerate().fold(0u32, |n, (i, &x)| n | u32::from(x) << (16 - 8 * i));
+            (0..4).map(move |k| if k <= c.len() { A[(n >> (18 - 6 * k) & 63) as usize] as char } else { '=' })
+        })
+        .collect()
+}
+
+/// An image Claude would refuse (a side over 2000 px, or past what one chat can carry) never
+/// enters the conversation: one would fail every later request until a new chat.
+#[test]
+fn oversized_and_surplus_images_are_left_out() {
+    assert_eq!(png_size(&png_header(1600, 8192)), Some((1600, 8192)));
+    assert_eq!(png_size("iVBORw0KGgo="), None);
+    let mut conv = Conversation::new();
+    let image = |w, h| Output { ok: true, text: "rendered".into(), image: Some(png_header(w, h)) };
+    let mut tall = image(1600, 8192);
+    admit_image(&mut conv, &mut tall);
+    assert_eq!(tall.image, None);
+    assert!(tall.text.contains("1600 × 8192 px") && tall.text.contains("2000 or less"), "{}", tall.text);
+    for _ in 0..MAX_CONVERSATION_IMAGES {
+        let mut ok = image(1600, 1000);
+        admit_image(&mut conv, &mut ok);
+        assert!(ok.image.is_some());
+    }
+    let mut more = image(1600, 1000);
+    admit_image(&mut conv, &mut more);
+    assert!(more.image.is_none() && more.text.contains("new chat"), "{}", more.text);
+    let mut huge = Output { ok: true, text: String::new(), image: Some("A".repeat(MAX_IMAGE_BYTES + 1)) };
+    admit_image(&mut Conversation::new(), &mut huge);
+    assert!(huge.image.is_none());
+}
+
+/// A call written as `tool {args}` mid-reply: the transcript shows the reply without it, in
+/// English and in Korean (where a wrong byte offset would cut a character).
+#[test]
+fn text_around_a_written_call_streams_whole() {
+    let chunks = |c: &[&str]| -> String {
+        c.iter().map(|t| format!("data: {}\n\n", json!({"choices": [{"delta": {"content": t}}]}))).chain(["data: [DONE]\n\n".to_string()]).collect()
+    };
+    for (parts, expected) in [
+        (["Drawing.\nexecute ", "{\"command\": \"circle\"}", "\nDone, the circle is drawn."], "Drawing.\n\nDone, the circle is drawn."),
+        (["원을 그립니다. execute ", "{\"command\": \"circle\"}", " 원점에 원이 그려졌습니다."], "원을 그립니다.  원점에 원이 그려졌습니다."),
+    ] {
+        let (url, _, server) = mock(vec![(200, SSE, chunks(&parts)), (200, SSE, chunks(&["."]))]);
+        let cfg = Config { provider: ProviderKind::Custom, base_url: url, model: "qwen".into(), ..Config::default() };
+        let mut b = Fake::default();
+        let (r, events) = go(&cfg, &mut Conversation::new(), &mut b, &no_stop());
+        server.join().unwrap();
+        assert_eq!(r, Ok(()));
+        assert_eq!(b.calls.len(), 1);
+        let first: String = events
+            .iter()
+            .take_while(|e| !matches!(e, Event::ToolCall { .. }))
+            .filter_map(|e| if let Event::Text(t) = e { Some(t.as_str()) } else { None })
+            .collect();
+        assert_eq!(first, expected);
+    }
+}
+
+/// A server that takes the request and says nothing (a local model reading a long prompt): Stop
+/// ends the wait at once, and without Stop it isn't sent again.
+#[test]
+fn stop_ends_a_wait_for_a_silent_server() {
+    let silent = || {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", l.local_addr().unwrap());
+        let t = std::thread::spawn(move || {
+            let mut held = Vec::new();
+            l.set_nonblocking(true).unwrap();
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(8);
+            while std::time::Instant::now() < until {
+                if let Ok((s, _)) = l.accept() {
+                    held.push(s);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            held.len()
+        });
+        (url, t)
+    };
+    let (url, _server) = silent();
+    let cfg = Config { provider: ProviderKind::Custom, base_url: url, model: "qwen".into(), ..Config::default() };
+    let stop = no_stop();
+    let flag = Arc::clone(&stop);
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        flag.store(true, Ordering::Relaxed);
+    });
+    let started = std::time::Instant::now();
+    let mut conv = Conversation::new();
+    let (r, events) = go(&cfg, &mut conv, &mut Fake::default(), &stop);
+    assert!(started.elapsed() < std::time::Duration::from_millis(1500), "{:?}", started.elapsed());
+    assert_eq!((r, events), (Ok(()), vec![Event::Notice(text::STOPPED.into())]));
+    assert!(conv.is_empty());
+
+    let (url, server) = silent();
+    let cfg = Config { base_url: url, ..cfg };
+    let (r, events) = go(&cfg, &mut Conversation::new(), &mut Fake::default(), &no_stop());
+    assert!(r.as_ref().is_err_and(|e| e.contains("No answer")), "{r:?}");
+    assert!(events.is_empty(), "not sent again: {events:?}");
+    assert_eq!(server.join().unwrap(), 1, "one connection");
+}
+
+/// A redirect is not followed: the key would go to the other host.
+#[test]
+fn redirects_are_not_followed() {
+    let other = TcpListener::bind("127.0.0.1:0").unwrap();
+    let elsewhere = format!("http://{}/v1/messages", other.local_addr().unwrap());
+    other.set_nonblocking(true).unwrap();
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", l.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let (mut s, _) = l.accept().unwrap();
+        let mut r = BufReader::new(s.try_clone().unwrap());
+        let (mut line, mut len) = (String::new(), 0);
+        while r.read_line(&mut line).unwrap() > 0 && line != "\r\n" {
+            len = line.to_ascii_lowercase().strip_prefix("content-length:").and_then(|v| v.trim().parse().ok()).unwrap_or(len);
+            line.clear();
+        }
+        // The whole request read, so closing doesn't reset the connection before the reply.
+        r.read_exact(&mut vec![0; len]).unwrap();
+        write!(s, "HTTP/1.1 307 Moved\r\nlocation: {elsewhere}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").unwrap();
+    });
+    let (r, _) = go(&anthropic(&url), &mut Conversation::new(), &mut Fake::default(), &no_stop());
+    server.join().unwrap();
+    assert!(r.as_ref().is_err_and(|e| e.contains("307")), "{r:?}");
+    assert!(other.accept().is_err(), "nothing reached the other host");
 }

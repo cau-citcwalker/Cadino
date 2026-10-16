@@ -136,6 +136,7 @@ impl CommandSpec {
             menu: self.menu.to_vec(),
             shortcut: self.shortcut,
             aliases: self.aliases.to_vec(),
+            user_aliases: file::user_aliases_of(self.id),
             params: self.params,
             interactive: self.interactive.is_some(),
             enabled: e.is_ok(),
@@ -152,6 +153,9 @@ pub struct CommandInfo {
     pub menu: Vec<&'static str>,
     pub shortcut: Option<&'static str>,
     pub aliases: Vec<&'static str>,
+    /// The user's own aliases for it (ALIASEDIT, REINIT, acad.pgp).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub user_aliases: Vec<String>,
     pub params: &'static str,
     pub interactive: bool,
     pub enabled: bool,

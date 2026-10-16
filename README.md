@@ -112,7 +112,7 @@ numbers):
 | Parametric | Geometric and dimensional constraints, AUTOCONSTRAIN, PARAMETERS with expressions, conflict detection; constraints re-solve after every edit |
 | Grips | Hot grips with Space to cycle Stretch, Move, Rotate, Scale and Mirror |
 | Interface languages | English, Ukrainian (Українська), Brazilian Portuguese (Português (Brasil)), German (Deutsch), Spanish (Español), Czech (Čeština), Russian (Русский), French (Français), Simplified Chinese (简体中文, with an installed CJK font), Italian (Italiano), Korean (한국어, with an installed Hangul font), Swedish (Svenska) and Arabic (العربية, with an installed Arabic font), live switching and a remembered Auto/system-language choice; [details](docs/localization.md) |
-| Automation | MCP server, JSON control channel, `cadcraft-cli` (info, convert, run, commands, mcp) |
+| Automation | MCP server, JSON control channel, `cadcraft-cli` (info, convert, run, commands, mcp), and a built-in AI Assistant that drafts and models from a chat with Claude, GPT or a local model ([guide](docs/ai.md)) |
 
 ## Quick start
 
@@ -223,7 +223,9 @@ either framing. To frame a selection set, `zoom {"mode":"object"}` after selecti
 MCP tools include `command_line` (type at the prompt), `execute` (any command with JSON),
 `inspect_drawing`, `query_entities`, `render` (returns a PNG) and, when connected to the app,
 `screenshot` and `ui_click`. The desktop app's JSON control channel is documented in
-[docs/control-protocol.md](docs/control-protocol.md).
+[docs/control-protocol.md](docs/control-protocol.md). The built-in AI Assistant (Tools ▸ AI
+Assistant), its model settings and the switch that opens the app to external AI apps are in
+[docs/ai.md](docs/ai.md).
 
 ## Architecture
 

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde_json::{Value, json};
 
 use crate::http::{self, Failure};
-use crate::{Call, Config, Conversation, Event, Next, Output, ProviderKind, sse};
+use crate::{Call, Config, Conversation, Event, Next, Output, ProviderKind, sse, text};
 
 /// Tool calls kept from one reply (a hostile server could send endless indexes).
 const MAX_CALLS: usize = 128;
@@ -22,7 +22,7 @@ fn has_image(m: &Value) -> bool {
 }
 
 fn body(cfg: &Config, model: &str, conv: &Conversation, tools: &[Value]) -> Value {
-    let mut messages = vec![json!({"role": "system", "content": cfg.system()})];
+    let mut messages = vec![json!({"role": "system", "content": conv.system})];
     messages.extend(conv.messages.iter().filter(|m| !(conv.no_images && has_image(m))).cloned());
     let tools: Vec<Value> = tools
         .iter()
@@ -47,13 +47,14 @@ pub(crate) fn turn(
 ) -> Result<Next, String> {
     let url = format!("{}/chat/completions", cfg.base());
     let headers = headers(cfg.api_key.trim());
+    let custom = cfg.provider == ProviderKind::Custom;
     // A local model without vision refuses the tools' images: drop them once and go on.
-    let mut vision_retry = cfg.provider == ProviderKind::Custom && !conv.no_images && conv.messages.iter().any(has_image);
+    let mut vision_retry = custom && !conv.no_images && conv.messages.iter().any(has_image);
     let reply = loop {
         let body = body(cfg, model, conv, tools).to_string();
         let r = http::retrying(cancel, on_event, |on_event| {
             let r = http::check(http::send(Some(&body), &url, &headers)?)?;
-            if r.json { whole(r.body, on_event) } else { read(r.body, cancel, on_event) }
+            if r.json { whole(r.body, custom, on_event) } else { read(r.body, custom, cancel, on_event) }
         });
         match r {
             Err(Failure::Fatal { status: 400, msg })
@@ -61,16 +62,28 @@ pub(crate) fn turn(
             {
                 vision_retry = false;
                 conv.no_images = true;
-                on_event(Event::Notice("This model does not take images; the assistant goes on without them.".into()));
+                on_event(Event::Notice(text::NO_IMAGES.into()));
             }
             r => break r,
         }
     };
-    let m = match reply {
+    let mut m = match reply {
         Ok(m) => m,
         Err(Failure::Cancelled) => return Ok(Next::Cancelled),
-        Err(f) => return Err(f.message()),
+        Err(f) => return Err(cfg.failure(f)),
     };
+    // A local model whose chat template lost its tool format writes the calls as text.
+    let shown = m.text.get(..m.shown).unwrap_or_default().to_string();
+    if custom && m.calls.is_empty() {
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        (m.text, m.calls) = text_calls(&m.text, &names);
+    }
+    // The rest of the text as it is now: what was shown stays a prefix of it, since the calls
+    // are taken from text held back; were it not, what follows their common part.
+    let common: usize = shown.chars().zip(m.text.chars()).take_while(|(a, b)| a == b).map(|(a, _)| a.len_utf8()).sum();
+    if let Some(rest) = m.text.get(common..).filter(|r| !r.is_empty()) {
+        on_event(Event::Text(rest.to_string()));
+    }
     let u = &m.usage;
     let usage = json!({"input_tokens": u["prompt_tokens"], "output_tokens": u["completion_tokens"], "cache_read_input_tokens": u["prompt_tokens_details"]["cached_tokens"], "cache_creation_input_tokens": null});
     on_event(Event::TurnDone { stop_reason: m.finish.clone(), usage });
@@ -96,11 +109,11 @@ pub(crate) fn turn(
     conv.messages.push(msg);
     Ok(match m.finish.as_str() {
         "length" => {
-            on_event(Event::Notice("The reply reached the model's length limit.".into()));
+            on_event(Event::Notice(text::LENGTH_LIMIT.into()));
             if calls.is_empty() { Next::Done } else { Next::Refuse(calls, "Not run: the reply was cut off before this call was complete.".into()) }
         }
         "content_filter" => {
-            on_event(Event::Error("The provider's content filter stopped the reply.".into()));
+            on_event(Event::Error(text::CONTENT_FILTER.into()));
             if calls.is_empty() { Next::Done } else { Next::Refuse(calls, "Not run: the content filter stopped the reply.".into()) }
         }
         _ if !calls.is_empty() => Next::Tools(calls),
@@ -125,12 +138,16 @@ struct Message {
     finish: String,
     usage: Value,
     started: bool,
+    /// Hold back text that may be tool calls written as text ([`text_calls`]).
+    hold: bool,
+    /// How much of `text` went out as [`Event::Text`].
+    shown: usize,
 }
 
 /// Read `data: {json}` chunks until `data: [DONE]`. A failure before any content is a retry.
-fn read(body: impl Read, cancel: &AtomicBool, on_event: &mut dyn FnMut(Event)) -> Result<Message, Failure> {
+fn read(body: impl Read, hold: bool, cancel: &AtomicBool, on_event: &mut dyn FnMut(Event)) -> Result<Message, Failure> {
     let mut events = sse::Reader::new(BufReader::new(body));
-    let mut m = Message::default();
+    let mut m = Message { hold, ..Message::default() };
     loop {
         if cancel.load(Ordering::Relaxed) {
             return Err(Failure::Cancelled);
@@ -139,6 +156,8 @@ fn read(body: impl Read, cancel: &AtomicBool, on_event: &mut dyn FnMut(Event)) -
         let lost = |msg: String| if started { Failure::fatal(msg) } else { Failure::Retry { msg, after: None } };
         let ev = match events.next() {
             Ok(Some(ev)) => ev,
+            // Stop pressed while the transport waited for the next bytes.
+            Err(_) if cancel.load(Ordering::Relaxed) => return Err(Failure::Cancelled),
             // Some servers end without `[DONE]`.
             Ok(None) if !m.finish.is_empty() => return Ok(m),
             Ok(None) => return Err(lost("The connection closed before the reply was complete".into())),
@@ -160,9 +179,9 @@ fn read(body: impl Read, cancel: &AtomicBool, on_event: &mut dyn FnMut(Event)) -
 }
 
 /// A server that answered with one JSON completion instead of a stream.
-fn whole(body: impl Read, on_event: &mut dyn FnMut(Event)) -> Result<Message, Failure> {
+fn whole(body: impl Read, hold: bool, on_event: &mut dyn FnMut(Event)) -> Result<Message, Failure> {
     let v = http::read_json(body)?;
-    let mut m = Message::default();
+    let mut m = Message { hold, ..Message::default() };
     apply(&mut m, &v, on_event);
     Ok(m)
 }
@@ -177,7 +196,11 @@ fn apply(m: &mut Message, v: &Value, on_event: &mut dyn FnMut(Event)) {
     if let Some(t) = d["content"].as_str().filter(|t| !t.is_empty()) {
         m.text.push_str(t);
         m.started = true;
-        on_event(Event::Text(t.to_string()));
+        let safe = if m.hold { shown_len(&m.text) } else { m.text.len() };
+        if let Some(more) = m.text.get(m.shown..safe).filter(|s| !s.is_empty()) {
+            on_event(Event::Text(more.to_string()));
+            m.shown = safe;
+        }
     }
     if let Some(t) = d["reasoning_content"].as_str().or(d["reasoning"].as_str()).filter(|t| !t.is_empty()) {
         m.started = true;
@@ -212,6 +235,75 @@ fn apply(m: &mut Message, v: &Value, on_event: &mut dyn FnMut(Event)) {
     if let Some(f) = choice["finish_reason"].as_str() {
         m.finish = f.to_string();
     }
+}
+
+/// Where tool calls written as text may start: Hermes/Qwen's tag, a code fence, a JSON object.
+const CALL_MARKS: [&str; 3] = ["<tool_call>", "```", "{"];
+
+/// How much of streamed `text` can be shown before it is known whether it holds tool calls: the
+/// words before the first of [`CALL_MARKS`], or before a part of one at the end, but not the
+/// last of them, which may be a tool's name (`execute {…}`, or glued to a stray word piece).
+fn shown_len(text: &str) -> usize {
+    // The marks are ASCII, so a matching tail starts on a character boundary.
+    let partial = || CALL_MARKS.iter().flat_map(|m| (1..m.len()).filter(|&k| text.ends_with(&m[..k]))).max().unwrap_or(0);
+    let end = CALL_MARKS.iter().filter_map(|m| text.find(m)).min().unwrap_or_else(|| text.len() - partial());
+    let head = text.get(..end).unwrap_or_default().trim_end();
+    head.char_indices().rfind(|(_, c)| c.is_whitespace()).map_or(0, |(i, c)| i + c.len_utf8())
+}
+
+/// A call written as text: `{"name": tool in known, "arguments" | "parameters": {...}}`.
+fn text_call(v: &Value, known: &[&str]) -> Option<ToolCall> {
+    let name = v["name"].as_str().filter(|n| known.contains(n))?;
+    let args = match v.get("arguments").or_else(|| v.get("parameters"))? {
+        Value::Null => String::new(),
+        Value::String(a) => a.clone(),
+        a => a.to_string(),
+    };
+    Some(ToolCall { name: name.to_string(), args, ..ToolCall::default() })
+}
+
+/// Tool calls a local model wrote as text because its server lost the tool format (a chat
+/// template cut off with the start of an overflowing prompt, a garbled first token): JSON call
+/// objects, bare, fenced or in Hermes/Qwen `<tool_call>` tags, and `tool {arguments}` as the
+/// prompts write calls. Returns the text without them (and their tags or fences), and the
+/// calls; an object naming an unknown tool stays text.
+fn text_calls(text: &str, known: &[&str]) -> (String, Vec<ToolCall>) {
+    const OPEN: [&str; 3] = ["<tool_call>", "```json", "```"];
+    const CLOSE: [&str; 2] = ["</tool_call>", "```"];
+    // ponytail: a reply this long isn't scanned (a JSON parse per `{`); written calls are short.
+    if text.len() > 64 << 10 {
+        return (text.to_string(), Vec::new());
+    }
+    let (mut shown, mut calls, mut done, mut from) = (String::new(), Vec::new(), 0, 0);
+    while let Some(start) = text.get(from..).and_then(|r| r.find('{')).map(|i| from + i) {
+        let mut values = serde_json::Deserializer::from_str(text.get(start..).unwrap_or_default()).into_iter::<Value>();
+        let v = values.next().and_then(Result::ok).filter(|_| calls.len() < MAX_CALLS).unwrap_or_default();
+        let before = text.get(done..start).unwrap_or_default();
+        let head = before.trim_end();
+        // A tool's name right before the object: `execute {"command": …}`. It may be glued to a
+        // stray word piece: Ollama 0.18 sometimes decodes Qwen's `<tool_call>` token as one
+        // (`ronicsexecute {…}`). ponytail: any word ending in a tool's name counts.
+        let named = known.iter().find_map(|n| head.strip_suffix(n));
+        let (c, kept) = match (text_call(&v, known), named) {
+            (Some(c), _) => (c, OPEN.iter().find_map(|m| head.strip_suffix(m)).unwrap_or(before)),
+            (None, Some(b)) if v.is_object() => {
+                let name = head.get(b.len()..).unwrap_or_default().to_string();
+                (ToolCall { name, args: v.to_string(), ..ToolCall::default() }, b)
+            }
+            _ => {
+                from = start + 1;
+                continue;
+            }
+        };
+        shown.push_str(kept);
+        let after = text.get(start + values.byte_offset()..).unwrap_or_default();
+        let rest = CLOSE.iter().find_map(|m| after.trim_start().strip_prefix(m)).unwrap_or(after);
+        calls.push(c);
+        done = text.len() - rest.len();
+        from = done;
+    }
+    shown.push_str(text.get(done..).unwrap_or_default());
+    if calls.is_empty() { (text.to_string(), calls) } else { (shown.trim_end().to_string(), calls) }
 }
 
 /// A `tool` message per call, then one user message with the images the tools returned.
@@ -265,9 +357,53 @@ mod tests {
     }
 
     #[test]
+    fn text_calls_take_known_tools_only() {
+        let known = ["execute", "render"];
+        let calls = |text: &str| {
+            let (shown, calls) = text_calls(text, &known);
+            (shown, calls.into_iter().map(|c| (c.name, c.args)).collect::<Vec<_>>())
+        };
+        let fenced = "Rendering.\n```json\n{\"name\": \"render\", \"parameters\": {\"view\": \"iso\"}}\n```\n";
+        assert_eq!(calls(fenced), ("Rendering.".into(), vec![("render".into(), "{\"view\":\"iso\"}".into())]));
+        assert_eq!(calls(" {\"name\": \"execute\", \"arguments\": \"{}\"}"), (String::new(), vec![("execute".into(), "{}".into())]));
+        let two = "<tool_call>{\"name\": \"render\", \"arguments\": {}}</tool_call>\n<tool_call>{\"name\": \"execute\", \"arguments\": {\"command\": \"zoom\"}}";
+        assert_eq!(calls(two), (String::new(), vec![("render".into(), "{}".into()), ("execute".into(), "{\"command\":\"zoom\"}".into())]));
+        // Ollama sometimes garbles the first token, here the opening tag.
+        let garbled = "leton\n{\"name\": \"execute\", \"arguments\": {\"command\": \"circle\"}}\n</tool_call>";
+        assert_eq!(calls(garbled), ("leton".into(), vec![("execute".into(), "{\"command\":\"circle\"}".into())]));
+        // As the prompts write calls (and the server's chat template doesn't).
+        let named = "Drawing it.\nexecute {\"command\": \"circle\", \"params\": {\"radius\": 5}}";
+        assert_eq!(calls(named), ("Drawing it.".into(), vec![("execute".into(), "{\"command\":\"circle\",\"params\":{\"radius\":5}}".into())]));
+        assert_eq!(calls("ronicsrender {}").1, vec![("render".to_string(), "{}".to_string())]);
+        assert_eq!(calls("render it: {\"a\": 1}").1, vec![], "the name must be right before the object");
+        // Unknown tools, calls without arguments and other code stay text.
+        let text = "Use <tool_call>{\"name\": \"draw_circle\", \"arguments\": {}}</tool_call> or {\"name\": \"render\"},\n```\nline 0,0 1,1\n```";
+        assert_eq!(calls(text), (text.to_string(), vec![]));
+    }
+
+    #[test]
+    fn text_that_may_be_a_call_is_held_back() {
+        assert_eq!(shown_len("I am drawing <tool_call>{"), "I am ".len());
+        assert_eq!(shown_len("I am drawing <tool"), "I am ".len());
+        assert_eq!(shown_len("Here it is: ``"), "Here it ".len());
+        assert_eq!(shown_len("  {\"name\""), 0);
+        // The word before a call may be its tool's name; the last word may become one.
+        assert_eq!(shown_len("Drawing.\nexecute {\"command\""), "Drawing.\n".len());
+        assert_eq!(shown_len("Drawing.\nexecu"), "Drawing.\n".len());
+        assert_eq!(shown_len("Plain <b>text</b> here"), "Plain <b>text</b> ".len());
+        assert_eq!(shown_len("원을 그립니다. 원점"), "원을 그립니다. ".len());
+        let mut m = Message { hold: true, ..Message::default() };
+        let mut events = Vec::new();
+        for t in ["Hi there <tool", "_call>{}", "</tool_call>"] {
+            apply(&mut m, &json!({"choices": [{"delta": {"content": t}}]}), &mut |e| events.push(e));
+        }
+        assert_eq!((events, m.shown), (vec![Event::Text("Hi ".into())], 3));
+    }
+
+    #[test]
     fn a_whole_completion_is_read_too() {
         let v = json!({"choices": [{"message": {"content": "Hi", "tool_calls": [{"id": "x", "function": {"name": "cancel", "arguments": {}}}]}, "finish_reason": "tool_calls"}]});
-        let m = whole(v.to_string().as_bytes(), &mut |_| {}).unwrap();
+        let m = whole(v.to_string().as_bytes(), false, &mut |_| {}).unwrap();
         assert_eq!((m.text.as_str(), m.calls.len(), m.calls[0].args.as_str()), ("Hi", 1, "{}"));
     }
 

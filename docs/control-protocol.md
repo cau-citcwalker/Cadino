@@ -12,6 +12,10 @@ Start the desktop app with `--control PORT` (or `CADCRAFT_CONTROL_PORT=PORT`). I
 Errors come back as `{"id": …, "ok": false, "error": "message"}`. An unknown method's error points
 to `control.methods`, which lists the methods the server answers.
 
+A line that is not JSON gets an error reply and ends the connection: a web page can only send an
+HTTP request to the port, and its first line is never JSON, so nothing it sends runs. A request line
+is at most 64 MiB; a longer one is refused and closes the connection too.
+
 The server waits up to 60 s for the app to answer a request. After that it replies with a timeout, and
 `state` tells whether sending the request again is safe:
 

@@ -127,6 +127,7 @@ fn run_recover(s: &mut Session, p: &Value) -> Result<Value> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn read_path(cmd: &str, path: &str) -> Result<Vec<u8>> {
+    crate::limits::files(cmd)?;
     std::fs::read(path).map_err(|e| bad(cmd, format!("{path}: {e}")))
 }
 

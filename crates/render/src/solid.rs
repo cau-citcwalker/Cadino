@@ -78,9 +78,8 @@ pub(crate) fn draw(b: &mut Builder, ctx: &Ctx, s: &Solid3d, color: Ink, lw: f32)
     // Light from above and to the left of the viewer, so faces at the same angle to the view
     // (the three faces of a box in an isometric view) shade apart.
     let light = (toward + up * 0.5 - right * 0.3).normalized();
-    // ponytail: painter's sort per solid, which is all the CPU raster has: interpenetrating
-    // solids can overlap wrongly there, and lines draw over or under faces by draw order. The
-    // GPU canvas depth-tests with the depths recorded here instead.
+    // Painter's sort per solid, for what draws without a depth buffer (transparent faces). The
+    // GPU canvas and the CPU raster depth-test opaque faces with the depths recorded here.
     let mut faces: Vec<(f64, f64, [Vec3; 3])> = Vec::with_capacity(s.mesh.tris.len());
     for t in &s.mesh.tris {
         let Some(([p, q, r], n)) = face(t) else { continue };
@@ -339,7 +338,7 @@ mod tests {
         let mut d = drawing();
         line(&mut d, Vec2::new(-5.0, 0.0), Vec2::new(5.0, 0.0));
         for o in [Options::default(), view(Vec3::new(-1.0, -1.0, 1.0), false)] {
-            let list = build(&d, &Space::Model, &o);
+            let list = crate::build(&d, &Space::Model, &o);
             assert!(list.vert_depth.is_empty() && list.tri_depth.is_empty() && list.faces.is_empty() && list.edges.is_empty());
             assert_eq!(list.plane_slope, [0.0; 2]);
         }
@@ -429,6 +428,51 @@ mod tests {
         let wire = |edges| build(&drawing(), &Space::Model, &Options { edges, ..view(dir, false) });
         let (a, b) = (wire(false), wire(true));
         assert!(b.edges.is_empty() && a.prims == b.prims && a.verts == b.verts);
+    }
+
+    #[test]
+    fn raster_draws_edges_over_faces_and_hides_the_back_ones() {
+        // The unit cube from the south-west isometric, Shaded with Edges, without anti-aliasing
+        // so an edge's pixels are exactly its colour.
+        let dir = Vec3::new(-1.0, -1.0, 1.0);
+        let list = build(&drawing(), &Space::Model, &with_edges(dir));
+        let view = crate::raster::View::fit(&list.bounds, 200, 200, 0.1);
+        let pm = crate::raster::render(&list, &view, &crate::raster::RasterOptions { antialias: false, ..Default::default() }).unwrap();
+        let ink = list.edges[0].color;
+        // Whether a pixel within one of world point `p` is the edges' colour.
+        let inked = |p: Vec3| {
+            let (x, y) = view.to_screen(ViewDir::new(dir).project(p));
+            (-1..=1).any(|dy| {
+                (-1..=1).any(|dx| {
+                    let c = pm.pixel((x as i32 + dx) as u32, (y as i32 + dy) as u32).unwrap();
+                    Rgb(c.red(), c.green(), c.blue()) == ink
+                })
+            })
+        };
+        for t in [0.25, 0.5, 0.75] {
+            // The front vertical edge between the two lit sides, and the silhouette at the back of the top.
+            assert!(inked(Vec3::new(0.0, 0.0, t)), "front edge at {t}");
+            assert!(inked(Vec3::new(1.0, t, 1.0)), "silhouette at {t}");
+            // The back vertical edge, hidden behind the top face.
+            assert!(!inked(Vec3::new(1.0, 1.0, t)), "hidden edge at {t}");
+        }
+    }
+
+    #[test]
+    fn raster_keeps_the_nearer_solid_in_front_whatever_the_order() {
+        // A red cube straight behind the grey one in the south-west isometric, drawn after it.
+        let dir = Vec3::new(-1.0, -1.0, 1.0);
+        let mut d = drawing();
+        let mut behind = cube();
+        Arc::make_mut(&mut behind.mesh).verts.iter_mut().for_each(|p| *p = *p - dir * 0.5);
+        let red = Common { color: cadcraft_color::Color::Index(1), ..Default::default() };
+        d.add(&Space::Model, red, EntityKind::Solid3d(behind)).unwrap();
+        let list = build(&d, &Space::Model, &view(dir, true));
+        let v = crate::raster::View::fit(&list.bounds, 200, 200, 0.1);
+        let pm = crate::raster::render(&list, &v, &Default::default()).unwrap();
+        let (x, y) = v.to_screen(ViewDir::new(dir).project(Vec3::new(0.5, 0.5, 1.0)));
+        let c = pm.pixel(x as u32, y as u32).unwrap();
+        assert!(c.red() == c.green() && c.green() == c.blue(), "{c:?}");
     }
 
     #[test]

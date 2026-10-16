@@ -110,6 +110,7 @@ fn missing_marked_ui_literals(language: &str) -> BTreeSet<String> {
         include_str!("../quick.rs"),
         include_str!("../vpscale.rs"),
         include_str!("../options/dialog.rs"),
+        include_str!("../options/ai.rs"),
         include_str!("../assistant.rs"),
     ];
     let mut missing = BTreeSet::new();
@@ -145,6 +146,17 @@ fn missing_marked_ui_literals(language: &str) -> BTreeSet<String> {
         }
     }
     missing
+}
+
+/// The AI assistant's own messages reach the palette in English with their `{names}` filled in;
+/// the palette translates them ([`crate::assistant::translated`]).
+#[test]
+fn the_assistants_messages_are_translated() {
+    for language in ["uk", "ko"] {
+        let catalog = catalog(language).unwrap();
+        let missing: Vec<_> = cadcraft_ai::text::ALL.iter().filter(|t| !catalog.contains_key(&("", **t))).collect();
+        assert!(missing.is_empty(), "{language}: {missing:?}");
+    }
 }
 
 #[test]

@@ -4,9 +4,9 @@
 //! The API keys are never part of these settings: they live in the system keychain
 //! ([`cadcraft_ai::keys`]) and are read only when a request is made.
 
-use std::cell::Cell;
 use std::ops::RangeInclusive;
 use std::sync::mpsc::Receiver;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use cadcraft_ai::ProviderKind;
 use cadcraft_ai::keys::KeySource;
@@ -177,49 +177,85 @@ impl AiSettings {
     }
 
     /// Whether the assistant can be asked: a model is chosen and, where the provider needs one,
-    /// a key is set.
-    pub fn is_configured(&self) -> bool {
-        !self.model().trim().is_empty() && (!self.provider.needs_key() || key_source(self.provider) != KeySource::Missing)
+    /// a key is set (or the keychain is still being asked: then sending says what is missing).
+    pub fn is_configured(&self, ctx: &egui::Context) -> bool {
+        !self.model().trim().is_empty() && (!self.provider.needs_key() || key_source(self.provider, ctx) != Some(KeySource::Missing))
     }
 }
 
-thread_local! {
-    /// Where each provider's key comes from, asked once: the keychain is too slow to ask every frame.
-    static KEY_SOURCES: Cell<[Option<KeySource>; 3]> = const { Cell::new([None; 3]) };
+/// Where each provider's key comes from, asked on a worker thread: the keychain can be slow or
+/// show a system prompt (macOS after a rebuild, a locked Secret Service), and the window must
+/// keep painting meanwhile. `generation` counts the keys saved or removed since the start, so an
+/// answer from before one is dropped.
+struct Sources {
+    known: [Option<KeySource>; 3],
+    asking: [bool; 3],
+    generation: u64,
 }
 
-/// Where `provider`'s key comes from ([`cadcraft_ai::keys::source`], cached).
-pub fn key_source(provider: ProviderKind) -> KeySource {
-    KEY_SOURCES.with(|cache| {
-        let mut sources = cache.get();
-        let i = provider as usize;
-        if let Some(s) = sources.get(i).copied().flatten() {
-            return s;
+static SOURCES: Mutex<Sources> = Mutex::new(Sources { known: [None; 3], asking: [false; 3], generation: 0 });
+
+fn sources() -> MutexGuard<'static, Sources> {
+    SOURCES.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Where `provider`'s key comes from ([`cadcraft_ai::keys::source`], cached); `None` while a
+/// worker asks the keychain, after which `ctx` repaints.
+pub fn key_source(provider: ProviderKind, ctx: &egui::Context) -> Option<KeySource> {
+    let i = provider as usize;
+    let generation = {
+        let mut s = sources();
+        if let Some(k) = s.known.get(i).copied().flatten() {
+            return Some(k);
         }
-        let s = cadcraft_ai::keys::source(provider);
-        if let Some(slot) = sources.get_mut(i) {
-            *slot = Some(s);
+        match s.asking.get_mut(i) {
+            Some(asking) if !*asking => *asking = true,
+            _ => return None,
         }
-        cache.set(sources);
-        s
-    })
+        s.generation
+    };
+    let ask = move |ctx: &egui::Context| {
+        let k = cadcraft_ai::keys::source(provider);
+        let mut s = sources();
+        if s.generation == generation {
+            if let Some(slot) = s.known.get_mut(i) {
+                *slot = Some(k);
+            }
+            if let Some(asking) = s.asking.get_mut(i) {
+                *asking = false;
+            }
+        }
+        ctx.request_repaint();
+    };
+    background(ctx, ask);
+    None
 }
 
-/// Save `provider`'s key in the keychain (empty: remove it).
-pub fn store_key(provider: ProviderKind, key: &str) -> Result<(), String> {
-    let r = cadcraft_ai::keys::store(provider, key);
-    forget_key_sources();
-    r
+/// Run `work` on a worker thread (in place where there are none: the web, whose keychain answers at
+/// once).
+pub(crate) fn background(ctx: &egui::Context, work: impl FnOnce(&egui::Context) + Send + Clone + 'static) {
+    let (c, w) = (ctx.clone(), work.clone());
+    if std::thread::Builder::new().name("ai-keychain".into()).spawn(move || w(&c)).is_err() {
+        work(ctx);
+    }
 }
 
-pub fn delete_key(provider: ProviderKind) -> Result<(), String> {
-    let r = cadcraft_ai::keys::delete(provider);
-    forget_key_sources();
-    r
+/// Save `provider`'s key in the keychain on a worker thread (`None` or empty: remove it); `done`
+/// gets the result.
+pub fn store_key(ctx: &egui::Context, provider: ProviderKind, key: Option<String>, done: impl FnOnce(Result<(), String>) + Send + Clone + 'static) {
+    background(ctx, move |ctx| {
+        let r = cadcraft_ai::keys::store(provider, key.as_deref().unwrap_or_default());
+        forget_key_sources();
+        done(r);
+        ctx.request_repaint();
+    });
 }
 
 fn forget_key_sources() {
-    KEY_SOURCES.with(|cache| cache.set([None; 3]));
+    let mut s = sources();
+    s.known = [None; 3];
+    s.asking = [false; 3];
+    s.generation += 1;
 }
 
 impl CadApp {
@@ -300,10 +336,24 @@ mod tests {
 
     #[test]
     fn a_local_model_needs_no_key_but_a_model() {
+        let ctx = egui::Context::default();
         let mut ai = AiSettings { provider: ProviderKind::Custom, ..AiSettings::default() };
-        assert!(!ai.is_configured(), "no model chosen yet");
+        assert!(!ai.is_configured(&ctx), "no model chosen yet");
         ai.custom_model = "llama3.1".into();
-        assert!(ai.is_configured());
+        assert!(ai.is_configured(&ctx));
+    }
+
+    /// The keychain is asked on a worker thread, once, never by the frame that wants the answer.
+    #[test]
+    fn the_keychain_is_asked_off_the_ui_thread() {
+        let ctx = egui::Context::default();
+        let ui_thread = std::thread::current().id();
+        let (tx, rx) = std::sync::mpsc::channel();
+        background(&ctx, move |_| {
+            let _ = tx.send(std::thread::current().id());
+        });
+        let worker = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert_ne!(worker, ui_thread);
     }
 
     #[test]

@@ -132,6 +132,9 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
     }
     if let Some(i) = id.strip_prefix(RECENT_ITEM).and_then(|n| n.parse::<usize>().ok()) {
         let Some(path) = app.ui.recent_files.get(i).cloned() else { return Some(Err(format!("no recent file {i}"))) };
+        if let Some(why) = cadcraft_engine::limits::files_denied() {
+            return Some(Err(why.into()));
+        }
         app.open_path(&path);
         return Some(Ok(Value::Null));
     }

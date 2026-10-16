@@ -130,7 +130,12 @@ pub(super) fn p3(p: &Value, key: &str) -> Option<Vec3> {
 
 /// [`p3`] of a value.
 pub(super) fn p3_value(v: &Value) -> Option<Vec3> {
-    let z = match v.as_array().and_then(|a| a.get(2)) {
+    if let Some(t) = v.as_str() {
+        let (p, z) = crate::prompt::parse_point_z(t, Vec2::ZERO, None, &Default::default())?;
+        return Some(p.to3(z.unwrap_or(0.0)));
+    }
+    // `[x, y, z]` or `{x, y, z}`.
+    let z = match v.get(2).or_else(|| v.get("z")) {
         Some(z) => z.as_f64()?,
         None => 0.0,
     };
@@ -720,8 +725,12 @@ impl Interactive for Ask {
         let (key, v) = match (q, i) {
             (_, Input::Cancel) => return Ok(Step::Cancel),
             (Q::Point(k, _), Input::Point(p)) => {
-                // A first point snapped to a 3D object starts the shape at its height.
-                let z = if self.vals.is_empty() { s.point_z.filter(|z| z.is_finite()) } else { None };
+                // A first point snapped to a 3D object starts the shape at its height; a later
+                // point (BOX's other corner) keeps its height only when it differs from the
+                // first's, and then is the height: AutoCAD asks for none (`0,0,0 600,400,750`).
+                let z = s.point_z.filter(|z| z.is_finite());
+                let z0 = self.vals.values().next().and_then(|v| v.get(2)).and_then(Value::as_f64);
+                let z = if self.vals.is_empty() { z } else { z.filter(|z| (z - z0.unwrap_or(0.0)).abs() > 1e-12) };
                 self.base.get_or_insert(p);
                 (k, z.map_or_else(|| json!([p.x, p.y]), |z| json!([p.x, p.y, z])))
             }
@@ -729,8 +738,10 @@ impl Interactive for Ask {
             (Q::Dist(k, _), Input::Text(t)) => (k, json!(distance(&t)?)),
             _ => return Ok(Step::Continue),
         };
+        // BOX's and WEDGE's other corner at its own height needs no height.
+        let has_height = key == "corner2" && v.get(2).is_some();
         self.vals.insert(key.into(), v);
-        if self.vals.len() < self.qs.len() {
+        if self.vals.len() < self.qs.len() && !has_height {
             return Ok(Step::Continue);
         }
         let spec = find_command(self.id).ok_or_else(|| EngineError::UnknownCommand(self.id.into()))?;

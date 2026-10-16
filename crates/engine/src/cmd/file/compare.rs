@@ -101,6 +101,7 @@ fn other_drawing(s: &Session, p: &Value) -> Result<(Arc<Drawing>, String)> {
 }
 
 fn read_path(_path: &str) -> Result<Vec<u8>> {
+    crate::limits::files("compare")?;
     #[cfg(not(target_arch = "wasm32"))]
     {
         std::fs::read(_path).map_err(|e| bad("compare", format!("{_path}: {e}")))

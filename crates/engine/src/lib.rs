@@ -18,6 +18,7 @@ mod finite;
 pub mod grip_dims;
 pub mod grips;
 mod guard;
+pub mod limits;
 pub mod lisp;
 pub mod mtext_edit;
 pub mod pointmod;
@@ -702,6 +703,9 @@ pub struct Session {
     pub active: usize,
     pub settings: Settings,
     pub running: Option<Running>,
+    /// Interactive commands started so far: tells a running command from the next one, also of
+    /// the same name (the AI assistant feeds only a command it started).
+    pub starts: u64,
     /// A script is running ([`Session::script`]); a SCRIPT command inside it is refused.
     in_script: bool,
     /// The command suspended while a transparent command (`'ZOOM`, `'PAN`…) prompts inside it;
@@ -790,6 +794,7 @@ impl Session {
             active: 0,
             settings: Settings::default(),
             running: None,
+            starts: 0,
             in_script: false,
             suspended: None,
             log: Vec::new(),
@@ -1126,6 +1131,7 @@ impl Session {
                 if nested {
                     self.suspended = self.running.take();
                 }
+                self.starts = self.starts.wrapping_add(1);
                 self.running = Some(Running { id: spec.id.to_string(), machine, before, selection_before });
                 self.pending_window = None;
                 // Some commands complete immediately (e.g. ERASE with a pickfirst selection).

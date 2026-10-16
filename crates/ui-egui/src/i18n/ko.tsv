@@ -1345,3 +1345,26 @@ menu	Modify	수정
 	Check the current drawing: units, layers and what is in it.	현재 도면을 확인해 주세요: 단위, 도면층, 그리고 무엇이 들어 있는지.
 	Render the model from the front, the right and in iso, and tell me what looks wrong.	모델을 정면, 우측면, 등각 뷰에서 렌더링하고 이상해 보이는 점을 알려 주세요.
 @plural	{n} model	모델 {n}개
+# AI assistant messages (cadcraft_ai::text).
+	Stopped	중지됨
+	The AI assistant needs the desktop app	AI 어시스턴트는 데스크톱 앱에서만 사용할 수 있습니다
+	Choose a model in Options ▸ AI.	옵션의 AI 탭에서 모델을 선택하세요.
+	Add your {provider} API key in Options ▸ AI.	옵션의 AI 탭에서 {provider} API 키를 추가하세요.
+	Switched to {model}: the conversation starts over.	{model}(으)로 바꿨습니다. 대화를 새로 시작합니다.
+	The custom instructions changed: the conversation starts over.	사용자 지정 지침이 바뀌었습니다. 대화를 새로 시작합니다.
+	Stopped after {rounds} rounds.	{rounds}회 반복한 뒤 멈췄습니다.
+	Stopped after {rounds} tool rounds; send a message to continue.	도구를 {rounds}회 실행한 뒤 멈췄습니다. 계속하려면 메시지를 보내세요.
+	{error}. Trying again in {seconds} s ({attempt}/{attempts})	{error}. {seconds}초 뒤에 다시 시도합니다 ({attempt}/{attempts})
+	{error}. Check the API key in Options ▸ AI.	{error}. 옵션의 AI 탭에서 API 키를 확인하세요.
+	Can't reach {base}. Is the local model server (Ollama, LM Studio…) running?	{base}에 연결할 수 없습니다. 로컬 모델 서버(Ollama, LM Studio…)가 실행 중인지 확인하세요.
+	This model does not take images; the assistant goes on without them.	이 모델은 이미지를 받지 않습니다. 어시스턴트는 이미지 없이 계속합니다.
+	The reply reached the model's length limit.	응답이 모델의 길이 한도에 도달했습니다.
+	The provider's content filter stopped the reply.	제공자의 콘텐츠 필터가 응답을 중단했습니다.
+	The reply reached max_tokens ({max_tokens}); raise it in Options ▸ AI.	응답이 max_tokens({max_tokens})에 도달했습니다. 옵션의 AI 탭에서 값을 늘리세요.
+	Claude declined this request.	Claude가 이 요청을 거절했습니다.
+	Claude declined this request ({reason}).	Claude가 이 요청을 거절했습니다({reason}).
+	Connected: {count} models	연결됨: 모델 {count}개
+	The system keychain is not available: {error}	시스템 키체인을 사용할 수 없습니다: {error}
+	Could not save the key in the system keychain: {error}	시스템 키체인에 키를 저장하지 못했습니다: {error}
+	Could not remove the key from the system keychain: {error}	시스템 키체인에서 키를 지우지 못했습니다: {error}
+	Asking the system keychain…	시스템 키체인을 확인하는 중…

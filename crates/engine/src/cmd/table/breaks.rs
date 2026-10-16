@@ -226,6 +226,7 @@ fn separator(path: &str, text: &str) -> char {
 
 /// Read a linked file through the host (natively the file system; not on the web).
 fn read_link(id: &str, path: &str) -> Result<String> {
+    crate::limits::files(id)?;
     #[cfg(not(target_arch = "wasm32"))]
     {
         let meta = std::fs::metadata(path).map_err(|e| bad(id, format!("{path}: {e}")))?;

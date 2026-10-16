@@ -42,6 +42,11 @@ pub(crate) fn user_alias(name: &str) -> Option<String> {
     store().map.get(name).cloned()
 }
 
+/// The user aliases that stand for command `id`.
+pub(crate) fn user_aliases_of(id: &str) -> Vec<String> {
+    store().map.iter().filter(|(_, c)| *c == id).map(|(a, _)| a.clone()).collect()
+}
+
 /// The command id `target` names (`*LINE`, `_.line`, `-LAYER`…), if there is such a command.
 fn command_id(target: &str) -> Option<String> {
     let t = target.trim().trim_start_matches('*').trim().trim_start_matches(['_', '.']).to_ascii_lowercase();

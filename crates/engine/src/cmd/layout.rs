@@ -826,6 +826,7 @@ fn run_plot(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let path = _path;
+                crate::limits::files(cmd)?;
                 let tmp = format!("{path}.cadcraft-tmp");
                 std::fs::write(&tmp, &bytes).map_err(|e| bad(cmd, format!("{path}: {e}")))?;
                 std::fs::rename(&tmp, path).map_err(|e| bad(cmd, format!("{path}: {e}")))?;

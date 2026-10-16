@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use super::*;
 use crate::{Accept, Input, Prompt, Result, Session, Step};
 
-pub(crate) use pgp::{specs as alias_specs, user_alias};
+pub(crate) use pgp::{specs as alias_specs, user_alias, user_aliases_of};
 pub use template::{qnew_template, set_qnew_template};
 
 /// Plot a space to PDF bytes with JSON options (`{paper?, landscape?, fit?, lineweights?, …}`).
@@ -196,6 +196,7 @@ fn run_script(s: &mut Session, p: &Value) -> Result<Value> {
         let path = _path;
         #[cfg(not(target_arch = "wasm32"))]
         {
+            crate::limits::files("script")?;
             let bytes = std::fs::read(path).map_err(|e| bad("script", format!("{path}: {e}")))?;
             String::from_utf8_lossy(&bytes).into_owned()
         }
@@ -269,6 +270,7 @@ pub fn read_file(path: &str) -> std::result::Result<ReadFile, String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let r = std::panic::catch_unwind(|| {
+            crate::limits::files("open")?;
             let bytes = std::fs::read(path).map_err(|e| bad("open", format!("{path}: {e}")))?;
             read_bytes(&bytes, path, Some(path.to_string()))
         });
@@ -336,6 +338,7 @@ fn run_open(s: &mut Session, p: &Value) -> Result<Value> {
         let path = _path;
         #[cfg(not(target_arch = "wasm32"))]
         {
+            crate::limits::files("open")?;
             let bytes = std::fs::read(path).map_err(|e| bad("open", format!("{path}: {e}")))?;
             let i = open_bytes(s, &bytes, path, Some(path.to_string()))?;
             super::blocks::xref::after_open(s, i);
@@ -353,6 +356,7 @@ fn run_open(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn run_close(s: &mut Session, p: &Value) -> Result<Value> {
+    crate::limits::closing("close")?;
     let i = p.get("index").and_then(Value::as_u64).map(|i| i as usize).unwrap_or(s.active);
     if i >= s.docs.len() {
         return Err(bad("close", "no such drawing"));
@@ -370,6 +374,7 @@ fn run_close(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn run_closeall(s: &mut Session, _p: &Value) -> Result<Value> {
+    crate::limits::closing("closeall")?;
     s.cancel();
     s.docs.clear();
     s.active = 0;
@@ -405,6 +410,7 @@ fn save_as(s: &mut Session, cmd: &str, path: &str, opts: &SaveAs) -> Result<usiz
 /// Put saved bytes where the user gets them: natively the file at `path` (written atomically); on
 /// the web, which has no file system, a browser download named after `path` via [`deliver`].
 fn store(path: &str, bytes: &[u8]) -> Result<()> {
+    crate::limits::files("save")?;
     #[cfg(not(target_arch = "wasm32"))]
     {
         let tmp = format!("{path}.cadcraft-tmp");

@@ -845,6 +845,7 @@ fn run_cutlist(s: &mut Session, p: &Value) -> Result<Value> {
             text.push_str(&r.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(","));
             text.push_str("\r\n");
         }
+        crate::limits::files(CMD)?;
         std::fs::write(&path, text).map_err(|e| EngineError::Other(format!("Can't write {path}: {e}")))?;
         out["csv"] = json!(path);
     }

@@ -73,6 +73,7 @@ fn extension(path: &str) -> String {
 
 /// Write `bytes` to `path` through a temporary file, so a failed write keeps the old file.
 fn write_file(cmd: &str, path: &str, bytes: &[u8]) -> Result<()> {
+    crate::limits::files(cmd)?;
     #[cfg(not(target_arch = "wasm32"))]
     {
         let tmp = format!("{path}.cadcraft-tmp");
@@ -180,6 +181,7 @@ fn import_drawing(s: &mut Session, src: &Drawing, at: Vec2, scale: f64, file: &s
 }
 
 fn read_file(_path: &str) -> Result<Vec<u8>> {
+    crate::limits::files("import")?;
     #[cfg(not(target_arch = "wasm32"))]
     {
         std::fs::read(_path).map_err(|e| bad("import", format!("{_path}: {e}")))

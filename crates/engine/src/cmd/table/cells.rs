@@ -513,6 +513,7 @@ pub(crate) fn table_csv(t: &Table, sep: char) -> String {
 
 /// Write `text` to `path`: natively the file, on the web a download through the host.
 fn write_text(path: &str, text: &str) -> Result<()> {
+    crate::limits::files("tableexport")?;
     #[cfg(not(target_arch = "wasm32"))]
     {
         std::fs::write(path, text).map_err(|e| bad("tableexport", format!("{path}: {e}")))

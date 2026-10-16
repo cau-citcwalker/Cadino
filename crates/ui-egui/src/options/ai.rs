@@ -171,7 +171,7 @@ fn assistant(app: &CadApp, ui: &mut egui::Ui, changes: &mut Map<String, Value>) 
                         ui.spinner();
                     }
                     Answer::Done(Ok(list)) => hint(ui, &crate::i18n::count(list.len() as u64, "{n} model", "{n} models")),
-                    Answer::Done(Err(e)) => error(ui, &e),
+                    Answer::Done(Err(e)) => error(ui, &crate::assistant::translated(&e)),
                     Answer::Idle => {}
                 }
             });
@@ -222,46 +222,55 @@ fn assistant(app: &CadApp, ui: &mut egui::Ui, changes: &mut Map<String, Value>) 
                 ui.spinner();
             }
             Answer::Done(Ok(text)) => {
-                ui.label(text);
+                ui.label(crate::assistant::translated(&text));
             }
-            Answer::Done(Err(e)) => error(ui, &e),
+            Answer::Done(Err(e)) => error(ui, &crate::assistant::translated(&e)),
             Answer::Idle => {}
         }
     });
 }
 
-/// The key field: typed (masked), saved to the keychain and cleared; a saved key is never shown.
+/// The key field: typed (masked), saved to the keychain on a worker thread and cleared; a saved
+/// key is never shown.
 fn key(ui: &mut egui::Ui, p: ProviderKind) {
     let id = egui::Id::new(("cc_ai_key", p.id()));
+    let saving: Job<()> = job(ui, id.with("saving"));
+    let waiting = matches!(answer(&saving), Answer::Waiting);
     let mut typed = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_default();
-    let source = ai_settings::key_source(p);
+    let source = ai_settings::key_source(p, ui.ctx());
     ui.horizontal(|ui| {
         let r = ui.add(TextEdit::singleline(&mut typed).password(true).hint_text(crate::tl!("Paste your API key")).desired_width(220.0));
         if r.changed() {
             ui.data_mut(|d| d.insert_temp(id, typed.clone()));
         }
-        let mut result = None;
-        if ui.add_enabled(!typed.trim().is_empty(), Button::new(crate::tl!("Save"))).clicked() {
-            result = Some(ai_settings::store_key(p, &typed));
+        let mut change = None;
+        if ui.add_enabled(!waiting && !typed.trim().is_empty(), Button::new(crate::tl!("Save"))).clicked() {
+            change = Some(Some(typed.clone()));
             ui.data_mut(|d| d.remove::<String>(id));
         }
-        if ui.add_enabled(source == KeySource::Keychain, Button::new(crate::tl!("Remove"))).clicked() {
-            result = Some(ai_settings::delete_key(p));
+        if ui.add_enabled(!waiting && source == Some(KeySource::Keychain), Button::new(crate::tl!("Remove"))).clicked() {
+            change = Some(None);
         }
-        if let Some(r) = result {
-            ui.data_mut(|d| d.insert_temp(id.with("error"), r.err()));
+        if let Some(key) = change {
+            set(&saving, Answer::Waiting);
+            let done = Arc::clone(&saving);
+            ai_settings::store_key(ui.ctx(), p, key, move |r| set(&done, Answer::Done(r)));
+        }
+        if waiting {
+            ui.spinner();
         }
     });
     match source {
-        KeySource::Keychain => hint(ui, crate::tl!("Saved in the system keychain")),
-        KeySource::Environment => {
+        None => hint(ui, crate::tl!("Asking the system keychain…")),
+        Some(KeySource::Keychain) => hint(ui, crate::tl!("Saved in the system keychain")),
+        Some(KeySource::Environment) => {
             let var = if p == ProviderKind::OpenAi { "OPENAI_API_KEY" } else { "ANTHROPIC_API_KEY" };
             hint(ui, &crate::tf!("Using {var} from the environment", var = var));
         }
-        KeySource::Missing => hint(ui, crate::tl!("Not set")),
+        Some(KeySource::Missing) => hint(ui, crate::tl!("Not set")),
     }
-    if let Some(e) = ui.data(|d| d.get_temp::<Option<String>>(id.with("error"))).flatten() {
-        error(ui, &e);
+    if let Answer::Done(Err(e)) = answer(&saving) {
+        error(ui, &crate::assistant::translated(&e));
     }
 }
 

@@ -259,6 +259,9 @@ pub struct CadApp {
     pub ai: ai_settings::AiSettings,
     /// The AI Assistant palette's chat ([`assistant`]).
     pub assistant: assistant::Assistant,
+    /// The interactive command the assistant started and left running (its
+    /// [`Session::starts`] count): the only one its requests may feed.
+    assistant_command: Option<u64>,
 }
 
 impl CadApp {
@@ -303,6 +306,7 @@ impl CadApp {
             bedit: bedit::State::default(),
             ai: ai_settings::AiSettings::default(),
             assistant: assistant::Assistant::default(),
+            assistant_command: None,
         }
     }
 
@@ -453,6 +457,11 @@ impl CadApp {
     /// "Opening ..." card shows ([`opening`]); [`Self::finish_opening`] adds it when ready. On the
     /// web it opens at once.
     pub fn open_path(&mut self, path: &str) {
+        // Picked while serving the assistant with file access off.
+        if let Some(why) = cadcraft_engine::limits::files_denied() {
+            self.open_failed(format!("{path}: {why}"));
+            return;
+        }
         // A LISP file (dropped on the window): loaded as APPLOAD loads it.
         if is_lisp_file(path) {
             match cadcraft_engine::lisp::builtins::read_text_file(path) {
@@ -683,17 +692,18 @@ impl CadApp {
 
     fn drain_control(&mut self, ctx: &egui::Context) {
         // The assistant's requests, then the control channels'.
-        let mut queued: Vec<ControlRequest> = self.assistant_rx.try_iter().collect();
+        let mut queued: Vec<(ControlRequest, bool)> = self.assistant_rx.try_iter().map(|r| (r, true)).collect();
         for rx in self.control_rx.iter().chain(&self.mcp_rx) {
-            queued.extend(rx.try_iter());
+            queued.extend(rx.try_iter().map(|r| (r, false)));
         }
-        for req in queued {
+        for (req, assistant) in queued {
             // Timed out while queued: the client was told it did not run (#345).
             if !req.begin() {
                 continue;
             }
             let reply = req.reply.clone();
-            match control::handle(self, ctx, &req) {
+            let outcome = if assistant { self.serve_assistant(ctx, &req) } else { control::handle(self, ctx, &req) };
+            match outcome {
                 control::Outcome::Done(v) => {
                     let _ = reply.send(v);
                 }
@@ -706,6 +716,36 @@ impl CadApp {
             }
             ctx.request_repaint();
         }
+    }
+
+    /// An AI assistant request. While the user runs a command of their own, only a look at the
+    /// drawing: anything else would type into that command, cancel it, or land inside its undo
+    /// step. The assistant never closes a drawing, and reads or writes no file unless Options ▸
+    /// AI allows it, whatever the command or typed answer that would.
+    fn serve_assistant(&mut self, ctx: &egui::Context, req: &ControlRequest) -> control::Outcome {
+        const LOOKS: [&str; 7] = ["drawing.inspect", "engine.commands", "cmdline.state", "ui.render", "ui.screenshot", "ui.inspect", "ping"];
+        let users = self.session.running.as_ref().filter(|_| self.assistant_command != Some(self.session.starts));
+        let query = req.method == "engine.execute" && matches!(req.params.get("command").and_then(Value::as_str), Some("entities" | "texts"));
+        if let Some(r) = users
+            && !LOOKS.contains(&req.method.as_str())
+            && !query
+        {
+            let error = format!(
+                "The user is running {} at the command line: wait until it ends, or ask the user to finish or cancel it.",
+                r.id.to_ascii_uppercase()
+            );
+            return control::Outcome::Done(json!({"ok": false, "error": error}));
+        }
+        let _files = (!self.ai.allow_files).then(|| cadcraft_engine::limits::deny_files(cadcraft_ai::FILES_OFF));
+        let _closing = cadcraft_engine::limits::deny_closing(cadcraft_ai::CLOSE_OFF);
+        let starts = self.session.starts;
+        let outcome = control::handle(self, ctx, req);
+        self.assistant_command = match self.session.running {
+            None => None,
+            Some(_) if self.session.starts != starts => Some(self.session.starts),
+            Some(_) => self.assistant_command,
+        };
+        outcome
     }
 
     fn issue_screenshots(&mut self, ctx: &egui::Context) {

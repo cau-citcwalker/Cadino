@@ -14,8 +14,11 @@ pub mod keys;
 mod openai;
 pub mod prompt;
 mod sse;
+pub mod text;
 pub mod tools;
 
+use std::collections::HashSet;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -121,10 +124,19 @@ impl Config {
         let b = self.base_url.trim();
         if b.is_empty() { self.provider.default_base_url() } else { b.trim_end_matches('/') }
     }
-    /// The system prompt with the user's own instructions.
+    /// The system prompt with the user's own instructions; the compact one for a local model,
+    /// whose server may have a small context (see [`prompt::COMPACT`]).
     fn system(&self) -> String {
+        let base = if self.provider == ProviderKind::Custom { prompt::COMPACT } else { prompt::SYSTEM };
         let custom = self.custom_instructions.trim();
-        if custom.is_empty() { prompt::SYSTEM.to_string() } else { format!("{}\n\n# User instructions\n{custom}", prompt::SYSTEM) }
+        if custom.is_empty() { base.to_string() } else { format!("{base}\n\n# User instructions\n{custom}") }
+    }
+    /// What to tell the user about a failed request.
+    fn failure(&self, f: http::Failure) -> String {
+        match f {
+            http::Failure::Unreachable(_) if self.provider == ProviderKind::Custom => text::CANT_REACH.replace("{base}", self.base()),
+            f => f.message(),
+        }
     }
 }
 
@@ -159,14 +171,20 @@ pub enum Event {
 }
 
 /// A chat with one provider and model, in that provider's own message format. Append-only:
-/// earlier turns are never edited (Claude's thinking blocks and prompt caching depend on it).
+/// earlier turns are never edited, nor the system prompt and tools sent with them (Claude's
+/// thinking blocks are bound to all of it, and prompt caching depends on it).
 #[derive(Clone, Debug, Default)]
 pub struct Conversation {
     messages: Vec<Value>,
     /// The provider and model the messages were written for.
     model: Option<(ProviderKind, String)>,
+    /// The system prompt the messages were written under.
+    system: String,
     /// A custom server refused images: requests leave the tools' images out.
     no_images: bool,
+    /// The tools' images in `messages`, and their base64 bytes ([`admit_image`]).
+    images: usize,
+    image_bytes: usize,
 }
 
 impl Conversation {
@@ -185,7 +203,26 @@ impl Conversation {
 const MAX_ROUNDS: usize = 40;
 /// Tool result text beyond this many characters is cut.
 const MAX_RESULT_CHARS: usize = 30_000;
-const FILES_OFF: &str = "File access is off for the assistant (Options ▸ AI).";
+/// The same for a local model: a server cuts the start of a prompt that its last message alone
+/// overflows (Ollama's context is often 4096 or 8192 tokens), and with it the system prompt and
+/// the tool format.
+const MAX_LOCAL_RESULT_CHARS: usize = 8_000;
+/// The longest side of an image sent to the model: Claude refuses larger ones once a request
+/// holds more than 20 images, which a chat that renders after every change soon does.
+const MAX_IMAGE_SIDE: u32 = 2000;
+/// The largest image sent, in base64 bytes (Claude's limit is 10 MB, 5 MB on some clouds).
+const MAX_IMAGE_BYTES: usize = 5 << 20;
+/// Images one conversation sends at most, and their bytes: every request carries them all again
+/// (Claude takes 32 MB per request), and earlier ones can't be dropped without breaking the
+/// thinking blocks after them.
+const MAX_CONVERSATION_IMAGES: usize = 50;
+const MAX_CONVERSATION_IMAGE_BYTES: usize = 20 << 20;
+/// The answer to a call that would read or write a file while the user keeps the assistant from
+/// files; the app also denies file access with it while it serves the assistant.
+pub const FILES_OFF: &str = "File access is off for the assistant (Options ▸ AI).";
+const SETTINGS_OFF: &str = "The AI and MCP settings are the user's to change (Options ▸ AI).";
+/// The answer to a call that would close a drawing or quit; the app also denies closing with it.
+pub const CLOSE_OFF: &str = "Closing drawings and quitting are left to the user: unsaved changes would be lost without asking.";
 const CANCELLED: &str = "Cancelled by the user";
 
 /// A tool call the model made.
@@ -228,34 +265,46 @@ enum Next {
 
 /// Answer `user_text`: ask the model, run the tools it calls on `backend`, and repeat until it
 /// is done, at most 40 tool rounds. Progress arrives through `on_event`. Setting `cancel` stops
-/// between stream chunks and before each tool, leaving `conv` ready for the next message.
-/// `Err` is a failure that ended the turn (no key, an API or connection error); a refusal by the
-/// model is [`Event::Error`] and `Ok`.
+/// while waiting for the server, between stream chunks and before each tool, leaving `conv`
+/// ready for the next message. `Err` is a failure that ended the turn (no key, an API or
+/// connection error); a refusal by the model is [`Event::Error`] and `Ok`.
 pub fn run(
     cfg: &Config,
     conv: &mut Conversation,
     user_text: &str,
     backend: &mut dyn tools::Backend,
-    cancel: &AtomicBool,
+    cancel: &Arc<AtomicBool>,
     on_event: &mut dyn FnMut(Event),
 ) -> Result<(), String> {
     if cfg!(target_arch = "wasm32") {
-        return Err(http::DESKTOP_ONLY.into());
+        return Err(text::DESKTOP_ONLY.into());
     }
     let model = cfg.model().to_string();
     if model.is_empty() {
-        return Err("Choose a model in Options ▸ AI.".into());
+        return Err(text::CHOOSE_MODEL.into());
     }
     if cfg.provider.needs_key() && cfg.api_key.trim().is_empty() {
-        return Err(format!("Add your {} API key in Options ▸ AI.", cfg.provider.label()));
+        return Err(text::ADD_KEY.replace("{provider}", cfg.provider.label()));
     }
     let id = (cfg.provider, model.clone());
     if conv.model.as_ref().is_some_and(|m| *m != id) && !conv.is_empty() {
         conv.clear();
-        on_event(Event::Notice(format!("Switched to {model}: the conversation starts over.")));
+        on_event(Event::Notice(text::SWITCHED.replace("{model}", &model)));
     }
     conv.model = Some(id);
-    let tools = tool_list(backend.has_ui(), cfg.allow_files);
+    // New custom instructions start over: the system prompt can't change under earlier turns.
+    let system = cfg.system();
+    if conv.system != system && !conv.is_empty() {
+        conv.clear();
+        conv.model = Some((cfg.provider, model.clone()));
+        on_event(Event::Notice(text::INSTRUCTIONS_CHANGED.into()));
+    }
+    conv.system = system;
+    let _watch = http::watch(cancel);
+    let local = cfg.provider == ProviderKind::Custom;
+    let tools = tool_list(backend.has_ui(), local);
+    let max_chars = if local { MAX_LOCAL_RESULT_CHARS } else { MAX_RESULT_CHARS };
+    let guard = Guard::new(backend, cfg.allow_files);
     let start = conv.messages.len();
     conv.messages.push(match cfg.provider {
         ProviderKind::Anthropic => json!({"role": "user", "content": [{"type": "text", "text": user_text}]}),
@@ -271,7 +320,8 @@ pub fn run(
     let mut rounds = 0;
     loop {
         if cancel.load(Ordering::Relaxed) {
-            on_event(Event::Notice("Stopped".into()));
+            unanswered(conv);
+            on_event(Event::Notice(text::STOPPED.into()));
             return Ok(());
         }
         let next = match cfg.provider {
@@ -288,13 +338,14 @@ pub fn run(
                 return Ok(());
             }
             Ok(Next::Cancelled) => {
-                on_event(Event::Notice("Stopped".into()));
+                unanswered(conv);
+                on_event(Event::Notice(text::STOPPED.into()));
                 return Ok(());
             }
             Ok(Next::Again) => {
                 rounds += 1;
                 if rounds > MAX_ROUNDS {
-                    on_event(Event::Notice(format!("Stopped after {MAX_ROUNDS} rounds.")));
+                    on_event(Event::Notice(text::STOPPED_ROUNDS.replace("{rounds}", &MAX_ROUNDS.to_string())));
                     return Ok(());
                 }
                 continue;
@@ -310,7 +361,7 @@ pub fn run(
             let why = format!("Not run: the assistant stops after {MAX_ROUNDS} tool rounds per message. Ask the user to continue.");
             let outs = calls.iter().map(|_| Output::error(why.clone())).collect();
             push_results(cfg.provider, conv, &calls, outs);
-            on_event(Event::Notice(format!("Stopped after {MAX_ROUNDS} tool rounds; send a message to continue.")));
+            on_event(Event::Notice(text::STOPPED_TOOL_ROUNDS.replace("{rounds}", &MAX_ROUNDS.to_string())));
             return Ok(());
         }
         rounds += 1;
@@ -321,7 +372,8 @@ pub fn run(
                 continue;
             }
             on_event(Event::ToolCall { id: call.id.clone(), name: call.name.clone(), input: call.input.clone().unwrap_or_else(Value::String) });
-            let out = execute(backend, call, cfg.allow_files);
+            let mut out = execute(backend, call, &guard, max_chars);
+            admit_image(conv, &mut out);
             on_event(Event::ToolResult { id: call.id.clone(), ok: out.ok, text: out.text.clone(), image_png_base64: out.image.clone() });
             outs.push(out);
         }
@@ -329,47 +381,247 @@ pub fn run(
     }
 }
 
-/// The tools offered: all of them, or without `open` and `save` when files are off.
-fn tool_list(has_ui: bool, allow_files: bool) -> Vec<Value> {
-    let defs = tools::tool_definitions(has_ui);
+/// The tools offered: all of them, and for a `local` model (whose context is small) without the
+/// window-only tools and `script`. The same whatever the settings, so a conversation's tools
+/// never change under it: `open` and `save` are refused when files are off ([`Guard`]).
+fn tool_list(has_ui: bool, local: bool) -> Vec<Value> {
+    let defs = tools::tool_definitions(has_ui && !local);
     let all = defs["tools"].as_array().cloned().unwrap_or_default();
-    all.into_iter().filter(|t| allow_files || !matches!(t["name"].as_str(), Some("open" | "save"))).collect()
+    all.into_iter().filter(|t| !local || t["name"] != "script").collect()
 }
 
-/// Whether `v` has a key named `path` at any depth.
-fn has_path(v: &Value) -> bool {
+/// Engine commands that read or write files whatever their parameters: refused, with their
+/// aliases, while file access is off. LISP is one because its `open` reads and writes files;
+/// ALIASEDIT and REINIT because a new alias would rename one of these. Commands that reach a file
+/// only through a parameter (`insert {file}`, `cutlist {csv}`, `compare {path}`, `new
+/// {template}`…) are refused by [`FILE_KEYS`] instead. The app also denies file access itself
+/// while it serves the assistant (`cadcraft_engine::files`), which covers a file name typed at a
+/// running command's prompt.
+pub const FILE_COMMANDS: &[&str] = &[
+    "open",
+    "qsave",
+    "saveas",
+    "recover",
+    "drawingrecovery",
+    "script",
+    "reinit",
+    "import",
+    "export",
+    "wblock",
+    "plot",
+    "exportpdf",
+    "publish",
+    "pdfbook",
+    "stepin",
+    "stepout",
+    "stlout",
+    "igesin",
+    "igesout",
+    "rhinoout",
+    "xattach",
+    "-xref",
+    "xopen",
+    "attach",
+    "datalink",
+    "appload",
+    "lisp",
+    "aliasedit",
+    "reinit",
+];
+
+/// Parameters that name a file or folder (except `path` of SWEEP and the path arrays: a curve's
+/// handle).
+pub const FILE_KEYS: &[&str] = &["path", "file", "csv", "template", "patternFile", "savefilepath"];
+
+/// File ▸ Open Recent's items, `ui.recent.<n>`: they open a file without asking.
+const RECENT_FILE: &str = "ui.recent.";
+/// OPTIONS, whose `ai*` and `mcp*` settings (file access, the provider, the control server) are
+/// the user's alone.
+const OPTIONS: &[&str] = &["options"];
+/// Commands that close drawings without asking about unsaved changes (from a JSON call), or the
+/// app: never the assistant's.
+const CLOSING: &[&str] = &["close", "closeall", "ui.quit"];
+
+/// A command name as typed or listed: lower case, without the `_ - . + '` prefixes.
+fn command_key(name: &str) -> String {
+    name.trim_start_matches(['_', '-', '.', '+', '\'']).to_ascii_lowercase()
+}
+
+/// What the assistant may not do, with the names it could do it by, read once per run.
+struct Guard {
+    options: HashSet<String>,
+    closing: HashSet<String>,
+    /// [`FILE_COMMANDS`] by any name, while file access is off.
+    files: Option<HashSet<String>>,
+}
+
+impl Guard {
+    fn new(backend: &mut dyn tools::Backend, allow_files: bool) -> Self {
+        let catalog = backend.call("engine.commands", json!({})).unwrap_or_default();
+        let names = |ids: &[&str]| command_names(&catalog, ids);
+        Guard { options: names(OPTIONS), closing: names(CLOSING), files: (!allow_files).then(|| names(FILE_COMMANDS)) }
+    }
+
+    /// Why `call` is refused, if it is.
+    fn refuses(&self, call: &Call, input: &Value) -> Option<&'static str> {
+        let typed = input["text"].as_str().unwrap_or_default();
+        let script = call.name == "script";
+        match call.name.as_str() {
+            "execute" => {
+                let id = command_key(input["command"].as_str().unwrap_or_default());
+                if self.options.contains(&id) && sets_ai_or_mcp(&input["params"]) {
+                    return Some(SETTINGS_OFF);
+                }
+                if self.closing.contains(&id) {
+                    return Some(CLOSE_OFF);
+                }
+                let curve_path = matches!(id.as_str(), "sweep" | "arraypath" | "array");
+                let files = self.files.as_ref()?;
+                (files.contains(&id) || id.starts_with(RECENT_FILE) || names_file(input, curve_path)).then_some(FILES_OFF)
+            }
+            "command_line" | "script" => {
+                if typed_lines(typed).any(|(name, json)| self.options.contains(&name) && json.is_some_and(|p| sets_ai_or_mcp(&p))) {
+                    return Some(SETTINGS_OFF);
+                }
+                if types_command(typed, |n| self.closing.contains(n), script) {
+                    return Some(CLOSE_OFF);
+                }
+                let files = self.files.as_ref()?;
+                let file_command = |n: &str| files.contains(n) || n.starts_with(RECENT_FILE);
+                (types_command(typed, file_command, script) || typed_lines(typed).any(|(_, json)| json.is_some_and(|p| names_file(&p, false))))
+                    .then_some(FILES_OFF)
+            }
+            "open" | "save" => self.files.as_ref().map(|_| FILES_OFF),
+            _ => self.files.as_ref().filter(|_| names_file(input, false)).map(|_| FILES_OFF),
+        }
+    }
+}
+
+/// `ids` and their aliases in the backend's `catalog`: built in, the user's own (ALIASEDIT,
+/// acad.pgp) and the Rhino names.
+fn command_names(catalog: &Value, ids: &[&str]) -> HashSet<String> {
+    let mut names: HashSet<String> = ids.iter().map(|c| command_key(c)).collect();
+    for c in catalog.as_array().into_iter().flatten().filter(|c| c["id"].as_str().is_some_and(|id| ids.contains(&id))) {
+        for key in ["aliases", "userAliases"] {
+            names.extend(c[key].as_array().into_iter().flatten().filter_map(Value::as_str).map(command_key));
+        }
+    }
+    names
+}
+
+/// Whether OPTIONS `params` change an `ai*` or `mcp*` setting.
+fn sets_ai_or_mcp(params: &Value) -> bool {
+    params.as_object().is_some_and(|o| {
+        o.keys().any(|k| {
+            let k = k.to_ascii_lowercase();
+            k.starts_with("ai") || k.starts_with("mcp")
+        })
+    })
+}
+
+/// Each typed line's first input as a command name, with its JSON parameters when the line is
+/// `name {json}`.
+fn typed_lines(text: &str) -> impl Iterator<Item = (String, Option<Value>)> + '_ {
+    text.lines().filter_map(|line| {
+        let line = line.trim();
+        let first = line.split_whitespace().next()?;
+        let json = line.get(first.len()..).and_then(|p| serde_json::from_str::<Value>(p.trim()).ok());
+        Some((command_key(first), json))
+    })
+}
+
+/// Whether `v` has a parameter in [`FILE_KEYS`] at any depth; `curve_path`: `path` is a handle.
+fn names_file(v: &Value, curve_path: bool) -> bool {
     match v {
-        Value::Object(o) => o.iter().any(|(k, v)| k == "path" || has_path(v)),
-        Value::Array(a) => a.iter().any(has_path),
+        Value::Object(o) => {
+            o.iter().any(|(k, v)| (FILE_KEYS.iter().any(|f| f.eq_ignore_ascii_case(k)) && !(curve_path && k == "path")) || names_file(v, curve_path))
+        }
+        Value::Array(a) => a.iter().any(|v| names_file(v, curve_path)),
         _ => false,
     }
 }
 
-/// Run one call. A call the tool set refuses (unknown tool, arguments that don't fit) is an error
-/// result the model can correct, not a failure of the turn.
-fn execute(backend: &mut dyn tools::Backend, call: &Call, allow_files: bool) -> Output {
+/// Whether text typed at the command line (or run as a `script`) would start a command `hits`
+/// names: the first input of a line, a transparent `'name`, or (for the file commands) a LISP
+/// `(…)` at the start. A script line goes on after its command ends, so there any later input of
+/// two letters or more counts too (single letters are mostly keywords, such as W for Window).
+fn types_command(text: &str, hits: impl Fn(&str) -> bool, script: bool) -> bool {
+    text.lines().any(|line| {
+        line.split_whitespace().enumerate().any(|(i, input)| {
+            let name = command_key(input);
+            (i == 0 && input.starts_with('(') && hits("lisp")) || ((i == 0 || input.starts_with('\'') || (script && name.len() > 1)) && hits(&name))
+        })
+    })
+}
+
+/// Run one call, unless `guard` refuses it. A call the tool set refuses (unknown tool, arguments
+/// that don't fit) is an error result the model can correct, not a failure of the turn.
+fn execute(backend: &mut dyn tools::Backend, call: &Call, guard: &Guard, max_chars: usize) -> Output {
     let input = match &call.input {
         Ok(v) => v,
         Err(raw) => return Output::error(json!({ "INVALID_JSON": raw }).to_string()),
     };
-    // ponytail: only structured `path` arguments are caught; a file command typed at
-    // `command_line` (e.g. SAVEAS) still reaches the disk. Close it with an engine-level policy.
-    if !allow_files && (matches!(call.name.as_str(), "open" | "save") || has_path(input)) {
-        return Output::error(FILES_OFF);
+    if let Some(why) = guard.refuses(call, input) {
+        return Output::error(why);
     }
     match tools::call_tool(backend, &call.name, input) {
-        Ok(r) => mcp_output(&r),
+        Ok(r) => mcp_output(&r, max_chars),
         Err(e) => Output::error(e),
     }
 }
 
+/// Keep a tool's image only when the provider takes it and the conversation has room for it;
+/// otherwise its text says why, so the model can ask for a smaller one.
+fn admit_image(conv: &mut Conversation, out: &mut Output) {
+    let Some(data) = &out.image else { return };
+    let why = match png_size(data) {
+        _ if data.len() > MAX_IMAGE_BYTES => format!("it is {} MB", data.len() >> 20),
+        Some((w, h)) if w.max(h) > MAX_IMAGE_SIDE => format!("it is {w} × {h} px; ask for a width and height of {MAX_IMAGE_SIDE} or less"),
+        _ if conv.images >= MAX_CONVERSATION_IMAGES || conv.image_bytes.saturating_add(data.len()) > MAX_CONVERSATION_IMAGE_BYTES => {
+            "this chat holds all the images it can; in a new chat the assistant sees images again".into()
+        }
+        _ => {
+            conv.images += 1;
+            conv.image_bytes += data.len();
+            return;
+        }
+    };
+    out.image = None;
+    out.text.push_str(&format!("\n(The image was left out: {why}.)"));
+}
+
+/// A base64 PNG's width and height, from its header.
+fn png_size(b64: &str) -> Option<(u32, u32)> {
+    let sextet = |c: u8| -> Option<u32> {
+        Some(u32::from(match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        }))
+    };
+    // The signature and the IHDR chunk's start: 24 bytes, 32 base64 characters.
+    let mut head = Vec::with_capacity(24);
+    for quad in b64.as_bytes().get(..32)?.chunks(4) {
+        let n = quad.iter().try_fold(0u32, |n, &c| Some(n << 6 | sextet(c)?))?;
+        head.extend_from_slice(n.to_be_bytes().get(1..)?);
+    }
+    if head.get(..8)? != b"\x89PNG\r\n\x1a\n" || head.get(12..16)? != b"IHDR" {
+        return None;
+    }
+    let be = |i: usize| head.get(i..i + 4).and_then(|b| <[u8; 4]>::try_from(b).ok()).map(u32::from_be_bytes);
+    Some((be(16)?, be(20)?))
+}
+
 /// An MCP tool result (`{content: [{type: "text", text} | {type: "image", data}], isError}`) as
-/// text and the first image, the text cut at 30000 characters.
-fn mcp_output(r: &Value) -> Output {
+/// text and the first image, the text cut at `max_chars` characters.
+fn mcp_output(r: &Value, max_chars: usize) -> Output {
     let parts = r["content"].as_array().map(Vec::as_slice).unwrap_or_default();
     let text: Vec<&str> = parts.iter().filter(|p| p["type"] == "text").filter_map(|p| p["text"].as_str()).collect();
     let mut text = text.join("\n");
-    if let Some((cut, _)) = text.char_indices().nth(MAX_RESULT_CHARS) {
+    if let Some((cut, _)) = text.char_indices().nth(max_chars) {
         let more = text.split_off(cut).chars().count();
         text.push_str(&format!("\n[cut: {more} more characters. Ask for less: a filter, a window, a limit or offset.]"));
     }
@@ -392,7 +644,7 @@ pub fn list_models(cfg: &Config) -> Result<Vec<String>, String> {
         ProviderKind::Anthropic => (format!("{}/v1/models?limit=1000", cfg.base()), anthropic::headers(key, false)),
         _ => (format!("{}/models", cfg.base()), openai::headers(key)),
     };
-    let v = http::get_json(&url, &headers).map_err(|f| f.message())?;
+    let v = http::get_json(&url, &headers).map_err(|f| cfg.failure(f))?;
     let mut ids: Vec<String> = v["data"].as_array().into_iter().flatten().filter_map(|m| m["id"].as_str().map(str::to_string)).collect();
     ids.sort();
     ids.dedup();
@@ -401,7 +653,7 @@ pub fn list_models(cfg: &Config) -> Result<Vec<String>, String> {
 
 /// Check the URL and key by listing the models.
 pub fn test_connection(cfg: &Config) -> Result<String, String> {
-    list_models(cfg).map(|m| format!("Connected: {} models", m.len()))
+    list_models(cfg).map(|m| text::CONNECTED.replace("{count}", &m.len().to_string()))
 }
 
 #[cfg(test)]

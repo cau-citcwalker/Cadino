@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde_json::{Value, json};
 
 use crate::http::{self, Failure};
-use crate::{Call, Config, Conversation, Event, Next, Output, ProviderKind, sse};
+use crate::{Call, Config, Conversation, Event, Next, Output, ProviderKind, sse, text};
 
 const VERSION: &str = "2023-06-01";
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
@@ -53,7 +53,7 @@ fn body(cfg: &Config, model: &str, conv: &Conversation, tools: &[Value], fallbac
         "model": model,
         "max_tokens": cfg.max_tokens,
         "stream": true,
-        "system": [{"type": "text", "text": cfg.system()}],
+        "system": [{"type": "text", "text": conv.system}],
         "tools": tools,
         // Automatic caching of the stable prefix (tools, system, earlier turns).
         "cache_control": {"type": "ephemeral"},
@@ -92,11 +92,7 @@ pub(crate) fn turn(
         // Not appended: the declined turn is not part of the conversation.
         let d = &m.stop_details;
         let why: Vec<&str> = [d["category"].as_str(), d["explanation"].as_str()].into_iter().flatten().collect();
-        on_event(Event::Error(if why.is_empty() {
-            "Claude declined this request.".into()
-        } else {
-            format!("Claude declined this request ({}).", why.join(": "))
-        }));
+        on_event(Event::Error(if why.is_empty() { text::DECLINED.into() } else { text::DECLINED_WHY.replace("{reason}", &why.join(": ")) }));
         return Ok(Next::Done);
     }
     let (content, calls) = finish(m.blocks);
@@ -107,7 +103,7 @@ pub(crate) fn turn(
         "tool_use" if !calls.is_empty() => Next::Tools(calls),
         "pause_turn" if calls.is_empty() => Next::Again,
         "max_tokens" => {
-            on_event(Event::Notice(format!("The reply reached max_tokens ({}); raise it in Options ▸ AI.", cfg.max_tokens)));
+            on_event(Event::Notice(text::MAX_TOKENS.replace("{max_tokens}", &cfg.max_tokens.to_string())));
             if calls.is_empty() {
                 Next::Done
             } else {
@@ -149,6 +145,8 @@ fn read(body: impl Read, cancel: &AtomicBool, on_event: &mut dyn FnMut(Event)) -
         let lost = |msg: String| if started { Failure::fatal(msg) } else { Failure::Retry { msg, after: None } };
         let ev = match events.next() {
             Ok(Some(ev)) => ev,
+            // Stop pressed while the transport waited for the next bytes.
+            Err(_) if cancel.load(Ordering::Relaxed) => return Err(Failure::Cancelled),
             Ok(None) => return Err(lost("The connection closed before the reply was complete".into())),
             Err(e) => return Err(lost(format!("Reading the reply: {e}"))),
         };

@@ -50,8 +50,32 @@ pub fn tool_definitions(has_ui: bool) -> Value {
     json!({ "tools": tools })
 }
 
-fn text(v: &Value) -> Value {
-    json!({"content": [{"type": "text", "text": serde_json::to_string_pretty(v).unwrap_or_default()}]})
+fn text(mut v: Value) -> Value {
+    without_breps(&mut v);
+    json!({"content": [{"type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default()}]})
+}
+
+/// Every `brep` text in `v` (a 3D solid's whole B-rep, often megabytes) replaced by its size,
+/// and the display `mesh` beside it by its triangle count: neither means anything to a model,
+/// which reads a solid's size and place from `bbox3`.
+fn without_breps(v: &mut Value) {
+    match v {
+        Value::Object(o) => {
+            if o.get("brep").is_some_and(Value::is_string)
+                && let Some(m) = o.get_mut("mesh")
+            {
+                *m = json!(format!("<mesh, {} triangles>", m["tris"].as_array().map_or(0, Vec::len)));
+            }
+            for (k, x) in o.iter_mut() {
+                match x {
+                    Value::String(s) if k == "brep" => *x = json!(format!("<B-rep, {} bytes>", s.len())),
+                    x => without_breps(x),
+                }
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(without_breps),
+        _ => {}
+    }
 }
 
 fn err_text(e: &str) -> Value {
@@ -146,7 +170,7 @@ pub fn call_tool(b: &mut dyn Backend, name: &str, args: &Value) -> Result<Value,
             return Ok(match b.call("ui.render", a) {
                 Ok(v) => match v.get("pngBase64").and_then(Value::as_str) {
                     Some(data) => json!({"content": [{"type": "image", "data": data, "mimeType": "image/png"}]}),
-                    None => text(&v),
+                    None => text(v),
                 },
                 Err(e) => err_text(&e),
             });
@@ -154,7 +178,42 @@ pub fn call_tool(b: &mut dyn Backend, name: &str, args: &Value) -> Result<Value,
         other => return Err(format!("unknown tool `{other}`")),
     };
     Ok(match r {
-        Ok(v) => text(&v),
+        Ok(v) => text(v),
         Err(e) => err_text(&e),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Solid;
+
+    impl Backend for Solid {
+        fn call(&mut self, _: &str, _: Value) -> Result<Value, String> {
+            let mesh = json!({"verts": [{"x": 0, "y": 0, "z": 0}], "tris": [[0, 0, 0], [0, 0, 0]], "edges": []});
+            let solid = json!({"type": "3D Solid", "geometry": {"brep": "x".repeat(1000), "mesh": mesh, "part": {"name": "Top"}}, "bbox3": [[0, 0, 0], [1, 1, 1]]});
+            Ok(json!({"entities": [solid, {"type": "Mesh", "mesh": mesh}], "brep": 7}))
+        }
+        fn has_ui(&self) -> bool {
+            false
+        }
+        fn describe(&self) -> String {
+            "solid".into()
+        }
+    }
+
+    #[test]
+    fn breps_are_left_out_of_results() {
+        let r = call_tool(&mut Solid, "inspect_drawing", &json!({})).unwrap();
+        let v: Value = serde_json::from_str(r["content"][0]["text"].as_str().unwrap()).unwrap();
+        let solid = &v["entities"][0];
+        assert_eq!(
+            (solid["geometry"]["brep"].as_str(), solid["geometry"]["mesh"].as_str()),
+            (Some("<B-rep, 1000 bytes>"), Some("<mesh, 2 triangles>"))
+        );
+        assert_eq!((solid["bbox3"][1].clone(), solid["geometry"]["part"]["name"].clone()), (json!([1, 1, 1]), json!("Top")));
+        assert!(v["entities"][1]["mesh"].is_object(), "a mesh beside no B-rep is kept");
+        assert_eq!(v["brep"], 7, "only texts are replaced");
+    }
 }
