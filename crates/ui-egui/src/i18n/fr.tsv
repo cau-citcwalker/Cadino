@@ -27,7 +27,7 @@
 	= Equals	= Égal à
 	> Greater than	> Supérieur à
 	About	À propos
-	About CADCraft	À propos de CADCraft
+	About Cadino	À propos de Cadino
 	Absolute	Absolu
 	Add Leader	Ajouter un repère
 	Align	Aligner
@@ -82,7 +82,7 @@
 	ByBlock	DuBloc
 	ByColor	Par couleur
 	ByLayer	DuCalque
-	CADCraft Help	Aide de CADCraft
+	Cadino Help	Aide de Cadino
 	Cancel	Annuler
 	Cartesian (x, y)	Cartésien (x, y)
 	Center	Centre
@@ -584,7 +584,7 @@
 	Quick Select Properties	Propriétés de la sélection rapide
 	Quick Select...	Sélection rapide...
 	QuickCalc	Calculatrice rapide
-	Quit CADCraft	Quitter CADCraft
+	Quit Cadino	Quitter Cadino
 	Radius	Rayon
 	Raster Image	Image raster
 	Ray	Rayon
@@ -993,7 +993,7 @@
 @plural	{n} contributor	{n} contributeur|{n} contributeurs
 	Drawing as bytes	Dessin sous forme d'octets
 	Services	Services
-	Hide CADCraft	Masquer CADCraft
+	Hide Cadino	Masquer Cadino
 	Hide Others	Masquer les autres
 	Accessibility	Accessibilité
 	Show System Cursor	Afficher le curseur système

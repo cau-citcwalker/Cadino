@@ -54,7 +54,7 @@ menu	Modify	Edita
 	> Greater than	> Maggiore di
 	A variable name starts with a letter and has only letters, digits and _	Un nome di variabile inizia con una lettera e contiene solo lettere, cifre e _
 	About	Informazioni
-	About CADCraft	Informazioni su CADCraft
+	About Cadino	Informazioni su Cadino
 	Absolute	Assoluto
 	Add Leader	Aggiungi direttrice
 	Additional angles	Angoli aggiuntivi
@@ -115,7 +115,7 @@ menu	Modify	Edita
 	ByBlock	DaBlocco
 	ByColor	DaColore
 	ByLayer	DaLayer
-	CADCraft Help	Aiuto di CADCraft
+	Cadino Help	Aiuto di Cadino
 	Cancel	Annulla
 	Cartesian (x, y)	Cartesiane (x, y)
 	Center	Centro
@@ -699,7 +699,7 @@ menu	Modify	Edita
 	Quick Select...	Selezione rapida...
 	QuickCalc	CalcRapida
 	QuickCalc Pick	Punto CalcRapida
-	Quit CADCraft	Esci da CADCraft
+	Quit Cadino	Esci da Cadino
 	Radius	Raggio
 	Raster Image	Immagine raster
 	Ray	Semiretta
@@ -927,7 +927,7 @@ menu	Modify	Edita
 	Specify insertion point	Specificare il punto di inserimento
 	A drawing opened from a file keeps that file's format.	Un disegno aperto da un file conserva il formato di quel file.
 	An array that would create more objects than this is refused.	Una serie che creerebbe più oggetti di così viene rifiutata.
-	CADCraft keeps these preferences, object snap modes and drafting toggles for your user account and restores them when it starts.	CADCraft conserva queste preferenze, le modalità di snap ad oggetto e le impostazioni di disegno per il tuo account utente e le ripristina all'avvio.
+	Cadino keeps these preferences, object snap modes and drafting toggles for your user account and restores them when it starts.	Cadino conserva queste preferenze, le modalità di snap ad oggetto e le impostazioni di disegno per il tuo account utente e le ripristina all'avvio.
 	Changes apply at once and are kept for next time.	Le modifiche si applicano subito e restano per la prossima volta.
 	Command line history	Cronologia della riga di comando
 	Copy as JSON	Copia come JSON
@@ -1175,7 +1175,7 @@ menu	Modify	Edita
 @plural	{n} contributor	{n} collaboratore|{n} collaboratori
 	Drawing as bytes	Disegno in byte
 	Services	Servizi
-	Hide CADCraft	Nascondi CADCraft
+	Hide Cadino	Nascondi Cadino
 	Hide Others	Nascondi altre
 	Accessibility	Accessibilità
 	Show System Cursor	Mostra cursore di sistema

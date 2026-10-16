@@ -29,7 +29,7 @@
 	A drawing opened from a file keeps that file's format.	Um desenho aberto de um arquivo mantém o formato desse arquivo.
 	A variable name starts with a letter and has only letters, digits and _	Um nome de variável começa com uma letra e contém apenas letras, dígitos e _
 	About	Sobre
-	About CADCraft	Sobre o CADCraft
+	About Cadino	Sobre o Cadino
 	Absolute	Absoluto
 	Add Current Scale	Adicionar escala atual
 	Add Leader	Adicionar linha de chamada
@@ -104,9 +104,9 @@
 	ByBlock	PorBloco
 	ByColor	PorCor
 	ByLayer	PorCamada
-	CADCraft	CADCraft
-	CADCraft Help	Ajuda do CADCraft
-	CADCraft keeps these preferences, object snap modes and drafting toggles for your user account and restores them when it starts.	O CADCraft mantém estas preferências, modos de referência a objetos e alternâncias de desenho na sua conta de usuário e as restaura ao iniciar.
+	Cadino	Cadino
+	Cadino Help	Ajuda do Cadino
+	Cadino keeps these preferences, object snap modes and drafting toggles for your user account and restores them when it starts.	O Cadino mantém estas preferências, modos de referência a objetos e alternâncias de desenho na sua conta de usuário e as restaura ao iniciar.
 	Cancel	Cancelar
 	Cartesian (x, y)	Cartesiano (x, y)
 	Center	Centro
@@ -788,7 +788,7 @@
 	Quick Select Properties	Propriedades da seleção rápida
 	Quick Select...	Seleção rápida...
 	QuickCalc	Calculadora
-	Quit CADCraft	Sair do CADCraft
+	Quit Cadino	Sair do Cadino
 	Radius	Raio
 	Raster Image	Imagem raster
 	Ray	Semirreta
@@ -1214,7 +1214,7 @@
 @plural	{n} contributor	{n} colaborador|{n} colaboradores
 	Drawing as bytes	Desenho como bytes
 	Services	Serviços
-	Hide CADCraft	Ocultar o CADCraft
+	Hide Cadino	Ocultar o Cadino
 	Hide Others	Ocultar outros
 	Accessibility	Acessibilidade
 	Show System Cursor	Exibir cursor do sistema

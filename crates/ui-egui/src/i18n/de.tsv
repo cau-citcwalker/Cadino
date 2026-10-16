@@ -27,7 +27,7 @@
 	= Equals	= Gleich
 	> Greater than	> Größer als
 	About	Über
-	About CADCraft	Über CADCraft
+	About Cadino	Über Cadino
 	Absolute	Absolut
 	Add Leader	Führungslinie hinzufügen
 	Align	Ausrichten
@@ -82,7 +82,7 @@
 	ByBlock	VonBlock
 	ByColor	VonFarbe
 	ByLayer	VonLayer
-	CADCraft Help	CADCraft-Hilfe
+	Cadino Help	Cadino-Hilfe
 	Cancel	Abbrechen
 	Cartesian (x, y)	Kartesisch (x, y)
 	Center	Zentrum
@@ -590,7 +590,7 @@
 	Quick Select Properties	Schnellauswahl-Eigenschaften
 	Quick Select...	Schnellauswahl...
 	QuickCalc	QuickCalc
-	Quit CADCraft	CADCraft beenden
+	Quit Cadino	Cadino beenden
 	Radius	Radius
 	Raster Image	Rasterbild
 	Ray	Strahl
@@ -999,7 +999,7 @@
 @plural	{n} contributor	{n} Mitwirkender|{n} Mitwirkende
 	Drawing as bytes	Zeichnung als Bytes
 	Services	Dienste
-	Hide CADCraft	CADCraft ausblenden
+	Hide Cadino	Cadino ausblenden
 	Hide Others	Andere ausblenden
 	Accessibility	Bedienungshilfen
 	Show System Cursor	Systemzeiger anzeigen

@@ -27,7 +27,7 @@
 	= Equals	= Равно
 	> Greater than	> Больше чем
 	About	О программе
-	About CADCraft	О CADCraft
+	About Cadino	О Cadino
 	Absolute	Абсолютные
 	Add Leader	Добавить выноску
 	Align	Выровнять
@@ -82,7 +82,7 @@
 	ByBlock	Поблоку
 	ByColor	ПоЦвету
 	ByLayer	Послою
-	CADCraft Help	Справка CADCraft
+	Cadino Help	Справка Cadino
 	Cancel	Отмена
 	Cartesian (x, y)	Декартовы (x, y)
 	Center	Центр
@@ -584,7 +584,7 @@
 	Quick Select Properties	Свойства быстрого выбора
 	Quick Select...	Быстрый выбор...
 	QuickCalc	Быстрокалькулятор
-	Quit CADCraft	Выйти из CADCraft
+	Quit Cadino	Выйти из Cadino
 	Radius	Радиус
 	Raster Image	Растровое изображение
 	Ray	Луч
@@ -993,7 +993,7 @@
 @plural	{n} contributor	{n} участник|{n} участника|{n} участников
 	Drawing as bytes	Чертеж как байты
 	Services	Службы
-	Hide CADCraft	Скрыть CADCraft
+	Hide Cadino	Скрыть Cadino
 	Hide Others	Скрыть остальные
 	Accessibility	Специальные возможности
 	Show System Cursor	Показывать системный курсор
