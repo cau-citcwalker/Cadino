@@ -15,6 +15,10 @@ pub struct Mesh3 {
     pub verts: Vec<Vec3>,
     pub tris: Vec<[u32; 3]>,
     pub edges: Vec<Vec<Vec3>>,
+    /// Not a closed solid (a surface or an open shell): both sides of its faces show, so none is
+    /// culled as a back face.
+    #[serde(default)]
+    pub open: bool,
 }
 
 impl Mesh3 {
@@ -189,7 +193,7 @@ mod tests {
 
     #[test]
     fn hostile_triangle_index_is_none() {
-        let m = Mesh3 { verts: vec![Vec3::ZERO], tris: vec![[0, 0, 9]], edges: vec![] };
+        let m = Mesh3 { verts: vec![Vec3::ZERO], tris: vec![[0, 0, 9]], edges: vec![], open: false };
         assert!(m.tri(&m.tris[0]).is_none());
     }
 }

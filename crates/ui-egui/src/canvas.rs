@@ -2955,7 +2955,7 @@ pub(crate) mod tests {
     /// A solid that is only an edge from (0, 0, 20) to (10, 0, 20): drawn 20 above its plan.
     fn raised_edge(app: &mut CadApp) -> Handle {
         let g = cadcraft_geom::Vec3::new;
-        let mesh = cadcraft_geom::Mesh3 { verts: Vec::new(), tris: Vec::new(), edges: vec![vec![g(0.0, 0.0, 20.0), g(10.0, 0.0, 20.0)]] };
+        let mesh = cadcraft_geom::Mesh3 { verts: Vec::new(), tris: Vec::new(), edges: vec![vec![g(0.0, 0.0, 20.0), g(10.0, 0.0, 20.0)]], open: false };
         let s = cadcraft_doc::Solid3d { brep: "".into(), mesh: std::sync::Arc::new(mesh), xform: cadcraft_geom::Mat4::IDENTITY };
         let d = app.session.doc_mut().unwrap();
         d.add(&cadcraft_doc::Space::Model, cadcraft_doc::Common::default(), cadcraft_doc::EntityKind::Solid3d(s)).unwrap()

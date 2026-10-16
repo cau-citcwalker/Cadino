@@ -696,6 +696,10 @@ pub struct Session {
     lisp_last: Option<std::result::Result<lisp::value::Value, String>>,
     /// What the last HATCHPICK kept (the Hatch and Gradient dialog's picks).
     pub hatch_picks: Option<cmd::hatch::HatchPicks>,
+    /// The height of the point the UI last gave on a 3D object (a 3D object snap in a 3D view):
+    /// commands that build in 3D (BOX, CYLINDER …) start there; `None` = on the XY plane. The UI
+    /// sets it with each point it sends.
+    pub point_z: Option<f64>,
 }
 
 impl Default for Session {
@@ -744,6 +748,7 @@ impl Session {
             lisp: lisp::LispState::default(),
             lisp_last: None,
             hatch_picks: None,
+            point_z: None,
         }
     }
     pub fn new_drawing(&mut self, metric: bool) -> usize {
