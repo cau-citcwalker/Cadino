@@ -178,7 +178,7 @@ fn measured(s: &Session) -> f64 {
 
 #[test]
 fn dimordinate_measures_from_the_ucs_origin_along_its_axes() {
-    for setup in [&["ucs 100,50", ""][..], &["ucs z 90"], &["ucs 100,50", "", "ucs z 90"]] {
+    for setup in [&["ucs 100,50", ""][..], &["ucs z 90"], &["ucs 100,50", "", "ucs z 90"], &["ucs 100,50", "", "ucs z 30"]] {
         let mut s = Session::new();
         for t in setup {
             s.cmdline(t).unwrap();
@@ -203,8 +203,8 @@ fn dimordinate_measures_from_the_ucs_origin_along_its_axes() {
     let mut s = Session::new();
     s.cmdline("dimordinate 20,30 20,45").unwrap();
     assert!((measured(&s) - 20.0).abs() < 1e-9);
-    // A UCS turned by 30° can't be measured along: refused, the drawing unchanged.
-    s.cmdline("ucs z 30").unwrap();
+    // A tilted UCS: refused (dimensions stay level), the drawing unchanged.
+    s.cmdline("ucs x 90").unwrap();
     let n = s.doc().unwrap().model.len();
     assert!(s.cmdline("dimordinate 20,30 20,45").is_err() || s.doc().unwrap().model.len() == n);
     assert!(s.execute("dimordinate", &json!({ "feature": [20, 30], "leader": [20, 45] })).is_err());

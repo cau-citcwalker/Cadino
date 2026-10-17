@@ -2,7 +2,7 @@
 //! options, DIVIDE/MEASURE, REVCLOUD, WIPEOUT, XLINE options, 3DPOLY, MLINE, HELIX, spline by
 //! control vertices, CENTERMARK and CENTERLINE. Each has a JSON form and a prompt sequence.
 
-use cadcraft_doc::{EntityKind, Handle, Helix, HelixConstrain, Point, Polyline3d, RayLine, Wipeout};
+use cadcraft_doc::{Entity, EntityKind, Handle, Helix, HelixConstrain, Point, Polyline3d, RayLine, Wipeout};
 use cadcraft_geom::{Arc, Circle, Ellipse, Line, PolyVertex, Polyline, Spline, TAU, Vec2, Vec3, norm_angle, shoelace};
 use serde_json::{Value, json};
 
@@ -959,8 +959,8 @@ pub(crate) fn cloud_vertices(boundary: &[Vec2], arc_len: f64, per_edge: bool, re
     Some(out.into_iter().map(|p| PolyVertex::with_bulge(p, b)).collect())
 }
 
-fn object_outline(s: &Session, h: Handle) -> Result<Vec<Vec2>> {
-    let e = curves::entity(s, h)?;
+/// The outline of closed object `e` in its own plane (OCS) coordinates.
+fn object_outline(e: &Entity) -> Result<Vec<Vec2>> {
     let tol = 1e-3;
     let pts = match &e.kind {
         EntityKind::LwPolyline(p) if p.closed => Polyline { vertices: p.vertices.clone(), closed: true }.tessellate(tol),
@@ -986,18 +986,32 @@ fn cloud_entity(vs: Vec<PolyVertex>, calligraphy: bool, arc_len: f64) -> EntityK
     lwpoly(vs, true)
 }
 
+/// REVCLOUD Object: closed object `h` becomes a revision cloud along its outline, in its own
+/// plane with its properties (whatever the construction plane).
+fn cloud_object(s: &mut Session, h: Handle, arc_len: f64, calligraphy: bool, reverse: bool) -> Result<Handle> {
+    let src = curves::entity(s, h)?;
+    let vs = cloud_vertices(&object_outline(&src)?, arc_len, false, reverse).ok_or_else(|| other("The object has no area."))?;
+    let mut k = cloud_entity(vs, calligraphy, arc_len);
+    k.set_elevation(src.kind.elevation());
+    let nh = s.add_entity_world(k)?;
+    let d = s.doc_mut()?;
+    d.modify_entity(nh, |e| e.common = src.common)?;
+    d.remove_entity(h);
+    Ok(nh)
+}
+
 fn run_revcloud(s: &mut Session, p: &Value) -> Result<Value> {
     let arc_len = p.get("arcLength").and_then(Value::as_f64).filter(|v| v.is_finite() && *v > 0.0).unwrap_or_else(|| default_arc_len(s));
     let reverse = bool_or(p, "reverse", false);
     let calligraphy = str_param(p, "style").is_some_and(|x| x.eq_ignore_ascii_case("calligraphy"));
-    let (pts, per_edge, src) = if let (Some(a), Some(b)) = (point_param(p, "p1"), point_param(p, "p2")) {
-        (rect_vertices(a, b).into_iter().map(|v| v.p).collect(), true, None)
+    let (pts, per_edge) = if let (Some(a), Some(b)) = (point_param(p, "p1"), point_param(p, "p2")) {
+        (rect_vertices(a, b).into_iter().map(|v| v.p).collect(), true)
     } else if let Some(pts) = points_param(p, "points") {
-        (pts, true, None)
+        (pts, true)
     } else if let Some(pts) = points_param(p, "freehand") {
-        (pts, false, None)
+        (pts, false)
     } else if let Some(h) = curves::handle_param(p, "handle") {
-        (object_outline(s, h)?, false, Some(h))
+        return added(cloud_object(s, h, arc_len, calligraphy, reverse)?);
     } else {
         return Err(bad("revcloud", "give {p1, p2}, {points}, {freehand} or {handle}"));
     };
@@ -1005,14 +1019,7 @@ fn run_revcloud(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("revcloud", "too many points"));
     }
     let vs = cloud_vertices(&pts, arc_len, per_edge, reverse).ok_or_else(|| bad("revcloud", "the boundary needs an area"))?;
-    let h = s.add_entity(cloud_entity(vs, calligraphy, arc_len))?;
-    if let Some(src) = src {
-        let common = curves::entity(s, src)?.common;
-        let d = s.doc_mut()?;
-        d.modify_entity(h, |e| e.common = common)?;
-        d.remove_entity(src);
-    }
-    added(h)
+    added(s.add_entity(cloud_entity(vs, calligraphy, arc_len))?)
 }
 
 struct RevcloudM {
@@ -1106,13 +1113,7 @@ impl Interactive for RevcloudM {
         if self.object {
             let Input::Point(p) = i else { return if i == Input::Enter { Ok(Step::Cancel) } else { Ok(Step::Continue) } };
             let h = curves::pick_at(s, p).ok_or_else(|| other("*Invalid selection*"))?;
-            let pts = object_outline(s, h)?;
-            let vs = cloud_vertices(&pts, self.arc_len, false, false).ok_or_else(|| other("The object has no area."))?;
-            let nh = s.add_entity(cloud_entity(vs, self.calligraphy, self.arc_len))?;
-            let common = curves::entity(s, h)?.common;
-            let d = s.doc_mut()?;
-            d.modify_entity(nh, |e| e.common = common)?;
-            d.remove_entity(h);
+            cloud_object(s, h, self.arc_len, self.calligraphy, false)?;
             s.echo("Revision cloud finished.");
             return Ok(Step::Done);
         }

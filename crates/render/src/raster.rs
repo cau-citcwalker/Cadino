@@ -61,7 +61,8 @@ impl View {
 #[derive(Clone, Copy, Debug)]
 pub struct RasterOptions {
     pub background: Rgb,
-    /// Line width in pixels for zero-lineweight lines.
+    /// Line width in pixels for zero-lineweight lines. 0: 1 px, and the solids' edges 2 px on an
+    /// image 1000 px or more on its long side, so they still show shrunk to a thumbnail.
     pub hairline: f32,
     /// Pixels per mm for lineweights (0 = ignore lineweights).
     pub px_per_mm: f32,
@@ -77,8 +78,9 @@ impl Default for RasterOptions {
 impl RasterOptions {
     /// On white, as on paper: for images read rather than worked in (a named view rendered for the
     /// AI assistant), where the solids' dark edges would vanish into the canvas's dark background.
+    /// Its edges are sized to the image (`hairline` 0).
     pub fn paper() -> Self {
-        RasterOptions { background: Rgb(255, 255, 255), ..Default::default() }
+        RasterOptions { background: Rgb(255, 255, 255), hairline: 0.0, ..Default::default() }
     }
 }
 
@@ -88,6 +90,12 @@ pub fn render(list: &DisplayList, view: &View, o: &RasterOptions) -> Option<Pixm
         return None;
     }
     let mut pm = Pixmap::new(view.width, view.height)?;
+    let edge = match o.hairline {
+        h if h > 0.0 => h,
+        _ if view.width.max(view.height) >= 1000 => 2.0,
+        _ => 1.0,
+    };
+    let o = &RasterOptions { hairline: if o.hairline > 0.0 { o.hairline } else { 1.0 }, ..*o };
     pm.fill(tiny_skia::Color::from_rgba8(o.background.0, o.background.1, o.background.2, 255));
     let vis = view.world_bounds();
     let mut faces = list.faces.iter().peekable();
@@ -181,15 +189,15 @@ pub fn render(list: &DisplayList, view: &View, o: &RasterOptions) -> Option<Pixm
         }
     }
     if let Some(z) = &zbuf {
-        draw_edges(&mut pm, z, list, view, o, zref);
+        draw_edges(&mut pm, z, list, view, o, zref, edge);
     }
     Some(pm)
 }
 
 /// Stroke the solids' edges ([`DisplayList::edges`]) where no shaded face hides them: each edge
 /// is walked a pixel at a time against the faces' depths `zbuf` ([`fill_face`]) and its visible
-/// runs are stroked as hairlines.
-fn draw_edges(pm: &mut Pixmap, zbuf: &[f32], list: &DisplayList, view: &View, o: &RasterOptions, zref: f64) {
+/// runs are stroked `width` pixels wide.
+fn draw_edges(pm: &mut Pixmap, zbuf: &[f32], list: &DisplayList, view: &View, o: &RasterOptions, zref: f64, width: f32) {
     let (w, h) = (view.width as usize, view.height as usize);
     let face_at = |x: f64, y: f64| {
         let inside = x >= 0.0 && y >= 0.0 && (x as usize) < w && (y as usize) < h;
@@ -227,7 +235,7 @@ fn draw_edges(pm: &mut Pixmap, zbuf: &[f32], list: &DisplayList, view: &View, o:
             let mut paint = Paint::default();
             paint.set_color_rgba8(c.0, c.1, c.2, e.alpha());
             paint.anti_alias = o.antialias;
-            let stroke = Stroke { width: o.hairline, line_cap: LineCap::Round, line_join: LineJoin::Round, ..Default::default() };
+            let stroke = Stroke { width, line_cap: LineCap::Round, line_join: LineJoin::Round, ..Default::default() };
             pm.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
         }
     }
@@ -316,4 +324,43 @@ fn clip(a: (f64, f64), b: (f64, f64), w: f64, h: f64) -> Option<(f64, f64)> {
 /// Render and encode as PNG.
 pub fn render_png(list: &DisplayList, view: &View, o: &RasterOptions) -> Option<Vec<u8>> {
     render(list, view, o)?.encode_png().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use cadcraft_doc::{Drawing, EntityKind, Solid3d, Space};
+    use cadcraft_geom::{Mesh3, Vec3, ViewDir};
+
+    use super::*;
+
+    /// The pixels in the edges' colour across the middle row of a `width` × `height` render of a
+    /// unit square face seen from the front, Shaded with Edges, aliased (an edge's pixels are
+    /// exactly its colour): the square's two sides cross the row.
+    fn edge_pixels(o: RasterOptions, width: u32, height: u32) -> usize {
+        let verts = vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 1.0), Vec3::new(0.0, 0.0, 1.0)];
+        let edges = (0..4).map(|i| vec![verts[i], verts[(i + 1) % 4]]).collect();
+        let mesh = Mesh3 { verts, tris: vec![[0, 1, 2], [0, 2, 3]], edges, open: true };
+        let mut d = Drawing::default();
+        d.add(&Space::Model, Default::default(), EntityKind::Solid3d(Solid3d { mesh: Arc::new(mesh), ..Default::default() })).unwrap();
+        let opts = crate::Options { view_dir: ViewDir::new(Vec3::new(0.0, -1.0, 0.0)), shaded: true, edges: true, ..Default::default() };
+        let list = crate::build(&d, &Space::Model, &opts);
+        let view = View::fit(&list.bounds, width, height, 0.2);
+        let o = RasterOptions { antialias: false, ..o };
+        let pm = render(&list, &view, &o).unwrap();
+        let ink = list.edges[0].display_rgb(o.background);
+        (0..width).filter(|&x| pm.pixel(x, height / 2).is_some_and(|c| Rgb(c.red(), c.green(), c.blue()) == ink)).count()
+    }
+
+    /// A named view's edges are 2 px wide on a large image, so a thumbnail of it shows them; 1 px
+    /// on a small one and on the dark canvas look.
+    #[test]
+    fn paper_edges_widen_on_large_images() {
+        let thin = RasterOptions { hairline: 1.0, ..RasterOptions::paper() };
+        let (paper_large, thin_large) = (edge_pixels(RasterOptions::paper(), 1600, 1000), edge_pixels(thin, 1600, 1000));
+        assert_eq!((paper_large, thin_large), (4, 2));
+        assert_eq!(edge_pixels(RasterOptions::paper(), 999, 600), edge_pixels(thin, 999, 600));
+        assert_eq!(edge_pixels(RasterOptions::default(), 1600, 1000), 2, "the canvas look keeps hairlines");
+    }
 }

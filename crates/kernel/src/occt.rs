@@ -797,9 +797,10 @@ const BOX_DEFLECTION: f64 = 1e-4;
 /// the deflection (half of it unless their control points lie close), never by their control
 /// points.
 /// ponytail: one mesh of the whole shape at 1e-4 of its size, as BRepBndLib's AddOptimal isn't
-/// in the bindings: a free-form part a metre across within about 0.1 mm a side, and about 3 s for
-/// a lofted leg. Extrema refined on the surface (Newton from the mesh's furthest point) when that
-/// is too coarse or too slow.
+/// in the bindings: a free-form part a metre across within about 0.1 mm a side, and most of a
+/// second for a lofted seat (once per B-rep and turn: [`crate::boxes`] keeps what it measured).
+/// Extrema refined on the surface (Newton from the mesh's furthest point) when that is too coarse
+/// or too slow.
 pub fn boxes(brep: &str, xforms: &[Mat4]) -> Vec<Option<(Vec3, Vec3)>> {
     let got = measure(brep, xforms).unwrap_or_default();
     (0..xforms.len()).map(|i| got.get(i).copied().flatten()).collect()

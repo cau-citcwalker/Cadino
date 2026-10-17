@@ -50,7 +50,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("stretch", "Stretch", run_stretch)
             .menu(&["Modify", "Stretch"])
             .alias(&["s"])
-            .params("{window: [[x,y],[x,y]] | polygon: [[x,y],...] | fence: [[x,y],...], delta: [dx,dy]}")
+            .params("{window: [[x,y],[x,y]] | polygon: [[x,y],...] | fence: [[x,y],...], delta: [dx,dy,dz?] | from,to: [x,y,z?]} (a dz moves the vertices of lines, 3D polylines and 3D faces in Z, and what moves whole in 3D; a planar object only partly inside refuses it)")
             .interactive(|_| Ok(Box::new(StretchM::default()))),
         CommandSpec::new("offset", "Offset", run_offset)
             .menu(&["Modify", "Offset"])
@@ -181,16 +181,7 @@ fn run_erase(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "erased": n }))
 }
 
-fn delta_of(cmd: &str, p: &Value) -> Result<Vec2> {
-    if let Some(d) = point_param(p, "delta") {
-        return Ok(d);
-    }
-    let a = point_req(cmd, p, "from")?;
-    let b = point_req(cmd, p, "to")?;
-    Ok(b - a)
-}
-
-/// MOVE's and COPY's `delta` ([dx, dy] or [dx, dy, dz]), or `to` - `from`.
+/// MOVE's, COPY's and STRETCH's `delta` ([dx, dy] or [dx, dy, dz]), or `to` - `from`.
 fn delta3_of(cmd: &str, p: &Value) -> Result<Vec3> {
     if let Some(d) = super::solids::p3(p, "delta") {
         return Ok(d);
@@ -266,62 +257,92 @@ impl StretchArea {
     }
 }
 
-/// Move the vertices of `e` that lie inside any of the areas `wins` by `d` (STRETCH).
-fn stretch_entity(e: &mut Entity, wins: &[StretchArea], d: Vec2) {
+/// Move the vertices of `e` that lie inside any of the areas `wins` by `d` (STRETCH). A height
+/// (`d.z`) moves the vertices of lines, 3D polylines and 3D faces in Z, and an object that moves
+/// whole (a point, an arc or circle by its centre, a planar object wholly inside) in 3D as MOVE
+/// does. A 3D solid isn't stretched: it moves whole when it is wholly inside. False, leaving `e`
+/// as it was, when it can't take the height: a planar object only partly inside, or one that
+/// can't leave its plane (a region).
+fn stretch_entity(e: &mut Entity, wins: &[StretchArea], d: Vec3) -> bool {
     let inside = |p: Vec2| wins.iter().any(|a| a.contains(p));
+    let flat = d.z == 0.0;
     // ponytail: an object in a tilted plane moves whole when its first grip (seen in plan) is
     // inside; upgrade: move the vertices inside by the plan move taken into its plane
     // (`Entity::plan_to_local`).
     if e.plan_xf().is_some() {
-        if e.grips().first().is_some_and(|p| inside(*p)) {
-            e.transform(&Mat3::translate(d));
-        }
-        return;
+        return !e.grips().first().is_some_and(|p| inside(*p)) || moved_whole(e, d);
     }
-    let mv = |p: &mut cadcraft_geom::Vec3| {
+    let mv = |p: &mut Vec3| {
         if inside(p.xy()) {
-            p.x += d.x;
-            p.y += d.y;
+            *p = *p + d;
         }
     };
-    match &mut e.kind {
+    // A planar object takes a height whole or not at all: `n` of its `of` points are inside;
+    // `Some(true)`: it moves whole, `None`: it refuses.
+    let planar = |n: usize, of: usize| match (flat, n) {
+        (true, _) | (false, 0) => Some(false),
+        _ if n == of => Some(true),
+        _ => None,
+    };
+    let whole = match &mut e.kind {
         EntityKind::Line(l) => {
             mv(&mut l.a);
             mv(&mut l.b);
+            false
         }
+        EntityKind::Polyline3d(pl) => {
+            pl.points.iter_mut().for_each(mv);
+            false
+        }
+        EntityKind::Face3d(f) => {
+            f.corners.iter_mut().for_each(mv);
+            false
+        }
+        EntityKind::Solid3d(so) => so.corners().iter().all(|p| inside(p.xy())),
         EntityKind::LwPolyline(pl) => {
-            for v in &mut pl.vertices {
-                if inside(v.p) {
-                    v.p += d;
+            let Some(w) = planar(pl.vertices.iter().filter(|v| inside(v.p)).count(), pl.vertices.len()) else { return false };
+            if !w {
+                for v in &mut pl.vertices {
+                    if inside(v.p) {
+                        v.p += d.xy();
+                    }
                 }
             }
+            w
         }
-        EntityKind::Arc(a) => {
-            // Arcs keep their shape: move when the centre is inside.
-            if inside(a.center.xy()) {
-                a.center.x += d.x;
-                a.center.y += d.y;
+        // Arcs keep their shape: move when the centre is inside.
+        EntityKind::Arc(a) => inside(a.center.xy()),
+        EntityKind::Solid(so) | EntityKind::Trace(so) => {
+            let Some(w) = planar(so.corners.iter().filter(|p| inside(p.xy())).count(), so.corners.len()) else { return false };
+            if !w {
+                so.corners.iter_mut().for_each(mv);
             }
+            w
         }
-        EntityKind::Solid(so) | EntityKind::Trace(so) => so.corners.iter_mut().for_each(mv),
         EntityKind::Dimension(dm) => {
-            for p in [&mut dm.p13, &mut dm.p14, &mut dm.defpt, &mut dm.text_mid] {
-                mv(p);
+            let n = [dm.p13, dm.p14, dm.defpt, dm.text_mid].iter().filter(|p| inside(p.xy())).count();
+            let Some(w) = planar(n, 4) else { return false };
+            if !w {
+                for p in [&mut dm.p13, &mut dm.p14, &mut dm.defpt, &mut dm.text_mid] {
+                    mv(p);
+                }
+                dm.block = None;
             }
-            dm.block = None;
+            w
         }
         // In the XY plane's orientation (tilted ones returned above): plan and kind agree.
-        k => {
-            let g = k.grips();
-            if g.first().is_some_and(|p| inside(*p)) {
-                k.transform(&Mat3::translate(d));
-            }
-        }
-    }
+        k => k.grips().first().is_some_and(|p| inside(*p)),
+    };
+    !whole || moved_whole(e, d)
+}
+
+/// Move `e` by `d` (in 3D when it has a height); false when it can't be.
+fn moved_whole(e: &mut Entity, d: Vec3) -> bool {
+    if d.z == 0.0 { e.transform(&Mat3::translate(d.xy())) } else { e.transform3(&Mat4::translate(d)) }
 }
 
 fn run_stretch(s: &mut Session, p: &Value) -> Result<Value> {
-    let d = delta_of("stretch", p)?;
+    let d = delta3_of("stretch", p)?;
     let space = s.space();
     let listed = |key: &str, least: usize| -> Result<Option<Vec<Vec2>>> {
         let Some(pts) = points_param(p, key) else { return Ok(None) };
@@ -334,7 +355,7 @@ fn run_stretch(s: &mut Session, p: &Value) -> Result<Value> {
     // A fence marks no area: the objects it crosses move whole.
     if let Some(fence) = listed("fence", 2)? {
         let hs = crate::select::select_fence(&seen, &space, &fence);
-        let moved = transform_entities(s, &hs, &Mat3::translate(d), false)?;
+        let moved = displace(s, &hs, d, false)?;
         return Ok(json!({ "stretched": moved.len() }));
     }
     let (mut hs, area) = if let Some(poly) = listed("polygon", 3)? {
@@ -350,21 +371,22 @@ fn run_stretch(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "stretched": hs.len() }))
 }
 
-/// Stretch the objects `hs` (not locked) by `d` in the areas `wins`. In a construction plane
-/// other than World each is stretched as the plane sees it and placed back; one that then
-/// can't be placed refuses the command before anything changes.
-fn stretch_all(s: &mut Session, hs: &[Handle], wins: &[StretchArea], d: Vec2) -> Result<()> {
-    if s.cplane() == cadcraft_geom::Mat4::IDENTITY {
-        let doc = s.doc_mut()?;
-        for h in hs {
-            doc.modify_entity(*h, |e| stretch_entity(e, wins, d))?;
-        }
-        return Ok(());
+/// Stretch the objects `hs` (not locked) by `d` in the areas `wins`, each as the current
+/// construction plane sees it, placed back. One that can't take the stretch (a height, see
+/// [`stretch_entity`]) or then can't be placed refuses the command before anything changes.
+fn stretch_all(s: &mut Session, hs: &[Handle], wins: &[StretchArea], d: Vec3) -> Result<()> {
+    if !d.is_finite() {
+        return Err(EngineError::Other("The displacement is too large.".into()));
     }
     let mut out = Vec::with_capacity(hs.len());
     for h in hs {
         let mut l = s.local_entity(*h)?;
-        stretch_entity(&mut l, wins, d);
+        if !stretch_entity(&mut l, wins, d) {
+            let what = l.kind.type_name().to_ascii_lowercase();
+            return Err(EngineError::Other(format!(
+                "A {what} can't be stretched in Z (only the vertices of lines, 3D polylines and 3D faces can; other objects move in Z only wholly inside the window, as MOVE moves them). Give the displacement without a Z value."
+            )));
+        }
         out.push(s.place_local(&l)?);
     }
     let doc = s.doc_mut()?;
@@ -401,6 +423,8 @@ struct StretchM {
     /// First corner of the window being drawn.
     corner: Option<Vec2>,
     base: Option<Vec2>,
+    /// The base point's height ([`Session::point_z`]), as MOVE's.
+    base_z: f64,
 }
 
 impl StretchM {
@@ -535,7 +559,7 @@ impl StretchM {
         Ok(Step::Continue)
     }
 
-    fn apply(&self, s: &mut Session, d: Vec2) -> Result<Step> {
+    fn apply(&self, s: &mut Session, d: Vec3) -> Result<Step> {
         let whole: Vec<Handle> = self.objs.iter().filter(|h| self.whole.contains(h)).copied().collect();
         let doc = s.doc()?;
         let parts: Vec<Handle> = self
@@ -547,7 +571,7 @@ impl StretchM {
         // Both checked before anything changes: the stretched ones are placed first.
         let before = s.state()?.doc.clone();
         stretch_all(s, &parts, &self.windows, d)?;
-        if let Err(e) = transform_entities(s, &whole, &Mat3::translate(d), false) {
+        if let Err(e) = displace(s, &whole, d, false) {
             s.state_mut()?.doc = before;
             return Err(e);
         }
@@ -582,6 +606,7 @@ impl Interactive for StretchM {
             (StretchPhase::Select, i) => self.select(s, i),
             (StretchPhase::Base, Input::Point(p)) => {
                 self.base = Some(p);
+                self.base_z = given_z(s);
                 self.phase = StretchPhase::Second;
                 Ok(Step::Continue)
             }
@@ -593,10 +618,10 @@ impl Interactive for StretchM {
                 self.phase = StretchPhase::Displacement;
                 Ok(Step::Continue)
             }
-            (StretchPhase::Displacement, Input::Point(p)) => self.apply(s, p),
+            (StretchPhase::Displacement, Input::Point(p)) => self.apply(s, p.to3(given_z(s))),
             (StretchPhase::Displacement, Input::Enter) => Ok(Step::Done),
-            (StretchPhase::Second, Input::Point(p)) => self.apply(s, p - self.base.unwrap_or(p)),
-            (StretchPhase::Second, Input::Enter) => self.apply(s, self.base.unwrap_or(Vec2::ZERO)),
+            (StretchPhase::Second, Input::Point(p)) => self.apply(s, (p - self.base.unwrap_or(p)).to3(given_z(s) - self.base_z)),
+            (StretchPhase::Second, Input::Enter) => self.apply(s, self.base.unwrap_or(Vec2::ZERO).to3(self.base_z)),
             _ => Ok(Step::Continue),
         }
     }
@@ -634,7 +659,7 @@ impl Interactive for StretchM {
                         if self.whole.contains(&e.handle) {
                             e.transform(&m);
                         } else {
-                            stretch_entity(&mut e, &self.windows, c - base);
+                            stretch_entity(&mut e, &self.windows, (c - base).to3(0.0));
                         }
                         super::helpers::plan_kinds(&e)
                     })
@@ -2971,19 +2996,84 @@ impl Interactive for BreakM {
 }
 
 /// MOVE and COPY: [`SelectThen`], plus the Displacement option at the base point prompt
-/// (the keyword, or Enter): the typed point is the displacement itself.
+/// (the keyword, or Enter): the typed point is the displacement itself. After COPY's base point:
+/// Array (the number of items, the originals included, then a second point: the first copy
+/// there and the rest at the same step beyond, or with Fit the last copy there and the rest
+/// spread evenly before it) and Undo (takes back the last copy or array).
 struct DisplaceM {
     inner: SelectThen,
     displacement: bool,
+    /// COPY Array: `Some(None)` while asking for the number of items, then `Some(Some(n))`.
+    array: Option<Option<usize>>,
+    /// COPY Array Fit: the second point places the last copy.
+    fit: bool,
+    /// COPY: the drawing before each copy or array (Undo).
+    undo: Vec<std::sync::Arc<cadcraft_doc::Drawing>>,
 }
 
 impl DisplaceM {
     fn new(op: Op) -> Self {
-        DisplaceM { inner: SelectThen::new(op), displacement: false }
+        DisplaceM { inner: SelectThen::new(op), displacement: false, array: None, fit: false, undo: Vec::new() }
     }
     /// At "Specify base point": objects selected, no point yet.
     fn at_base(&self) -> bool {
         self.inner.sel.done && self.inner.pts.is_empty() && !self.displacement
+    }
+
+    /// COPY at "Specify second point": Array, Undo, and each copy (one undo each).
+    fn copy_input(&mut self, s: &mut Session, base: Vec2, i: Input) -> Result<Step> {
+        match (self.array, i) {
+            (_, Input::Keyword(k)) if k == "Undo" => {
+                let doc = self.undo.pop().ok_or_else(|| EngineError::Other("Nothing to undo.".into()))?;
+                // Settings changed meanwhile stay.
+                let header = s.doc()?.header.clone();
+                s.state_mut()?.doc = doc;
+                s.doc_mut()?.header = header;
+                Ok(Step::Continue)
+            }
+            (None, Input::Keyword(k)) if k == "Array" => {
+                self.array = Some(None);
+                Ok(Step::Continue)
+            }
+            (Some(None), Input::Text(t)) => {
+                // MAXARRAY caps the copies made at once.
+                let max = (s.settings.maxarray / self.inner.objs.len().max(1) as u64).max(2);
+                let n = number(&t)
+                    .filter(|v| v.fract() == 0.0 && *v >= 2.0 && *v <= max as f64)
+                    .ok_or_else(|| EngineError::Other(format!("Requires an integer between 2 and {max}.")))?;
+                self.array = Some(Some(n as usize));
+                Ok(Step::Continue)
+            }
+            (Some(Some(_)), Input::Keyword(k)) if k == "Fit" => {
+                self.fit = true;
+                Ok(Step::Continue)
+            }
+            (Some(Some(n)), Input::Point(p)) => {
+                let d = (p - base).to3(given_z(s) - self.inner.base_z);
+                let step = if self.fit { d * (1.0 / n.saturating_sub(1).max(1) as f64) } else { d };
+                let before = s.state()?.doc.clone();
+                if let Err(e) = (1..n).try_for_each(|k| displace(s, &self.inner.objs, step * k as f64, true).map(drop)) {
+                    s.state_mut()?.doc = before;
+                    return Err(e);
+                }
+                self.undo.push(before);
+                (self.array, self.fit) = (None, false);
+                Ok(Step::Continue)
+            }
+            // Enter leaves the option.
+            (Some(_), Input::Enter) => {
+                (self.array, self.fit) = (None, false);
+                Ok(Step::Continue)
+            }
+            (Some(_), _) => Ok(Step::Continue),
+            (None, i @ Input::Point(_)) => {
+                let before = s.state()?.doc.clone();
+                let step = self.inner.input(s, i)?;
+                self.undo.push(before);
+                Ok(step)
+            }
+            (None, i) => self.inner.input(s, i),
+        }
     }
 }
 
@@ -3001,7 +3091,13 @@ impl Interactive for DisplaceM {
         if self.at_base() {
             return Prompt::new("Specify base point", Accept::POINT).kw(&["Displacement"]).default("Displacement");
         }
-        self.inner.prompt(s)
+        let base = self.inner.pts.first().copied();
+        match self.array {
+            Some(None) => Prompt::new("Enter number of items to array", Accept::NUMBER),
+            Some(Some(_)) if self.fit => Prompt::new("Specify second point", Accept::POINT).base_opt(base),
+            Some(Some(_)) => Prompt::new("Specify second point", Accept::POINT).kw(&["Fit"]).base_opt(base),
+            None => self.inner.prompt(s),
+        }
     }
     fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
         if self.displacement {
@@ -3020,16 +3116,32 @@ impl Interactive for DisplaceM {
             self.displacement = true;
             return Ok(Step::Continue);
         }
+        if let (Op::Copy, true, Some(base)) = (self.inner.op, self.inner.sel.done, self.inner.pts.first().copied()) {
+            return self.copy_input(s, base, i);
+        }
         self.inner.input(s, i)
     }
     fn preview(&self, s: &Session, c: Vec2) -> Vec<EntityKind> {
-        if self.displacement {
-            return Vec::new();
+        match (self.displacement, self.array, self.inner.pts.first().copied()) {
+            (true, _, _) | (_, Some(None), _) => Vec::new(),
+            (false, Some(Some(n)), Some(base)) => {
+                // Every copy of the array, as far as the preview limit goes.
+                let step = if self.fit { (c - base) * (1.0 / n.saturating_sub(1).max(1) as f64) } else { c - base };
+                let Ok(d) = s.doc() else { return Vec::new() };
+                let src: Vec<&Entity> = self.inner.objs.iter().take(500).filter_map(|h| d.entity(*h).map(|e| &**e)).collect();
+                let mut out: Vec<EntityKind> = (1..n)
+                    .flat_map(|k| src.iter().map(move |e| (k, *e)))
+                    .take(500)
+                    .flat_map(|(k, e)| s.local_preview(e, &Mat3::translate(step * k as f64)))
+                    .collect();
+                out.push(line(base, c));
+                out
+            }
+            _ => self.inner.preview(s, c),
         }
-        self.inner.preview(s, c)
     }
     fn drag(&self, s: &Session, c: Vec2) -> Option<crate::prompt::Drag> {
-        if self.displacement {
+        if self.displacement || self.array.is_some() {
             return None;
         }
         self.inner.drag(s, c)

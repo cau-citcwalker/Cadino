@@ -586,7 +586,7 @@ pub struct Dimension {
 }
 
 /// What dimension edits add to a dimension's drawing: DIMEDIT Oblique, DIMJOGLINE, DIMJOGGED,
-/// DIMBREAK and DIMINSPECT.
+/// DIMBREAK and DIMINSPECT; and the UCS a dimension was made in.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct DimMarks {
@@ -594,6 +594,11 @@ pub struct DimMarks {
     /// perpendicular to the dimension line.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oblique: Option<f64>,
+    /// Angle (radians) of the x axis of the UCS the dimension was made in (DXF 51, the
+    /// "horizontal direction", stores its negative in degrees): an ordinate dimension measures
+    /// along it and its perpendicular. None = world X.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub horizontal: Option<f64>,
     /// A jog on the dimension line of a linear or aligned dimension, at this point (DIMJOGLINE).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jog_line: Option<Vec3>,
@@ -617,6 +622,9 @@ impl DimMarks {
     fn transform(&mut self, t3: &dyn Fn(&mut Vec3), rot: f64, s: f64, mirror: bool) {
         if let Some(a) = &mut self.oblique {
             *a = cadcraft_geom::norm_angle(if mirror { rot - (*a - rot) } else { *a + rot });
+        }
+        if let Some(a) = &mut self.horizontal {
+            *a = cadcraft_geom::norm_angle(if mirror { rot - *a } else { *a + rot });
         }
         if let Some(j) = &mut self.jog_line {
             t3(j);

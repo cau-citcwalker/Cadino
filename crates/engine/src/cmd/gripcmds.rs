@@ -4,12 +4,12 @@
 //! are made there and placed back in the world ([`commit`]); in World that is plan itself.
 
 use cadcraft_doc::{Entity, EntityKind, Handle};
-use cadcraft_geom::{Mat3, Vec2};
+use cadcraft_geom::{Mat3, Vec2, Vec3};
 use serde_json::{Value, json};
 
 use super::curves;
 use super::*;
-use crate::grips::{GripAction, GripMode, grip_action_plan, mode_matrix, stretch_grip_plan};
+use crate::grips::{GripAction, GripMode, grip_action_plan, mode_matrix, stretch_grip_3d, stretch_grip_plan};
 use crate::{EngineError, Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -18,7 +18,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "{handle?, handles?, index, to} (stretch the grip) | {handles?, index, baseHandle?, to, mode: \"move\", copy?} (move about the grip)",
         ),
         CommandSpec::new("grip.stretch", "Grip Stretch", run_grip_stretch).params(
-            "{handle?, handles?, index, to} | {grips: [[handle, index], ...] (several hot grips), delta | to (+ base?), handles?, copy?}",
+            "{handle?, handles?, index, to} | {grips: [[handle, index], ...] (several hot grips), delta: [dx,dy,dz?] | to (+ base?), handles?, copy?} (a dz moves line ends and 3D vertices in Z, and grips that move their object whole in 3D)",
         ),
         CommandSpec::new("grip.rotate", "Grip Rotate", run_grip_rotate).params("{handles?, base | baseHandle+index, angle (degrees) | to, copy?}"),
         CommandSpec::new("grip.scale", "Grip Scale", run_grip_scale).params("{handles?, base | baseHandle+index, factor | to, copy?}"),
@@ -142,14 +142,14 @@ fn run_grip_stretch(s: &mut Session, p: &Value) -> Result<Value> {
         hot.push(pair().ok_or_else(|| bad(cmd, format!("`grips`: {g} is not a [handle, index] pair")))?);
     }
     let &(h0, i0) = hot.first().ok_or_else(|| bad(cmd, "`grips` is empty"))?;
-    let delta = match point_param(p, "delta") {
+    let delta = match super::solids::p3(p, "delta") {
         Some(d) => d,
         None => {
             let base = match point_param(p, "base") {
                 Some(b) => b,
                 None => s.local_entity(h0)?.grips().get(i0).copied().ok_or_else(|| bad(cmd, "no such grip"))?,
             };
-            point_req(cmd, p, "to")? - base
+            (point_req(cmd, p, "to")? - base).to3(0.0)
         }
     };
     let others = if p.get("handles").is_some() { targets(s, p)? } else { s.selection() };
@@ -190,9 +190,14 @@ const MAX_GRIPS: usize = 1000;
 
 /// The objects as they'd be after moving the grips `hot` by `delta`, with the grips of `others`
 /// that sit on a hot grip's point (connected objects stay connected). Locked objects and edits
-/// that would be degenerate are left out; several hot grips of one object move together.
-pub(super) fn stretched(s: &Session, hot: &[(Handle, usize)], others: &[Handle], delta: Vec2) -> Vec<(Handle, EntityKind)> {
-    let Ok(d) = s.pick_doc() else { return Vec::new() };
+/// that would be degenerate are left out; several hot grips of one object move together. A
+/// height (`delta.z`) moves them in Z where the grip can ([`stretch_grip_3d`]); a grip that can't
+/// leave its object's plane (a polyline's vertex, an arc's end) takes the point there as in plan
+/// ([`stretch_grip_plan`]): a 3D snap to a point of a tilted object's own plane, or to one at
+/// another height, still stretches it.
+pub(super) fn stretched(s: &Session, hot: &[(Handle, usize)], others: &[Handle], delta: Vec3) -> Result<Vec<(Handle, EntityKind)>> {
+    let d = s.pick_doc()?;
+    let (delta, dz) = (delta.xy(), delta.z);
     // Every grip to move, per object, with its target point.
     let mut moves: Vec<(Handle, Vec<(usize, Vec2)>)> = Vec::new();
     let mut add = |h: Handle, i: usize, to: Vec2| match moves.iter_mut().find(|(x, _)| *x == h) {
@@ -225,7 +230,7 @@ pub(super) fn stretched(s: &Session, hot: &[(Handle, usize)], others: &[Handle],
         let mut k = e.kind.clone();
         let mut changed = false;
         for (i, to) in mv {
-            if let Some(nk) = stretch_grip_plan(e, &k, i, to) {
+            if let Some(nk) = stretch_grip_3d(e, &k, i, to, dz).or_else(|| stretch_grip_plan(e, &k, i, to)) {
                 k = nk;
                 changed = true;
             }
@@ -234,13 +239,13 @@ pub(super) fn stretched(s: &Session, hot: &[(Handle, usize)], others: &[Handle],
             out.push((h, k));
         }
     }
-    out
+    Ok(out)
 }
 
 /// Stretch the grips `hot` by `delta` (see [`stretched`]). With `copy` the stretched objects are
 /// added as copies and the originals stay. Returns the edited (or new) objects.
-pub(super) fn stretch_grips(s: &mut Session, hot: &[(Handle, usize)], others: &[Handle], delta: Vec2, copy: bool) -> Result<Vec<Handle>> {
-    let edits = stretched(s, hot, others, delta);
+pub(super) fn stretch_grips(s: &mut Session, hot: &[(Handle, usize)], others: &[Handle], delta: Vec3, copy: bool) -> Result<Vec<Handle>> {
+    let edits = stretched(s, hot, others, delta)?;
     commit(s, &edits, copy)
 }
 

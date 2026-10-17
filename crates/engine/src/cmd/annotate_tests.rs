@@ -573,3 +573,33 @@ fn linetype_rename_updates_references() {
     assert!(s.execute("rename", &json!({ "table": "linetype", "from": "ByLayer", "to": "X" })).is_err());
     assert_eq!(s.doc().unwrap().entity(by_layer).unwrap().common.linetype, "ByLayer");
 }
+
+/// The single-object prompts take the object a 3D view (or plan with a tilted CPlane) picked from
+/// what it draws, as they take the one under a point.
+#[test]
+fn dimension_object_prompts_take_a_view_pick() {
+    let prompt = |s: &Session| s.current_prompt().map(|q| q.message).unwrap_or_default();
+    let mut s = Session::new();
+    let l = line(&mut s, [0.0, 0.0], [10.0, 0.0]);
+    let m = line(&mut s, [0.0, 0.0], [0.0, 10.0]);
+    let c = h(&s.execute("circle", &json!({ "center": [30, 0], "radius": 5 })).unwrap());
+    let a = h(&s.execute("arc", &json!({ "center": [60, 0], "radius": 5, "start": 0, "end": 90 })).unwrap());
+    for (cmd, picks, next) in [
+        ("dimlinear", vec![l], "Specify dimension line location"),
+        ("dimradius", vec![c], "Specify dimension line location"),
+        ("dimangular", vec![l, m], "Specify dimension arc line location"),
+        ("dimarc", vec![a], "Specify arc length dimension location"),
+        ("dimjogged", vec![a], "Specify center location override"),
+    ] {
+        s.cmdline(cmd).unwrap();
+        if cmd == "dimlinear" {
+            s.input(Input::Enter).unwrap();
+        }
+        for p in picks {
+            assert!(prompt(&s).starts_with("Select"), "{cmd}: {}", prompt(&s));
+            s.input(Input::Pick(vec![p])).unwrap();
+        }
+        assert!(prompt(&s).starts_with(next), "{cmd}: {}", prompt(&s));
+        s.input(Input::Cancel).unwrap();
+    }
+}

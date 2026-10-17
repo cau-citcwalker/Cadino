@@ -685,13 +685,15 @@ fn undo_through_a_maximized_view_saves_what_is_shown() {
     assert!(s.state().unwrap().tiles.maximized.is_none());
     let tiled = with_live_tiles(&s).is_some_and(|d| d.vports.iter().any(|c| c.is_active() && c.tiles.len() > 1));
     assert!(!tiled);
-    // Redo, redo: the Rhino tiles then one view again, still saved as shown.
+    // Redo, redo: the Rhino tiles then the maximized view again, saved with the tiles it
+    // replaced as VIEWPORTS.SINGLE left it.
     s.redo().unwrap();
     assert_eq!(s.model_tiles().len(), 4);
     s.redo().unwrap();
     assert!(s.model_tiles().is_empty());
-    let tiled = with_live_tiles(&s).is_some_and(|d| d.vports.iter().any(|c| c.is_active() && c.tiles.len() > 1));
-    assert!(!tiled);
+    assert!(s.state().unwrap().tiles.maximized.is_some());
+    let tiled = with_live_tiles(&s).is_some_and(|d| d.vports.iter().any(|c| c.is_active() && c.tiles.len() == 4));
+    assert!(tiled);
 }
 
 #[test]

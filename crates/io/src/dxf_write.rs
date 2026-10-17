@@ -852,6 +852,9 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
             if dm.text_rotation != 0.0 {
                 w.f(53, dm.text_rotation.to_degrees());
             }
+            if let Some(h) = dm.marks.horizontal.filter(|h| h.is_finite()) {
+                w.f(51, -h.to_degrees());
+            }
             match dm.kind {
                 DimKind::Linear { rotation } => {
                     w.s(100, "AcDbAlignedDimension");

@@ -10,8 +10,11 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
-use std::collections::HashMap;
+use std::cell::Cell;
+use std::collections::{BTreeMap, HashMap};
+use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use cadcraft_geom::{Mat4, Mesh3, Vec3};
 use serde::{Deserialize, Serialize};
@@ -660,34 +663,123 @@ pub fn outlines(breps: &[&str]) -> Result<Vec<Option<Outline>>> {
 /// size (see the backend's `boxes`).
 ///
 /// Each B-rep goes to the worker once, with each distinct turn of it once: a moved copy's box is
-/// the box moved (block arrays, the views of one drawing).
+/// the box moved (block arrays, the views of one drawing). A box measured before (same B-rep
+/// text, same turn) isn't measured again, so a cut list or drawing made again is quick.
 pub fn boxes(solids: &[Placed]) -> Result<Vec<Option<(Vec3, Vec3)>>> {
     if !available() {
         return Err(KernelError::Unavailable);
     }
     let (groups, which) = box_jobs(solids);
-    let starts: Vec<usize> = groups
+    let keys: Vec<Vec<BoxKey>> = groups
         .iter()
-        .scan(0, |n, g| {
-            let at = *n;
-            *n += g.1.len();
-            Some(at)
+        .map(|(b, xs)| {
+            let text = (BuildHasherDefault::<DefaultHasher>::default().hash_one(b), b.len());
+            xs.iter().map(|x| (text, bits(x))).collect()
         })
         .collect();
-    let jobs: usize = groups.iter().map(|g| g.1.len()).sum();
-    let got = if jobs == 0 { Vec::new() } else { run(Request::Boxes(groups))?.boxes()? };
-    if got.len() != jobs {
-        return Err(mismatch());
+    let mut known: HashMap<BoxKey, (Vec3, Vec3)> = HashMap::new();
+    {
+        let measured = MEASURED.lock().unwrap_or_else(PoisonError::into_inner);
+        known.extend(keys.iter().flatten().filter_map(|k| Some((*k, *measured.get(k)?))));
+    }
+    // The kernel measures the rest.
+    let mut asked = Vec::new();
+    let todo: Vec<(String, Vec<Mat4>)> = groups
+        .into_iter()
+        .zip(&keys)
+        .filter_map(|((b, xs), ks)| {
+            let xs: Vec<Mat4> = xs
+                .into_iter()
+                .zip(ks)
+                .filter(|(_, k)| !known.contains_key(*k))
+                .map(|(x, k)| {
+                    asked.push(*k);
+                    x
+                })
+                .collect();
+            (!xs.is_empty()).then_some((b, xs))
+        })
+        .collect();
+    if !todo.is_empty() {
+        MEASURING.with(|n| n.set(n.get() + asked.len()));
+        let got = measure(todo)?;
+        if got.len() != asked.len() {
+            return Err(mismatch());
+        }
+        // Only boxes: one that failed is asked for again next time.
+        let got: Vec<(BoxKey, (Vec3, Vec3))> = asked.into_iter().zip(got).filter_map(|(k, b)| Some((k, b?))).collect();
+        let mut measured = MEASURED.lock().unwrap_or_else(PoisonError::into_inner);
+        if measured.len() + got.len() > MAX_MEASURED {
+            measured.clear();
+        }
+        measured.extend(got.iter().copied());
+        known.extend(got);
     }
     Ok(which
         .into_iter()
         .map(|w| {
             let (g, j, off) = w?;
-            let (lo, hi) = got.get(starts.get(g)? + j).copied().flatten()?;
+            let (lo, hi) = *known.get(keys.get(g)?.get(j)?)?;
             let (lo, hi) = (lo + off, hi + off);
             (lo.is_finite() && hi.is_finite()).then_some((lo, hi))
         })
         .collect())
+}
+
+/// A box job: its B-rep text (hash and length) and the bits of the turn it is measured under.
+type BoxKey = ((u64, usize), [u64; 16]);
+
+/// Most boxes kept from earlier measurements (a few hundred bytes each).
+/// ponytail: all forgotten when full; least recently used first if drawings outgrow it.
+const MAX_MEASURED: usize = 20_000;
+
+/// The boxes [`boxes`] measured, for the rest of the run.
+static MEASURED: Mutex<BTreeMap<BoxKey, (Vec3, Vec3)>> = Mutex::new(BTreeMap::new());
+
+thread_local! {
+    /// How many boxes this thread had the kernel measure.
+    static MEASURING: Cell<usize> = const { Cell::new(0) };
+}
+
+/// How many boxes [`boxes`] has had the kernel measure on this thread (not taken from earlier
+/// measurements): for tests.
+#[doc(hidden)]
+pub fn boxes_measured() -> usize {
+    MEASURING.with(Cell::get)
+}
+
+/// Most worker processes measuring at once.
+const MAX_MEASURERS: usize = 4;
+
+/// [`Request::Boxes`]: shared among a few worker processes at once when there is a worker (each
+/// free-form B-rep's fine mesh takes most of a second), else in this process one after another.
+fn measure(jobs: Vec<(String, Vec<Mat4>)>) -> Result<Vec<Option<(Vec3, Vec3)>>> {
+    #[cfg(feature = "occt")]
+    let workers = worker::registered().is_some();
+    #[cfg(not(feature = "occt"))]
+    let workers = false;
+    let n = if workers { std::thread::available_parallelism().map_or(1, |n| n.get()).min(MAX_MEASURERS) } else { 1 };
+    let size = jobs.len().div_ceil(n).max(1);
+    let mut jobs = jobs.into_iter().peekable();
+    let mut parts = Vec::new();
+    while jobs.peek().is_some() {
+        parts.push(jobs.by_ref().take(size).collect::<Vec<_>>());
+    }
+    if parts.len() < 2 {
+        return parts.pop().map_or(Ok(Vec::new()), |p| run(Request::Boxes(p))?.boxes());
+    }
+    std::thread::scope(|s| {
+        let runs: Vec<_> = parts.into_iter().map(|p| std::thread::Builder::new().spawn_scoped(s, move || run(Request::Boxes(p))?.boxes())).collect();
+        // Every one joined before any error goes back.
+        let got: Vec<Result<Vec<_>>> = runs
+            .into_iter()
+            .map(|r| match r {
+                Ok(h) => h.join().unwrap_or_else(|_| Err(KernelError::Failed("measuring solids stopped".into()))),
+                Err(e) => Err(KernelError::Failed(format!("measuring solids: {e}"))),
+            })
+            .collect();
+        got.into_iter().collect::<Result<Vec<_>>>().map(|v| v.concat())
+    })
 }
 
 /// What [`boxes`] asks the worker: each B-rep once, with each distinct linear part it is placed
@@ -712,10 +804,9 @@ fn box_jobs(solids: &[Placed]) -> BoxJobs {
         });
         let mut turn = *s.xform;
         turn.m.iter_mut().take(3).for_each(|r| r[3] = 0.0);
-        let key: [u64; 16] = std::array::from_fn(|i| turn.m.as_flattened().get(i).map_or(0, |v| v.to_bits()));
         which.push(g.and_then(|g| {
             let jobs = &mut groups.get_mut(g)?.1;
-            let j = *by_turn.entry((g, key)).or_insert_with(|| {
+            let j = *by_turn.entry((g, bits(&turn))).or_insert_with(|| {
                 jobs.push(turn);
                 jobs.len() - 1
             });
@@ -723,6 +814,11 @@ fn box_jobs(solids: &[Placed]) -> BoxJobs {
         }));
     }
     (groups, which)
+}
+
+/// The matrix's bits, -0 as 0 (moving a turn can flip a zero's sign).
+fn bits(m: &Mat4) -> [u64; 16] {
+    std::array::from_fn(|i| m.m.as_flattened().get(i).map_or(0, |v| (v + 0.0).to_bits()))
 }
 
 /// One kernel operation with its data, as the worker process receives it.

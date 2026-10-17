@@ -165,3 +165,29 @@ fn hostile_iges_fails_the_worker_not_the_app() {
     assert!(r.is_err(), "{r:?}");
     assert!(cadcraft_kernel::import_iges(&temp("missing.igs")).is_err());
 }
+
+/// Several B-reps are measured by several workers at once, in order; measured again they come
+/// from the earlier measurement, moved where they are now.
+#[test]
+fn boxes_are_measured_in_parallel_workers_once() {
+    use cadcraft_geom::Mat4;
+    use cadcraft_kernel::Placed;
+    use_worker();
+    let v = Vec3::new;
+    let solids: Vec<_> =
+        (1..=5).map(|i| cadcraft_kernel::primitive(&Primitive::Box { a: Vec3::ZERO, b: v(f64::from(i) * 7.0, 3.0, 2.0) }).unwrap()).collect();
+    let at = |x: f64| Mat4::translate(v(x, 0.0, 0.0));
+    let (here, there) = (at(0.0), at(100.0));
+    let sizes = |x: &Mat4| -> Vec<Vec3> {
+        let placed: Vec<Placed> = solids.iter().map(|s| Placed { brep: &s.brep, xform: x }).collect();
+        cadcraft_kernel::boxes(&placed).unwrap().into_iter().map(|b| b.unwrap()).map(|(lo, hi)| v(lo.x - x.m[0][3], hi.x - lo.x, hi.y)).collect()
+    };
+    let want: Vec<Vec3> = (1..=5).map(|i| v(0.0, f64::from(i) * 7.0, 3.0)).collect();
+    let near = |a: &[Vec3]| a.iter().zip(&want).all(|(a, b)| (*a - *b).len() < 1e-6);
+    let first = sizes(&here);
+    assert!(near(&first), "{first:?}");
+    let measured = cadcraft_kernel::boxes_measured();
+    let again = sizes(&there);
+    assert!(near(&again), "{again:?}");
+    assert_eq!(cadcraft_kernel::boxes_measured(), measured, "measured again");
+}

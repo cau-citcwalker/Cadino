@@ -706,3 +706,30 @@ fn cut_lists_measure_lofted_legs_truly() {
     let r = s.execute("cutlist", &json!({})).unwrap();
     assert_eq!(rows(&r), vec![(450.0, 40.0, 40.0, 4)], "{r}");
 }
+
+/// A cut list made again lists the same rows without the kernel measuring anything again (a lofted
+/// seat's fine mesh takes most of a second), and a part moved since is still taken as measured.
+#[test]
+fn cut_lists_made_again_reuse_the_measured_sizes() {
+    let mut s = session();
+    let el = |s: &mut Session, a: f64, z: f64| {
+        let e = cadcraft_engine::doc::Ellipse {
+            center: Vec3::new(0.0, 0.0, z),
+            major: Vec3::new(a, 0.0, 0.0),
+            ratio: 0.9,
+            start: 0.0,
+            end: std::f64::consts::TAU,
+        };
+        s.add_entity(EntityKind::Ellipse(e)).unwrap().hex()
+    };
+    let secs = [el(&mut s, 225.0, 0.0), el(&mut s, 230.0, 25.0), el(&mut s, 220.0, 45.0)];
+    let seat = s.execute("loft", &json!({ "handles": secs })).unwrap()["handle"].clone();
+    s.execute("part", &json!({ "handles": [seat], "name": "Seat" })).unwrap();
+    let first = s.execute("cutlist", &json!({})).unwrap();
+    let measured = cadcraft_kernel::boxes_measured();
+    assert_eq!(s.execute("cutlist", &json!({})).unwrap(), first);
+    s.execute("move", &json!({ "handles": [seat], "from": [0, 0], "to": [1000, 50] })).unwrap();
+    assert_eq!(s.execute("cutlist", &json!({})).unwrap(), first);
+    assert_eq!(cadcraft_kernel::boxes_measured(), measured, "measured again");
+    assert_eq!(rows(&first), vec![(460.6, 415.1, 45.0, 1)], "{first}");
+}

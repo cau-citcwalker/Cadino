@@ -311,17 +311,14 @@ pub fn mono() -> FontId {
 /// Load a system UI font at run time when one is installed (not bundled), else keep egui's;
 /// then CJK fonts after the Latin ones, so Latin text keeps its look, in every interface
 /// language: file, layout and layer names can be Japanese or Chinese whatever the interface
-/// shows (#513). In a Chinese interface (`language` "zh…") the Chinese font comes first, else a
-/// Japanese one, so names take their own glyph forms; in an Arabic interface an installed
-/// Arabic font follows. A font embedded from craft-fonts comes
-/// last, for systems without any (and the web build, which has no system fonts). A Korean
-/// interface adds a Hangul font only when the CJK font found doesn't cover Hangul
-/// ([`korean_font`]).
+/// shows (#513), in the order [`han_order`] gives; in an Arabic interface an installed Arabic
+/// font follows. A font embedded from craft-fonts comes last, for systems without any (and the
+/// web build, which has no system fonts). A Korean interface adds a Hangul font only when the CJK
+/// font found doesn't cover Hangul ([`korean_font`]). Each added face sits on the interface
+/// font's baseline ([`on_baseline`]).
 pub fn install_fonts(ctx: &egui::Context, language: &str) {
     let mut fonts = egui::FontDefinitions::default();
     let mut added: Vec<(String, std::sync::Arc<egui::FontData>)> = Vec::new();
-    #[cfg(not(target_arch = "wasm32"))]
-    let chinese = language.starts_with("zh");
     #[cfg(not(target_arch = "wasm32"))]
     {
         let candidates: &[&str] = if cfg!(target_os = "macos") {
@@ -345,14 +342,8 @@ pub fn install_fonts(ctx: &egui::Context, language: &str) {
                 break;
             }
         }
-        let mut paths: Vec<&std::path::Path> = Vec::new();
-        if !chinese {
-            paths.extend(japanese_font());
-        }
-        paths.extend(cjk_font());
-        paths.dedup();
         added.extend(
-            paths
+            han_order(language, japanese_font(), cjk_font())
                 .into_iter()
                 .filter_map(|p| read_capped(p, MAX_UI_FONT_BYTES))
                 .enumerate()
@@ -382,8 +373,10 @@ pub fn install_fonts(ctx: &egui::Context, language: &str) {
         data.index = face.index;
         added.push(("korean-ui".into(), std::sync::Arc::new(data)));
     }
+    let first =
+        fonts.families.get(&FontFamily::Proportional).and_then(|f| f.first()).and_then(|n| fonts.font_data.get(n)).and_then(|d| em_metrics(d));
     for (name, data) in added {
-        fonts.font_data.insert(name.clone(), data);
+        fonts.font_data.insert(name.clone(), std::sync::Arc::new(on_baseline(first, std::sync::Arc::unwrap_or_clone(data))));
         for family in [FontFamily::Proportional, FontFamily::Monospace] {
             if let Some(f) = fonts.families.get_mut(&family) {
                 f.push(name.clone());
@@ -391,6 +384,44 @@ pub fn install_fonts(ctx: &egui::Context, language: &str) {
         }
     }
     ctx.set_fonts(fonts);
+}
+
+/// The installed CJK fonts the interface takes Han characters from, in that order: a Chinese
+/// interface's (`language` "zh…") Chinese font only; a Korean one's Chinese font before the
+/// Japanese one, so a Chinese reply is one face, not Japanese forms mixed with the Chinese font's
+/// simplified ones (Hangul still comes from the Korean face: these fonts have none, or it isn't
+/// added); else the Japanese one first, so names take their own glyph forms.
+#[cfg(not(target_arch = "wasm32"))]
+fn han_order<'a>(language: &str, japanese: Option<&'a std::path::Path>, chinese: Option<&'a std::path::Path>) -> Vec<&'a std::path::Path> {
+    let japanese = japanese.filter(|_| !language.starts_with("zh"));
+    let mut paths: Vec<_> = if language == "ko" { [chinese, japanese] } else { [japanese, chinese] }.into_iter().flatten().collect();
+    paths.dedup();
+    paths
+}
+
+/// A face's ascent and row height (ascent − descent + line gap) in ems, as egui reads them.
+fn em_metrics(data: &egui::FontData) -> Option<(f32, f32)> {
+    use skrifa::MetadataProvider as _;
+    let font = skrifa::FontRef::from_index(&data.font, data.index).ok()?;
+    let m = font.metrics(skrifa::instance::Size::unscaled(), skrifa::instance::LocationRef::default());
+    let em = f32::from(m.units_per_em);
+    let (ascent, row) = (m.ascent / em, (m.ascent - m.descent + m.leading) / em);
+    (ascent.is_finite() && row.is_finite()).then_some((ascent, row))
+}
+
+/// Fallback face `data` moved to sit on the baseline of a family's first font, whose
+/// [`em_metrics`] are `first`: egui centres a fallback face's row in the first font's, so a face
+/// with another ascent, descent or line gap draws above or below the line (Yu Gothic, with its
+/// large line gap, a third of an em above Segoe UI's).
+/// ponytail: aligned to the Proportional family's first font; in Monospace, whose first font (Hack)
+/// has other metrics, a face sits a little off the line; register it twice with two tweaks if
+/// that shows.
+fn on_baseline(first: Option<(f32, f32)>, data: egui::FontData) -> egui::FontData {
+    let (Some((a0, h0)), Some((a, h))) = (first, em_metrics(&data)) else { return data };
+    // A malformed face's metrics move it at most an em.
+    let y_offset_factor = ((a0 - a) - 0.5 * (h0 - h)).clamp(-1.0, 1.0);
+    let tweak = egui::FontTweak { y_offset_factor, ..data.tweak.clone() };
+    data.tweak(tweak)
 }
 
 /// Largest interface font file read or embedded face copied (CJK collections are 15–60 MB).
@@ -691,6 +722,73 @@ mod tests {
     fn korean_font_rejects_invalid_or_glyphless_files() {
         for bytes in [vec![], vec![0xff; 32], vec![0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]] {
             assert!(super::korean_face(std::sync::Arc::new(bytes)).is_none());
+        }
+    }
+
+    #[test]
+    fn han_comes_from_one_installed_font_first() {
+        let (jp, zh) = (std::path::Path::new("jp.ttc"), std::path::Path::new("zh.ttc"));
+        assert_eq!(super::han_order("ko", Some(jp), Some(zh)), [zh, jp]);
+        assert_eq!(super::han_order("en", Some(jp), Some(zh)), [jp, zh]);
+        assert_eq!(super::han_order("zh-Hant", Some(jp), Some(zh)), [zh]);
+        assert_eq!(super::han_order("ko", Some(jp), None), [jp]);
+        assert_eq!(super::han_order("ja", Some(zh), Some(zh)), [zh]);
+    }
+
+    /// egui's own layout puts a glyph only the fallback face has (⌘, in the emoji icon font) on
+    /// the first font's baseline (its "H") once [`super::on_baseline`] has moved the face; as
+    /// shipped, a face with other metrics sits 0.08 em lower.
+    #[test]
+    fn a_fallback_face_sits_on_the_first_fonts_baseline() {
+        use egui::epaint::text::{Fonts, TextOptions};
+        use egui::{FontFamily, FontId};
+        let shipped = egui::FontDefinitions::default();
+        let face = |name: &str| egui::FontData { tweak: egui::FontTweak::default(), ..(*shipped.font_data[name]).clone() };
+        let mut defs = egui::FontDefinitions::empty();
+        defs.font_data.insert("first".into(), std::sync::Arc::new(face("Ubuntu-Light")));
+        defs.font_data.insert("plain".into(), std::sync::Arc::new(face("emoji-icon-font")));
+        let moved = super::on_baseline(super::em_metrics(&face("Ubuntu-Light")), face("emoji-icon-font"));
+        defs.font_data.insert("moved".into(), std::sync::Arc::new(moved));
+        for (family, list) in [("moved", vec!["first", "moved"]), ("plain", vec!["first", "plain"]), ("alone", vec!["plain"])] {
+            defs.families.insert(FontFamily::Name(family.into()), list.into_iter().map(String::from).collect());
+        }
+        let mut fonts = Fonts::new(TextOptions::default(), defs);
+        let mut view = fonts.with_pixels_per_point(1.0);
+        let mut glyphs = |family: &str, text: &str| {
+            let g = view.layout_no_wrap(text.into(), FontId::new(100.0, FontFamily::Name(family.into())), egui::Color32::WHITE);
+            g.rows[0].row.glyphs.clone()
+        };
+        // ⌘'s top above its own baseline, from its face alone (the first font: no shift).
+        let top = glyphs("alone", "⌘")[0].uv_rect.offset.y;
+        // How far below the H's baseline ⌘'s lies.
+        let mut below = |family: &str| {
+            let g = glyphs(family, "H⌘");
+            g[1].pos.y + g[1].uv_rect.offset.y - top - g[0].pos.y
+        };
+        assert!(below("moved").abs() < 1.0, "{}", below("moved"));
+        assert!(below("plain") > 5.0, "{}", below("plain"));
+    }
+
+    /// In the Korean interface a Chinese reply takes every Han character from one face (with a
+    /// Japanese font installed, its forms came first and the Chinese font only drew the
+    /// simplified ones); Hangul comes from the Korean face when the CJK fonts have none.
+    #[test]
+    fn a_korean_interface_draws_chinese_in_one_face() {
+        if !super::can_show("ko") || super::cjk_font().is_none() {
+            return;
+        }
+        let ctx = egui::Context::default();
+        super::install_fonts(&ctx, "ko");
+        let mut output = ctx.run_ui(Default::default(), |_| {});
+        output.textures_delta.clear();
+        let first = ctx.fonts_mut(|view| {
+            let chars = view.fonts.font(&egui::FontFamily::Proportional).characters().clone();
+            move |c: char| chars.get(&c).and_then(|names| names.first()).cloned()
+        });
+        let han: Vec<_> = "们这个国國語说".chars().map(&first).collect();
+        assert!(han.iter().all(|f| f.is_some() && *f == han[0]), "{han:?}");
+        if !super::cjk_covers_hangul() {
+            assert_eq!(first('한').as_deref(), Some("korean-ui"));
         }
     }
 }

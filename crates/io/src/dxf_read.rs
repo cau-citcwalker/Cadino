@@ -1141,6 +1141,9 @@ fn entity_extras(kind: &str, tags: &[Tag], h: Handle, k: &mut EntityKind, rx: &m
             if let (Some(base), Some(o)) = (base, T(tags).f(52).filter(|o| o.is_finite() && o.rem_euclid(180.0) != 0.0)) {
                 dm.marks.oblique = Some(cadcraft_geom::norm_angle(base + o.to_radians()));
             }
+            // Group 51: the negative of the UCS x axis's angle (the dimension's horizontal).
+            dm.marks.horizontal =
+                T(tags).f(51).filter(|h| h.is_finite() && h.rem_euclid(360.0) != 0.0).map(|h| cadcraft_geom::norm_angle(-h.to_radians()));
         }
         ("ACAD_TABLE", EntityKind::Table(_)) => {
             let t = T(tags);

@@ -97,3 +97,15 @@ fn live_local_server_lists_models() {
     println!("{r:?}: {:?}", cadcraft_ai::list_models(&cfg));
     assert!(r.is_ok_and(|m| m.starts_with("Connected: ")));
 }
+
+/// qwen2.5:7b made the box again in a later round of the same message (and rectangles and circles
+/// twice): it is made once at most. Needs `--features cadcraft-engine/occt` to make a box at all.
+#[test]
+#[ignore = "needs a local model server (Ollama at localhost:11434)"]
+fn live_local_model_makes_a_box_once() {
+    let mut b = WithWindow(Headless::default());
+    ask(&mut b, "Make a box 600 x 400 x 750 at the origin and show me an iso render.");
+    let r = b.call("engine.execute", json!({"command": "entities", "params": {"type": "3DSOLID"}})).unwrap();
+    println!("\n{} box(es)", r["count"]);
+    assert!(r["count"].as_u64().unwrap_or(0) <= 1, "made twice: {r}");
+}

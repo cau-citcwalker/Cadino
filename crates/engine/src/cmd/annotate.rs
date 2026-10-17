@@ -232,6 +232,16 @@ fn run_aligned(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "handle": add_dim(s, k)?.hex() }))
 }
 
+/// The object a single-object prompt ("Select arc or circle") was given: the one under a point, or
+/// the one a 3D view picked from what it draws.
+fn picked(s: &Session, i: &Input) -> Option<Handle> {
+    match i {
+        Input::Point(p) => pick_at(s, *p),
+        Input::Pick(hs) => hs.first().copied(),
+        _ => None,
+    }
+}
+
 /// Centre and radius of a circle/arc entity.
 fn circle_of(s: &Session, h: Handle) -> Option<(Vec2, f64)> {
     // As the construction plane sees it; in a plane tilted to it a circle shows as an ellipse or
@@ -343,23 +353,20 @@ fn run_ordinate(s: &mut Session, p: &Value) -> Result<Value> {
 /// An ordinate dimension of feature `f` with its leader to `l` (world points: DIMORDINATE is
 /// plan-only), measured as AutoCAD measures it: from the current UCS's origin along its axes.
 /// `xtype` (an X datum: the UCS x) is forced, else it comes from the leader's direction in the
-/// UCS. The dimension keeps its datum in `defpt` and measures along world X or Y, so a UCS turned
-/// by other than a multiple of 90° is refused.
-/// ponytail: no stored measuring direction (DXF 51) yet; upgrade: keep it in the dimension and
-/// measure along it in `render::dim`.
+/// UCS. The dimension keeps its datum in `defpt` and the UCS x axis's angle as its horizontal
+/// direction (DXF 51); DIMORDINATE is plan-only, so the UCS is level.
 fn ordinate(s: &Session, f: Vec2, l: Vec2, xtype: Option<bool>) -> Result<EntityKind> {
     let c = s.user_cplane();
     let u = c.col(0).xy();
     let d = l - f;
     let x = xtype.unwrap_or(d.dot(u.perp()).abs() > d.dot(u).abs());
-    let x = if u.x.abs() > 1.0 - 1e-9 {
-        x
-    } else if u.y.abs() > 1.0 - 1e-9 {
-        !x
-    } else {
-        return Err(EngineError::Other("DIMORDINATE measures along the UCS axes only in a UCS turned by a multiple of 90°.".into()));
-    };
-    Ok(dim(s, DimKind::Ordinate { x_type: x }, c.col(3).xy(), f, l, Vec2::ZERO, Vec2::ZERO, ""))
+    let mut k = dim(s, DimKind::Ordinate { x_type: x }, c.col(3).xy(), f, l, Vec2::ZERO, Vec2::ZERO, "");
+    if let EntityKind::Dimension(dm) = &mut k
+        && u.y.abs() > 1e-12
+    {
+        dm.marks.horizontal = Some(u.angle());
+    }
+    Ok(k)
 }
 
 /// The last linear/aligned dimension (for CONTINUE/BASELINE).
@@ -1046,8 +1053,8 @@ impl Interactive for LinearM {
             return Ok(Step::Continue);
         }
         if self.selecting {
-            if let Input::Point(p) = i {
-                let Some(h) = pick_at(s, p) else {
+            if matches!(i, Input::Point(_) | Input::Pick(_)) {
+                let Some(h) = picked(s, &i) else {
                     s.echo("*Invalid selection*");
                     return Ok(Step::Continue);
                 };
@@ -1153,8 +1160,8 @@ impl Interactive for RadialM {
             return Ok(Step::Continue);
         }
         match (self.target, i) {
-            (None, Input::Point(p)) => {
-                match pick_at(s, p).and_then(|h| circle_of(s, h)) {
+            (None, i @ (Input::Point(_) | Input::Pick(_))) => {
+                match picked(s, &i).and_then(|h| circle_of(s, h)) {
                     Some(t) => self.target = Some(t),
                     None => s.echo("Object selected is not a circle or arc."),
                 }
@@ -1291,11 +1298,13 @@ impl Interactive for AngularM {
                 self.vertex = true;
                 Ok(Step::Continue)
             }
-            Input::Point(p) => {
-                let Some(h) = pick_at(s, p) else {
+            Input::Point(_) | Input::Pick(_) => {
+                let Some(h) = picked(s, &i) else {
                     s.echo("*Invalid selection*");
                     return Ok(Step::Continue);
                 };
+                // A pick from what a 3D view draws: where the cursor is on the plane.
+                let p = if let Input::Point(p) = i { p } else { s.cursor };
                 let circle = s
                     .doc()?
                     .entity(h)
@@ -1397,8 +1406,8 @@ impl Interactive for ArcLenM {
             return Ok(Step::Continue);
         }
         match (self.arc, i) {
-            (None, Input::Point(p)) => {
-                if let Some(EntityKind::Arc(a)) = pick_at(s, p).and_then(|h| s.doc().ok()?.entity(h).map(|e| e.kind.clone())) {
+            (None, i @ (Input::Point(_) | Input::Pick(_))) => {
+                if let Some(EntityKind::Arc(a)) = picked(s, &i).and_then(|h| s.doc().ok()?.entity(h).map(|e| e.kind.clone())) {
                     self.arc = Some(cadcraft_geom::Arc::new(a.center.xy(), a.radius, a.start, a.end));
                 } else {
                     s.echo("Select an arc.");

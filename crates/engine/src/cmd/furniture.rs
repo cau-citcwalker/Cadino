@@ -726,7 +726,7 @@ fn part_sizes(xs: &[&Solid3d]) -> Vec<Option<[i64; 3]>> {
         .map(|x| {
             let m = &x.xform.m;
             let turn: [u64; 9] = std::array::from_fn(|i| m.get(i / 3).and_then(|r| r.get(i % 3)).map_or(0, |v| v.to_bits()));
-            axes.entry((std::sync::Arc::as_ptr(&x.mesh), turn)).or_insert_with(|| part_axes(&placed_mesh(x))).mul(&x.xform)
+            axes.entry((std::sync::Arc::as_ptr(&x.mesh), turn)).or_insert_with(|| part_axes(&turned_mesh(x))).mul(&x.xform)
         })
         .collect();
     let exact = if xs.iter().any(|x| !x.brep.is_empty()) {
@@ -750,9 +750,13 @@ fn part_sizes(xs: &[&Solid3d]) -> Vec<Option<[i64; 3]>> {
         .collect()
 }
 
-/// The part's mesh where it is in the world.
-fn placed_mesh(x: &Solid3d) -> Mesh3 {
-    let at = |p: &Vec3| x.xform.apply(*p);
+/// The part's mesh turned (and scaled) as it is in the world but not moved: its axes come out the
+/// same wherever it is, and so does the turn its box is measured under (moved, a part's box is
+/// the kernel's earlier measurement).
+fn turned_mesh(x: &Solid3d) -> Mesh3 {
+    let mut turn = x.xform;
+    turn.m.iter_mut().take(3).for_each(|r| r[3] = 0.0);
+    let at = |p: &Vec3| turn.apply(*p);
     Mesh3 {
         verts: x.mesh.verts.iter().map(at).collect(),
         tris: x.mesh.tris.clone(),

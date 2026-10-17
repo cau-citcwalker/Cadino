@@ -861,17 +861,18 @@ pub fn dimension_geometry_with(d: &Dimension, st: &DimStyle, dimscale: f64, font
             let feature = d.p13.xy();
             let leader_end = d.p14.xy();
             let origin = d.defpt.xy();
-            let meas = if x_type { (feature.x - origin.x).abs() } else { (feature.y - origin.y).abs() };
+            // Measured from the UCS origin along the UCS x (X datum) or y axis it was made in.
+            let ux = Vec2::from_angle(d.marks.horizontal.filter(|h| h.is_finite()).unwrap_or(0.0));
+            let axis = if x_type { ux } else { ux.perp() };
+            let meas = (feature - origin).dot(axis).abs();
             g.mtext = linear_text(meas, d, st, "");
             g.measurement = meas;
             let (tw, _) = measure(&g.mtext);
             g.dim(vec![feature, leader_end]);
-            if x_type {
-                text_angle = std::f64::consts::FRAC_PI_2;
-            }
+            text_angle = readable(axis.perp().angle());
             if !d.user_text_pos {
                 let dirv = (leader_end - feature).normalized();
-                let dirv = if dirv == Vec2::ZERO { if x_type { Vec2::Y } else { Vec2::X } } else { dirv };
+                let dirv = if dirv == Vec2::ZERO { Vec2::from_angle(text_angle) } else { dirv };
                 text_mid = leader_end + dirv * (tw / 2.0 + gap);
             }
         }

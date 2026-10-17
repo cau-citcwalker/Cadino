@@ -5,7 +5,7 @@
 //! undoable and reachable from scripts, the control channel and MCP.
 
 use cadcraft_doc::{DimKind, Entity, EntityKind, Handle, LwPolyline};
-use cadcraft_geom::{Arc, EPS, Mat3, Polyline, Vec2, Vec3, norm_angle};
+use cadcraft_geom::{Arc, EPS, Mat3, Mat4, Polyline, Vec2, Vec3, norm_angle};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -504,6 +504,80 @@ pub fn grip_action(kind: &EntityKind, index: usize, action: GripAction, to: Opti
 pub fn stretch_grip_plan(e: &Entity, kind: &EntityKind, index: usize, to: Vec2) -> Option<EntityKind> {
     let near = *kind.grips().get(index)?;
     to.is_finite().then(|| e.plan_to_local(to, near)).and_then(|p| stretch_grip(kind, index, p))
+}
+
+/// Object `e`'s grips ([`EntityKind::grips`], in that order) where they are in 3D: a planar
+/// object's lifted from its plane, a true 3D object's at their height.
+pub fn grips3(e: &Entity) -> Vec<Vec3> {
+    if let Some(pl) = e.plane() {
+        return e.kind.grips().into_iter().map(|g| pl.apply(g.to3(0.0))).collect();
+    }
+    match &e.kind {
+        EntityKind::Line(l) => vec![l.a, l.a + (l.b - l.a) * 0.5, l.b],
+        EntityKind::Point(p) => vec![p.p],
+        EntityKind::Polyline3d(p) => p.points.clone(),
+        EntityKind::Face3d(f) => f.corners.to_vec(),
+        EntityKind::Ray(r) | EntityKind::XLine(r) => vec![r.base, r.base + r.dir],
+        EntityKind::Helix(h) => vec![h.center, h.start_point(), h.end_point()],
+        EntityKind::Solid3d(s) => s.corners(),
+        k => k.grips().into_iter().map(|g| g.to3(0.0)).collect(),
+    }
+}
+
+/// Whether [`stretch_grip`] moves the whole object for grip `index` of `k`.
+fn moves_whole(k: &EntityKind, index: usize) -> bool {
+    match k {
+        EntityKind::Line(_) => index == 1,
+        EntityKind::Arc(_) => index >= 3,
+        EntityKind::Table(t) => index == 0 || t.breaks.is_none(),
+        EntityKind::Circle(_) | EntityKind::Ellipse(_) | EntityKind::Helix(_) | EntityKind::Ray(_) | EntityKind::XLine(_) | EntityKind::Insert(_) => {
+            index == 0
+        }
+        EntityKind::Point(_)
+        | EntityKind::Text(_)
+        | EntityKind::MText(_)
+        | EntityKind::AttDef(_)
+        | EntityKind::Image(_)
+        | EntityKind::Hatch(_)
+        | EntityKind::Tolerance(_)
+        | EntityKind::Region(_)
+        | EntityKind::Solid3d(_) => true,
+        _ => false,
+    }
+}
+
+/// [`stretch_grip_plan`] with the grip also raised by `dz` along the plane's normal (a point given
+/// with a height): a line's end or a 3D polyline's or 3D face's vertex moves in Z, and a grip that
+/// moves its whole object (a line's midpoint, a circle's centre, a text...) moves it in 3D, as
+/// MOVE does. `None` also for a grip that can't leave its object's plane (a polyline's vertex, an
+/// arc's end) and an object that can't move in Z (a region).
+pub fn stretch_grip_3d(e: &Entity, kind: &EntityKind, index: usize, to: Vec2, dz: f64) -> Option<EntityKind> {
+    let mut k = stretch_grip_plan(e, kind, index, to)?;
+    if dz == 0.0 {
+        return Some(k);
+    }
+    // The grip's new height, from where it is on the object.
+    let z = grips3(e).get(index)?.z + dz;
+    if !z.is_finite() {
+        return None;
+    }
+    match &mut k {
+        EntityKind::Line(l) if index != 1 => {
+            if index == 0 {
+                l.a.z = z;
+            } else {
+                l.b.z = z;
+            }
+        }
+        EntityKind::Polyline3d(p) => p.points.get_mut(index)?.z = z,
+        EntityKind::Face3d(f) => f.corners.get_mut(index)?.z = z,
+        _ if moves_whole(kind, index) => {
+            let mut moved = Entity { handle: e.handle, common: e.common.clone(), kind: k };
+            return moved.transform3(&Mat4::translate(Vec3::Z * dz)).then_some(moved.kind);
+        }
+        _ => return None,
+    }
+    Some(k)
 }
 
 /// [`grip_action`] of object `e` with the picked point `to` in plan (see [`stretch_grip_plan`]).

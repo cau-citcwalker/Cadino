@@ -56,7 +56,7 @@ struct Fake {
 const CATALOG: &str = r#"[{"id": "qsave", "aliases": ["save"], "userAliases": ["qs"]}, {"id": "wblock", "aliases": ["w"]},
     {"id": "stepout", "aliases": ["StepExport"]}, {"id": "-xref", "aliases": ["-xr"]}, {"id": "insert", "aliases": ["i"]},
     {"id": "circle", "aliases": ["c"]}, {"id": "options", "aliases": ["op", "preferences"]}, {"id": "close", "aliases": []},
-    {"id": "closeall", "aliases": []}, {"id": "aliasedit", "aliases": []}]"#;
+    {"id": "closeall", "aliases": []}, {"id": "aliasedit", "aliases": []}, {"id": "zoom", "aliases": ["z"]}]"#;
 
 impl tools::Backend for Fake {
     fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
@@ -652,4 +652,112 @@ fn redirects_are_not_followed() {
     server.join().unwrap();
     assert!(r.as_ref().is_err_and(|e| e.contains("307")), "{r:?}");
     assert!(other.accept().is_err(), "nothing reached the other host");
+}
+
+/// A reply of `content` then structured `calls` ((name, arguments)), streamed.
+fn openai_reply(content: &[&str], calls: &[(&str, &str)]) -> String {
+    let mut chunks: Vec<Value> = content.iter().map(|t| json!({"choices": [{"delta": {"content": t}}]})).collect();
+    let calls: Vec<Value> =
+        calls.iter().enumerate().map(|(i, (name, args))| json!({"index": i, "function": {"name": name, "arguments": args}})).collect();
+    let finish = if calls.is_empty() { "stop" } else { "tool_calls" };
+    chunks.push(json!({"choices": [{"delta": {"tool_calls": calls}, "finish_reason": finish}]}));
+    chunks.iter().map(|v| format!("data: {v}\n\n")).chain(["data: [DONE]\n\n".to_string()]).collect()
+}
+
+/// A local model made the box again in its next round (qwen2.5:7b): the second one isn't run and
+/// the model is told why; looking again runs, and after an undo so does the box. A cloud model's
+/// repeat runs.
+#[test]
+fn a_local_model_repeating_a_change_is_told_instead() {
+    let boxed = "{\"command\":\"box\",\"params\":{\"corner1\":[0,0,0],\"corner2\":[600,400,750]}}";
+    let again = "{\"params\":{\"corner2\":[600,400,750],\"corner1\":[0,0,0]},\"command\":\"box\"}";
+    let render = "{\"view\":\"iso\"}";
+    let replies = vec![
+        (200, SSE, openai_reply(&[], &[("execute", boxed), ("render", render)])),
+        (200, SSE, openai_reply(&["Rendering.\nis", "phere\n"], &[("execute", again), ("render", render), ("execute", "{\"command\":\"zoom\"}")])),
+        (200, SSE, openai_reply(&[], &[("execute", "{\"command\":\"U\"}"), ("execute", boxed)])),
+        (200, SSE, openai_reply(&["Done."], &[])),
+    ];
+    let (url, seen, server) = mock(replies);
+    let cfg = Config { provider: ProviderKind::Custom, base_url: url, model: "qwen".into(), ..Config::default() };
+    let (mut conv, mut b) = (Conversation::new(), Fake::default());
+    let (r, events) = go(&cfg, &mut conv, &mut b, &no_stop());
+    server.join().unwrap();
+    assert_eq!(r, Ok(()));
+    let commands: Vec<String> = b.calls.iter().map(|(m, p)| p["command"].as_str().map_or(m.clone(), |c| format!("{m} {c}"))).collect();
+    assert_eq!(commands, ["engine.execute box", "ui.render", "ui.render", "engine.execute zoom", "engine.execute U", "engine.execute box"]);
+    let told: Vec<&String> =
+        events.iter().filter_map(|e| if let Event::ToolResult { ok: false, text, .. } = e { Some(text) } else { None }).collect();
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].starts_with("Not run: this same call already ran") && told[0].contains("\"prompt\": \"Command:\""), "{}", told[0]);
+    // The word piece before the calls never shows and isn't remembered.
+    let shown: String = events.iter().filter_map(|e| if let Event::Text(t) = e { Some(t.as_str()) } else { None }).collect();
+    assert_eq!(shown, "Rendering.\nDone.");
+    assert_eq!(seen.lock().unwrap()[2].1["messages"][6]["content"], "Rendering.", "after the first round's results and image");
+
+    // Claude repeating the same call means it.
+    let call = |id: &str| reply(&[tool_use(id, "execute", &[boxed])], "tool_use");
+    let (url, _, server) = mock(vec![(200, SSE, call("t1")), (200, SSE, call("t2")), (200, SSE, reply(&[text("Two boxes.")], "end_turn"))]);
+    let mut b = Fake::default();
+    let (r, _) = go(&anthropic(&url), &mut Conversation::new(), &mut b, &no_stop());
+    server.join().unwrap();
+    assert_eq!((r, b.calls.len()), (Ok(()), 2));
+}
+
+/// What counts as a repeat: a line that starts and ends a command, or a JSON command, that
+/// changed the drawing and succeeded, until an undo or another drawing. A prompt's answers, a
+/// refused or failed call, other arguments, looking and a new message may come again.
+#[test]
+fn repeats_are_changes_only() {
+    let guard = Guard::new(&mut Fake::default(), true);
+    let call = |name: &str, input: Value| Call { id: "1".into(), name: name.into(), input: Ok(input) };
+    let typed = |text: &str| call("command_line", json!({ "text": text }));
+    let state = |running: Option<&str>| Output { ok: true, text: json!({"prompt": "x", "running": running}).to_string(), image: None };
+    let done = || Output { ok: true, text: "{\"handle\": \"2A\"}".into(), image: None };
+    let mut r = Repeats::default();
+    let circle = typed("circle 0,0 5");
+    r.note(&guard, &circle, &state(None));
+    assert!(r.earlier(&circle).is_some_and(|o| !o.ok && o.text.contains("\"running\":null")), "made twice");
+    assert!(r.earlier(&typed("circle 0,0 6")).is_none() && r.earlier(&call("execute", json!({"text": "circle 0,0 5"}))).is_none());
+    // While a command runs, typed lines answer its prompts.
+    for (line, running) in [("line 0,0", Some("line")), ("@100,0", Some("line")), ("@100,0", Some("line")), ("", None)] {
+        assert!(r.earlier(&typed(line)).is_none(), "{line}");
+        r.note(&guard, &typed(line), &state(running));
+    }
+    r.note(&guard, &typed("rectang 0,0"), &state(Some("rectang")));
+    assert!(r.earlier(&circle).is_none(), "an answer to RECTANG's prompt");
+    r.note(&guard, &call("cancel", json!({})), &state(None));
+    assert!(r.earlier(&circle).is_some());
+    // A refused line, a failed call and looking are not changes; a cut result leaves the prompt unknown.
+    let refused = Output { text: json!({"running": null, "error": "Unknown command"}).to_string(), ..state(None) };
+    r.note(&guard, &typed("box 0,0,0 600,400,750"), &refused);
+    let boxed = call("execute", json!({"command": "box", "params": {"corner2": [1, 1, 1]}}));
+    r.note(&guard, &boxed, &Output::error("no"));
+    for c in [call("execute", json!({"command": "zoom", "params": {"mode": "extents"}})), call("execute", json!({"command": "Z"})), typed("zoom e")] {
+        r.note(&guard, &c, &done());
+        assert!(r.earlier(&c).is_none(), "{c:?}");
+    }
+    assert!(r.earlier(&typed("box 0,0,0 600,400,750")).is_none() && r.earlier(&boxed).is_none());
+    r.note(&guard, &boxed, &done());
+    r.note(&guard, &typed("circle 9,9 1"), &Output { text: "{\"running\": null, \"out".into(), ..done() });
+    assert!(r.earlier(&boxed).is_some() && r.earlier(&circle).is_none(), "a JSON call still counts while the prompt is unknown");
+    // Undo (by any name) or another drawing: what ran before may run again.
+    r.note(&guard, &call("cancel", json!({})), &state(None));
+    for c in [call("execute", json!({"command": "_U"})), typed("undo 2"), call("new_drawing", json!({}))] {
+        r.note(&guard, &boxed, &done());
+        r.note(&guard, &c, &state(None));
+        assert!(r.earlier(&boxed).is_none(), "{c:?}");
+    }
+    // UNDO at its prompt: the line that starts it, then the answer.
+    r.note(&guard, &boxed, &done());
+    r.note(&guard, &typed("undo"), &state(Some("undo")));
+    r.note(&guard, &typed(""), &state(None));
+    assert!(r.earlier(&boxed).is_none(), "the box was undone");
+    // A setting set back runs: the latest call of a command replaces the earlier.
+    let layer = |name: &str| call("execute", json!({"command": "layer.current", "params": {"name": name}}));
+    for name in ["Walls", "Doors", "Walls"] {
+        assert!(r.earlier(&layer(name)).is_none(), "{name}");
+        r.note(&guard, &layer(name), &done());
+    }
+    assert!(r.earlier(&layer("Walls")).is_some() && r.earlier(&boxed).is_none());
 }

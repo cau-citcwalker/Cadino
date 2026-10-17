@@ -259,9 +259,10 @@ impl DocState {
         let config = active_tiles(&self.doc);
         let (tiles, active) = live(self, px);
         let doc = Arc::downgrade(&self.doc);
+        let maximized = self.tiles.maximized.clone();
         let left = &mut self.tiles.left;
         left.retain(|l| !l.doc.ptr_eq(&doc));
-        left.push(LeftTiles { doc, config, tiles: tiles.into_iter().map(|(t, l)| with_look(t, l)).collect(), active });
+        left.push(LeftTiles { doc, config, tiles: tiles.into_iter().map(|(t, l)| with_look(t, l)).collect(), active, maximized });
         let over = left.len().saturating_sub(ModelTiles::LEFT);
         left.drain(..over);
     }
@@ -279,14 +280,13 @@ impl DocState {
         let doc = Arc::downgrade(&self.doc);
         let fits = |l: &&LeftTiles| same_tiles(&l.config, &cfg) && l.tiles.len() == n && l.active < n;
         let mine = self.tiles.left.iter().rev().filter(fits).find(|l| l.doc.ptr_eq(&doc));
+        // The tiles a VIEWPORTS.SINGLE replaced belong to the drawing it made: they come back
+        // with it (redo); with any other, saving writes what is on show.
+        let maximized = mine.and_then(|l| l.maximized.clone());
         let left = mine.or_else(|| self.tiles.left.iter().rev().find(fits)).map(|l| (l.tiles.clone(), l.active));
         let (tiles, active) = left.unwrap_or_else(|| (cfg.clone(), 0));
         let old = std::mem::take(&mut self.tiles);
-        // The tiles a VIEWPORTS.SINGLE replaced belong to the view it left: saving writes what is
-        // on show from here on.
-        // ponytail: redoing VIEWPORTS.SINGLE forgets them too (MAXIMIZE then gives Rhino's four);
-        // upgrade: key them by the drawing, as `left` is.
-        self.tiles = ModelTiles { left: old.left, ..Default::default() };
+        self.tiles = ModelTiles { left: old.left, maximized, ..Default::default() };
         // Other tiles' views: ZOOM Previous starts again.
         self.view_history.clear();
         if cfg.len() > 1 {

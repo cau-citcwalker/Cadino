@@ -22,6 +22,7 @@ use cadcraft_geom::{Bounds2, Vec2, ViewDir};
 use cadcraft_render::{DisplayList, Kind, Options};
 
 /// What a build needs: the drawing (shared, never copied), the space and the options.
+#[cfg_attr(target_arch = "wasm32", expect(dead_code, reason = "the web build has no threads: its `spawn` runs nothing and the caller builds"))]
 pub(super) struct Request {
     pub doc: Arc<Drawing>,
     pub space: Space,
@@ -32,6 +33,7 @@ pub(super) struct Request {
 
 /// How to convert the list for the GPU: the view the vertex origin is chosen for and the
 /// background the colours resolve against (paper when the list is a layout's sheet).
+#[cfg_attr(target_arch = "wasm32", expect(dead_code, reason = "the web build has no threads: its `spawn` runs nothing and the caller builds"))]
 pub(super) struct MeshRequest {
     pub view_center: Vec2,
     pub view_height: f64,
@@ -109,6 +111,7 @@ impl Job {
 
 /// Build `req` on the calling thread; `None` once it has been cancelled (the partial list is
 /// thrown away, and no vertex data is made for it).
+#[cfg_attr(target_arch = "wasm32", expect(dead_code, reason = "the web build has no threads: its `spawn` runs nothing and the caller builds"))]
 fn run(req: Request) -> Option<Built> {
     let t0 = crate::now_ms();
     let list = cadcraft_render::build(&req.doc, &req.space, &req.opts);

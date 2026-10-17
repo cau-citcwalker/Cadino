@@ -130,6 +130,8 @@ pub struct LeftTiles {
     pub tiles: Vec<cadcraft_doc::VportTile>,
     /// ...and the current one.
     pub active: usize,
+    /// The tiles a VIEWPORTS.SINGLE replaced ([`ModelTiles::maximized`]) then.
+    pub maximized: Option<(Vec<cadcraft_doc::VportTile>, Vec<TileLook>, usize)>,
 }
 
 /// How a model tile shows the model: its view direction and visual style (VSCURRENT).

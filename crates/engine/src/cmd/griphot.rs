@@ -4,7 +4,10 @@
 //! (ROTATE and SCALE) and eXit. Several grips can be hot at once; STRETCH moves them together.
 //!
 //! The UI starts it with [`Session::start_grip_edit`]; typed, `GRIP` asks for the grips first.
-//! The whole grip edit, copies included, is one undo step.
+//! The whole grip edit, copies included, is one undo step. The base grip is the last point, so
+//! `@dx,dy[,dz]` is measured from it. STRETCH and MOVE take a point's height ([`Session::point_z`]:
+//! typed `@0,0,100`, a 3D snap) as MOVE does; a point given without one keeps the grips' heights.
+//! ROTATE, SCALE and MIRROR stay in the construction plane.
 
 use std::sync::Arc;
 
@@ -14,7 +17,7 @@ use cadcraft_geom::{Mat3, Vec2};
 use super::gripcmds::stretch_grips;
 use super::helpers::line;
 use super::machines::number;
-use super::modify::transform_entities;
+use super::modify::{displace, transform_entities};
 use crate::grips::{GripAction, GripMode, grip_action_plan, grip_actions, mode_matrix};
 use crate::{Accept, EngineError, Input, Interactive, Prompt, Result, Running, Session, Step};
 
@@ -46,6 +49,8 @@ pub(crate) struct GripEdit {
     /// What MOVE/ROTATE/SCALE/MIRROR transform: the hot grips' objects and the selection.
     targets: Vec<Handle>,
     base: Vec2,
+    /// The base point's height (the base grip's, or the Base point option's [`Session::point_z`]).
+    base_z: f64,
     mode: GripMode,
     copy: bool,
     ask: Ask,
@@ -76,6 +81,7 @@ impl GripEdit {
             picking: false,
             targets: Vec::new(),
             base: Vec2::ZERO,
+            base_z: 0.0,
             mode: GripMode::Stretch,
             copy: false,
             ask: Ask::Mode,
@@ -92,9 +98,11 @@ impl GripEdit {
         if self.hot.contains(&(h, i)) || self.hot.len() >= MAX_HOT {
             return Ok(());
         }
-        let p = s.grips_of(h)?.get(i).copied().ok_or_else(|| other("no such grip"))?;
+        let e = s.local_entity(h)?;
+        let p = e.grips().get(i).copied().ok_or_else(|| other("no such grip"))?;
         if self.hot.is_empty() {
             self.base = p;
+            self.base_z = crate::grips::grips3(&e).get(i).map(|q| q.z).filter(|z| z.is_finite()).unwrap_or(0.0);
             self.targets.push(h);
             self.targets.extend(s.selection().into_iter().filter(|x| *x != h));
         } else if !self.targets.contains(&h) {
@@ -207,11 +215,22 @@ impl GripEdit {
         }
     }
 
+    /// The base grip as the last point, so relative points (`@dx,dy,dz`) are measured from it.
+    fn base_is_last_point(&self, s: &mut Session) {
+        s.last_point = self.base;
+        s.last_point_z = (self.base_z != 0.0).then_some(self.base_z);
+    }
+
     /// Edit with the dragged point `to` (STRETCH) or the transform `m` (the other modes).
     fn edit(&mut self, s: &mut Session, to: Vec2, m: Option<Mat3>) -> Result<Step> {
         let before = s.state()?.doc.clone();
+        // STRETCH and MOVE: the height the point was given at, else the grips keep theirs. A snap
+        // at the grip's own height may come back a rounding error off it.
+        let dz = s.point_z.filter(|z| z.is_finite()).map_or(0.0, |z| z - self.base_z);
+        let d = (to - self.base).to3(if dz.abs() <= 1e-9 * (1.0 + self.base_z.abs()) { 0.0 } else { dz });
         let changed = match (self.mode, m) {
-            (GripMode::Stretch, _) => !stretch_grips(s, &self.hot, &self.targets, to - self.base, self.copy)?.is_empty(),
+            (GripMode::Stretch, _) => !stretch_grips(s, &self.hot, &self.targets, d, self.copy)?.is_empty(),
+            (GripMode::Move, _) if d.z != 0.0 => !displace(s, &self.targets, d, self.copy)?.is_empty(),
             (_, Some(m)) => !transform_entities(s, &self.targets, &m, self.copy)?.is_empty(),
             (_, None) => return Err(other("Invalid point.")),
         };
@@ -346,7 +365,9 @@ impl Interactive for GripEdit {
         }
         let base = self.base;
         match self.ask {
-            Ask::Base => Prompt::new("Specify base point", Accept::POINT),
+            // Named by its mode, as the mode prompts are (the UI moves the point in the plane
+            // that mode moves the grip in).
+            Ask::Base => Prompt::new(format!("{} Specify base point", self.label()), Accept::POINT),
             Ask::RefFirst if self.mode == GripMode::Rotate => Prompt::new("Specify reference angle", Accept::POINT_OR_NUMBER).default("0"),
             Ask::RefFirst => Prompt::new("Specify reference length", Accept::POINT_OR_NUMBER).default("1"),
             Ask::RefSecond(a) => Prompt::new("Specify second point", Accept::POINT).base(a),
@@ -404,6 +425,7 @@ impl Interactive for GripEdit {
                 }
                 Input::Enter if !self.hot.is_empty() => {
                     self.picking = false;
+                    self.base_is_last_point(s);
                     s.echo(self.label());
                     Ok(Step::Continue)
                 }
@@ -416,6 +438,7 @@ impl Interactive for GripEdit {
             Ask::Base => match i {
                 Input::Point(p) => {
                     self.base = p;
+                    self.base_z = s.point_z.filter(|z| z.is_finite()).unwrap_or(0.0);
                     self.ask = Ask::Mode;
                     Ok(Step::Continue)
                 }
@@ -454,7 +477,8 @@ impl Interactive for GripEdit {
         let mut out: Vec<EntityKind> = if self.mode == GripMode::Stretch {
             // Each stretched shape in its object's plane, as plan view (or the construction
             // plane) shows it.
-            super::gripcmds::stretched(s, &self.hot, &self.targets, c - base)
+            super::gripcmds::stretched(s, &self.hot, &self.targets, (c - base).to3(0.0))
+                .unwrap_or_default()
                 .into_iter()
                 .take(500)
                 .filter_map(|(h, kind)| seen.entity(h).map(|e| cadcraft_doc::Entity { kind, ..(**e).clone() }))
@@ -483,6 +507,7 @@ impl Session {
             return Err(other("no grip"));
         }
         let g = GripEdit::new(self, hot.to_vec())?;
+        g.base_is_last_point(self);
         let label = g.label();
         let machine = crate::guard::Guarded::wrap(Box::new(g), false);
         let st = self.state()?;

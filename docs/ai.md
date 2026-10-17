@@ -148,6 +148,18 @@ larger context needs more memory and is slower on a CPU.
   token) are recovered and run, also next to real calls: JSON call objects, bare, fenced or in
   `<tool_call>` tags, and `tool {arguments}`. A written call that repeats a real one (the same
   tool and arguments) runs once. Text that may be a call is held back while it streams.
+- Garbled tags are dropped: a lone word on its own line (one Latin or Cyrillic word of at most 16
+  letters, no punctuation, such as `ampoline` or `isphere`) right before or after a call never
+  shows in the chat or reaches the history. A tool's name on its own line before a call stays
+  that call's name. Lines in other scripts (완료, 完成) and lines with punctuation ("Done.") stay.
+- A change the model already made in the same message isn't made again. When it repeats a call
+  that changed the drawing (the same tool and arguments, for example a second identical `box`),
+  the call doesn't run and the model is told the first one's result. Looking (zoom, render,
+  inspect, measure), answers to a running command's prompts, failed or refused calls and other
+  arguments run as usual; the latest call of a command replaces its earlier ones, so a setting
+  can be set back (`layer.current` Walls, Doors, Walls). After undo (UNDO, U, REDO, MREDO, typed
+  or JSON), a new drawing or an opened one, the same change can be made again. A new message
+  starts clean. Claude and GPT keep track of their own calls, so their repeats always run.
 - A server that isn't running fails at once with "Can't reach …", and one that says nothing for
   ten minutes (a CPU-only model can read a long prompt that long) isn't sent the request again.
 
@@ -319,8 +331,9 @@ own terms.
   file access is.
 - **Looking.** `render {view}` draws model space from `plan`/`top`, `front`, `back`, `left`,
   `right`, `iso` (south-west), `iso_se`, `iso_ne` or `iso_nw`, shaded with edges on white and
-  hidden edges left out, without changing your view; `current` renders what the canvas shows. An
-  image over 2000 px on a side or 5 MB, or beyond 50 images or 20 MB in one chat, is left out
+  hidden edges left out, without changing your view; `current` renders what the canvas shows. On
+  a named-view render 1000 px or more on its long side, solid edges are 2 px wide so they stay
+  visible when the image is scaled down; 2D lines and text stay 1 px. An image over 2000 px on a side or 5 MB, or beyond 50 images or 20 MB in one chat, is left out
   and the model is told why; a new chat sees images again.
 - **Reading 3D.** A 3D solid's record carries `bbox3`, its world bounding box. The B-rep text
   becomes `<B-rep, N bytes>` and the display mesh `<mesh, N triangles>`, for the assistant and
@@ -386,4 +399,10 @@ own terms.
   to real calls: a word ending in a tool name right before a JSON object runs that tool, and so
   does a JSON object naming a tool with its `arguments` or `parameters`. Replies over 64 KiB
   aren't scanned.
+- Dropping garbled tags is a heuristic too: a one-word English line right beside a call
+  ("Okay") goes with them, and a word piece in text that streams after the server's structured
+  calls stays (servers send those calls last).
+- The repeated-call guard compares the tool and its arguments only. A local model that means to
+  make the same object twice in one message (two identical copies) gets the second refused until
+  it changes an argument; split such work across messages.
 - File access has the limits listed under [File access](#file-access).

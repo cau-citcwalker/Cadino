@@ -78,7 +78,9 @@ pub(crate) fn turn(
     if custom {
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         let (text, written) = text_calls(&m.text, &names);
-        m.text = text;
+        // The real calls follow the text: a garbled tag before them ends it. ponytail: servers send
+        // them last; a word piece after them would show.
+        m.text = if m.calls.is_empty() { text } else { without_junk_end(&text).trim_end().to_string() };
         merge(&mut m.calls, written);
     }
     // The rest of the text as it is now: what was shown stays a prefix of it, since the calls
@@ -306,15 +308,41 @@ fn text_calls(text: &str, known: &[&str]) -> (String, Vec<ToolCall>) {
                 continue;
             }
         };
-        shown.push_str(kept);
+        shown.push_str(without_junk_end(kept));
         let after = text.get(start + values.byte_offset()..).unwrap_or_default();
-        let rest = CLOSE.iter().find_map(|m| after.trim_start().strip_prefix(m)).unwrap_or(after);
+        let rest = without_junk_start(CLOSE.iter().find_map(|m| after.trim_start().strip_prefix(m)).unwrap_or(after));
         calls.push(c);
         done = text.len() - rest.len();
         from = done;
     }
     shown.push_str(text.get(done..).unwrap_or_default());
     if calls.is_empty() { (text.to_string(), calls) } else { (shown.trim_end().to_string(), calls) }
+}
+
+/// Whether a line is a garbled word piece where Ollama decoded qwen2.5's `<tool_call>` or
+/// `</tool_call>` token wrongly (`ampoline`, `орм`, `IGHLU`): one Latin or Cyrillic word of at
+/// most 16 letters, without punctuation. A line in another script stays (완료, 完成), and so does
+/// one with punctuation ("Done."). ponytail: an English one-word line beside a call goes too
+/// ("Okay"): the reply's own script can't tell it from a word piece, English being Latin too.
+fn junk(line: &str) -> bool {
+    let w = line.trim();
+    !w.is_empty() && w.chars().count() <= 16 && w.chars().all(|c| c.is_ascii_alphabetic() || ('\u{0400}'..='\u{04ff}').contains(&c))
+}
+
+/// `text` without its last line when that is [`junk`] (it stood right before a call).
+fn without_junk_end(text: &str) -> &str {
+    let t = text.trim_end();
+    let start = t.rfind('\n').map_or(0, |i| i + 1);
+    if t.get(start..).is_some_and(junk) { t.get(..start).unwrap_or_default() } else { text }
+}
+
+/// `text` without its first line when that is [`junk`] (it stood right after a call). Not when
+/// another call follows it: it is that call's name (`execute\n{…}`), or goes before that call.
+fn without_junk_start(text: &str) -> &str {
+    let t = text.trim_start();
+    let end = t.find('\n').unwrap_or(t.len());
+    let next = t.get(end..).unwrap_or_default();
+    if t.get(..end).is_some_and(junk) && !next.trim_start().starts_with('{') { next } else { text }
 }
 
 /// Add the calls written as text to the reply's own, but not one that is the same as one of
@@ -389,9 +417,9 @@ mod tests {
         assert_eq!(calls(" {\"name\": \"execute\", \"arguments\": \"{}\"}"), (String::new(), vec![("execute".into(), "{}".into())]));
         let two = "<tool_call>{\"name\": \"render\", \"arguments\": {}}</tool_call>\n<tool_call>{\"name\": \"execute\", \"arguments\": {\"command\": \"zoom\"}}";
         assert_eq!(calls(two), (String::new(), vec![("render".into(), "{}".into()), ("execute".into(), "{\"command\":\"zoom\"}".into())]));
-        // Ollama sometimes garbles the first token, here the opening tag.
+        // Ollama sometimes garbles the first token, here the opening tag: the word piece goes.
         let garbled = "leton\n{\"name\": \"execute\", \"arguments\": {\"command\": \"circle\"}}\n</tool_call>";
-        assert_eq!(calls(garbled), ("leton".into(), vec![("execute".into(), "{\"command\":\"circle\"}".into())]));
+        assert_eq!(calls(garbled), (String::new(), vec![("execute".into(), "{\"command\":\"circle\"}".into())]));
         // As the prompts write calls (and the server's chat template doesn't).
         let named = "Drawing it.\nexecute {\"command\": \"circle\", \"params\": {\"radius\": 5}}";
         assert_eq!(calls(named), ("Drawing it.".into(), vec![("execute".into(), "{\"command\":\"circle\",\"params\":{\"radius\":5}}".into())]));
@@ -412,7 +440,7 @@ mod tests {
             got,
             [("execute", "{\"command\":\"rectang\",\"params\":{\"p1\":[0,0],\"p2\":[600,400]}}"), ("execute", "{\"command\":\"circle\"}")]
         );
-        assert_eq!(shown, "ournaments\n\nEscorts");
+        assert_eq!(shown, "", "the word pieces where the tags were go");
         // An unknown tool, another key or arguments that are not an object stay text.
         let text = "{\"draw\": {}} {\"execute\": {}, \"x\": 1} {\"render\": \"iso\"}";
         assert_eq!(text_calls(text, &["execute", "render"]).1.len(), 0);
@@ -436,6 +464,34 @@ mod tests {
         let mut full: Vec<ToolCall> = (0..MAX_CALLS).map(|_| call("cancel", "")).collect();
         merge(&mut full, vec![call("render", "{}")]);
         assert_eq!(full.len(), MAX_CALLS);
+    }
+
+    /// Garbled tags (a lone word piece on its own line) right before or after a call go; words,
+    /// sentences and lines away from calls stay.
+    #[test]
+    fn word_pieces_beside_calls_go() {
+        let shown = |text: &str| text_calls(text, &["execute", "render"]).0;
+        let call = "{\"name\": \"render\", \"arguments\": {}}";
+        for junk in ["ampoline", "aternity", "uxtapose", "орм", "IGHLU", "CHKERRQ", "ronics"] {
+            assert_eq!(shown(&format!("Rendering.\n{junk}\n{call}\n{junk}\nDone.")), "Rendering.\n\nDone.", "{junk}");
+        }
+        assert_eq!(shown(&format!("원을 그립니다.\nampoline\n{call}\nIGHLU")), "원을 그립니다.");
+        // Kept: a sentence or punctuation, another script, a long word, a word not beside a call.
+        for kept in ["Done.", "완료", "完成", "Готово!", "Antidisestablishment", "OK, rendering", "1/2"] {
+            assert_eq!(shown(&format!("{kept}\n{call}\n{kept}")), format!("{kept}\n\n{kept}"), "{kept}");
+        }
+        assert_eq!(shown(&format!("ampoline\nRendering.\n{call}")), "ampoline\nRendering.");
+        assert_eq!(shown("ampoline\nNo call here."), "ampoline\nNo call here.");
+        assert!(junk(" isphere ") && !junk("") && !junk("Done.") && !junk("완료") && !junk("two words"));
+        assert_eq!((without_junk_end("Zooming.\nisphere\n"), without_junk_end("isphere")), ("Zooming.\n", ""));
+        assert_eq!(without_junk_start("\nIGHLU\nDone."), "\nDone.");
+        // A tool's name on its own line before the next call is that call's.
+        let named = |text: &str| text_calls(text, &["execute", "render"]);
+        let (shown, calls) = named("execute {\"command\":\"circle\"}\nexecute\n{\"command\":\"zoom\"}");
+        assert_eq!((shown.as_str(), calls.len()), ("", 2));
+        let (shown, calls) = named(&format!("<tool_call>{call}</tool_call>\nrender\n{{\"view\":\"iso\"}}"));
+        assert_eq!((shown.as_str(), calls.iter().map(|c| c.args.as_str()).collect::<Vec<_>>()), ("", vec!["{}", "{\"view\":\"iso\"}"]));
+        assert_eq!(named(&format!("{call}\nampoline\n{call}\nDone.")).0, "\n\nDone.", "a word piece between calls still goes");
     }
 
     #[test]

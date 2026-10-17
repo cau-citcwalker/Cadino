@@ -503,12 +503,17 @@ fn run_units(s: &mut Session, p: &Value) -> Result<Value> {
     )
 }
 
+/// LIMITS: the corners are points of the current UCS, and LIMMIN/LIMMAX are world points (as
+/// AutoCAD documents them): the world plan box through both corners. A tilted plane (a Front
+/// tile) would flatten that box, so there they are taken as world x, y.
 fn run_limits(s: &mut Session, p: &Value) -> Result<Value> {
-    let a = point_req("limits", p, "min")?;
-    let b = point_req("limits", p, "max")?;
+    let c = s.cplane();
+    let world = |q: Vec2| if crate::cplane::tilted(&c) { q } else { crate::cplane::plane_to_plan(&c, q) };
+    let a = world(point_req("limits", p, "min")?);
+    let b = world(point_req("limits", p, "max")?);
     let d = s.doc_mut()?;
-    d.header.set("LIMMIN", cadcraft_doc::HVal::Point(a.to3(0.0)));
-    d.header.set("LIMMAX", cadcraft_doc::HVal::Point(b.to3(0.0)));
+    d.header.set("LIMMIN", cadcraft_doc::HVal::Point(Vec2::new(a.x.min(b.x), a.y.min(b.y)).to3(0.0)));
+    d.header.set("LIMMAX", cadcraft_doc::HVal::Point(Vec2::new(a.x.max(b.x), a.y.max(b.y)).to3(0.0)));
     ok()
 }
 

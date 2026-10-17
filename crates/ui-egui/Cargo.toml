@@ -17,6 +17,8 @@ cadcraft-doc = { workspace = true }
 cadcraft-render = { workspace = true }
 cadcraft-engine = { workspace = true }
 cadcraft-fonts = { workspace = true }
+# Font metrics, to put fallback faces on the interface font's baseline (egui reads them the same way).
+skrifa = { workspace = true }
 # The AI Assistant palette and Options ▸ AI (the agent loop, its tools and the keychain).
 cadcraft-ai = { workspace = true }
 egui = { workspace = true }

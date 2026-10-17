@@ -305,6 +305,7 @@ pub fn run(
     let tools = tool_list(backend.has_ui(), local);
     let max_chars = if local { MAX_LOCAL_RESULT_CHARS } else { MAX_RESULT_CHARS };
     let guard = Guard::new(backend, cfg.allow_files);
+    let mut repeats = local.then(Repeats::default);
     let start = conv.messages.len();
     conv.messages.push(match cfg.provider {
         ProviderKind::Anthropic => json!({"role": "user", "content": [{"type": "text", "text": user_text}]}),
@@ -372,7 +373,16 @@ pub fn run(
                 continue;
             }
             on_event(Event::ToolCall { id: call.id.clone(), name: call.name.clone(), input: call.input.clone().unwrap_or_else(Value::String) });
-            let mut out = execute(backend, call, &guard, max_chars);
+            let mut out = match repeats.as_ref().and_then(|r| r.earlier(call)) {
+                Some(out) => out,
+                None => {
+                    let out = execute(backend, call, &guard, max_chars);
+                    if let Some(r) = repeats.as_mut() {
+                        r.note(&guard, call, &out);
+                    }
+                    out
+                }
+            };
             admit_image(conv, &mut out);
             on_event(Event::ToolResult { id: call.id.clone(), ok: out.ok, text: out.text.clone(), image_png_base64: out.image.clone() });
             outs.push(out);
@@ -442,6 +452,34 @@ const OPTIONS: &[&str] = &["options"];
 /// app: never the assistant's.
 const CLOSING: &[&str] = &["close", "closeall", "ui.quit"];
 
+/// Commands a model may repeat in one message ([`Repeats`]): they look, or move the view.
+const LOOKING: &[&str] = &[
+    "zoom",
+    "pan",
+    "regen",
+    "regenall",
+    "redraw",
+    "redrawall",
+    "vpoint",
+    "view",
+    "plan",
+    "3dorbit",
+    "cancel",
+    "entities",
+    "texts",
+    "list",
+    "dist",
+    "id",
+    "area",
+    "measuregeom",
+    "massprop",
+    "drawing.inspect",
+    "status",
+];
+/// Commands after which a call made before them may be wanted again: the drawing went back or
+/// forward, or is another one.
+const AGAIN: &[&str] = &["undo", "u", "redo", "mredo", "new", "qnew", "open"];
+
 /// A command name as typed or listed: lower case, without the `_ - . + '` prefixes.
 fn command_key(name: &str) -> String {
     name.trim_start_matches(['_', '-', '.', '+', '\'']).to_ascii_lowercase()
@@ -453,13 +491,22 @@ struct Guard {
     closing: HashSet<String>,
     /// [`FILE_COMMANDS`] by any name, while file access is off.
     files: Option<HashSet<String>>,
+    /// [`LOOKING`] and [`AGAIN`] by any name.
+    looking: HashSet<String>,
+    again: HashSet<String>,
 }
 
 impl Guard {
     fn new(backend: &mut dyn tools::Backend, allow_files: bool) -> Self {
         let catalog = backend.call("engine.commands", json!({})).unwrap_or_default();
         let names = |ids: &[&str]| command_names(&catalog, ids);
-        Guard { options: names(OPTIONS), closing: names(CLOSING), files: (!allow_files).then(|| names(FILE_COMMANDS)) }
+        Guard {
+            options: names(OPTIONS),
+            closing: names(CLOSING),
+            files: (!allow_files).then(|| names(FILE_COMMANDS)),
+            looking: names(LOOKING),
+            again: names(AGAIN),
+        }
     }
 
     /// Why `call` is refused, if it is.
@@ -552,6 +599,77 @@ fn types_command(text: &str, hits: impl Fn(&str) -> bool, script: bool) -> bool 
             (i == 0 && input.starts_with('(') && hits("lisp")) || ((i == 0 || input.starts_with('\'') || (script && name.len() > 1)) && hits(&name))
         })
     })
+}
+
+/// The calls of one user message that changed the drawing, with what they returned. A small
+/// local model makes them again in a later round (qwen2.5:7b made a box twice, a rectangle and a
+/// circle twice): a call the same as one of them (the tool and its parsed arguments) is answered
+/// with an error naming the first one's result instead of running. Only for a local model: a
+/// cloud model keeps track of what it did, and a repeat from it is meant (a second step of the
+/// same move or copy). The latest call of a command replaces its earlier ones, so a setting can be
+/// set back (`layer.current` Walls, Doors, Walls).
+#[derive(Default)]
+struct Repeats {
+    /// The tool, the command (by [`command_key`]), the arguments and the result.
+    ran: Vec<(String, String, Value, String)>,
+    /// A command runs at the command line: a typed line answers its prompt (`0,0`, `@100,0`,
+    /// Enter) and may well be the same as an earlier one.
+    busy: bool,
+}
+
+impl Repeats {
+    /// The answer to `call` when the same call already changed the drawing in this message.
+    fn earlier(&self, call: &Call) -> Option<Output> {
+        let input = call.input.as_ref().ok()?;
+        if self.busy && call.name != "execute" {
+            return None;
+        }
+        let (.., text) = self.ran.iter().find(|(name, _, args, _)| *name == call.name && args == input)?;
+        let gist: String = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(300).collect();
+        Some(Output::error(format!(
+            "Not run: this same call already ran in this message and succeeded, returning {gist}. Don't make it again: go on with the next step, or finish."
+        )))
+    }
+
+    /// Note what `call` did, answered with `out`.
+    fn note(&mut self, guard: &Guard, call: &Call, out: &Output) {
+        let (Ok(input), true) = (&call.input, out.ok) else { return };
+        let command = match call.name.as_str() {
+            "execute" => input["command"].as_str(),
+            "command_line" | "script" => {
+                // A typed line's result is the command line's state (a script's under `state`).
+                let v: Value = serde_json::from_str(&out.text).unwrap_or_default();
+                let st = if v["state"].is_object() { &v["state"] } else { &v };
+                let was_busy = std::mem::replace(&mut self.busy, !st.get("running").is_some_and(Value::is_null));
+                let first = input["text"].as_str().and_then(|t| t.split_whitespace().next());
+                // UNDO and MREDO ask how many steps: the line that starts one may take the drawing
+                // back, whatever its prompt's answer.
+                if [first, st["running"].as_str()].into_iter().flatten().any(|c| guard.again.contains(&command_key(c))) {
+                    self.ran.clear();
+                    return;
+                }
+                // Only a line that starts and ends a command: one answering a prompt, refused or
+                // whose result was cut (whatever runs is unknown) may come again.
+                if was_busy || self.busy || st.get("error").is_some() {
+                    return;
+                }
+                first
+            }
+            "cancel" => {
+                self.busy = false;
+                return;
+            }
+            "new_drawing" | "open" => Some("new"),
+            _ => return,
+        };
+        let command = command_key(command.unwrap_or_default());
+        if guard.again.contains(&command) {
+            self.ran.clear();
+        } else if !command.is_empty() && !guard.looking.contains(&command) {
+            self.ran.retain(|(name, c, ..)| *name != call.name || *c != command);
+            self.ran.push((call.name.clone(), command, input.clone(), out.text.clone()));
+        }
+    }
 }
 
 /// Run one call, unless `guard` refuses it. A call the tool set refuses (unknown tool, arguments
