@@ -1,12 +1,13 @@
 //! -LAYER: the command-line form of LAYER. An option loop that ends on Enter; every option runs
 //! the `layer.*` commands, so validation matches the JSON form and the whole session is one undo
-//! step.
+//! step. Also the prompts of LAYMCH and LAYISO.
 
 use cadcraft_color::Color;
-use cadcraft_doc::Lineweight;
+use cadcraft_doc::{Handle, Lineweight};
 use serde_json::{Value, json};
 
 use super::super::find_command;
+use super::super::machines::{SelOutcome, SelectPhase};
 use super::super::qselect::wildcard;
 use crate::{Accept, EngineError, Input, Interactive, Prompt, Result, Session, Step};
 
@@ -450,5 +451,245 @@ impl Interactive for LayerM {
                 self.sub(s, stage, i)
             }
         }
+    }
+}
+
+/// LAYMCH typed or chosen from the menu: "Select objects to be changed", then the destination
+/// layer by an object on it or by Name.
+#[derive(Default)]
+pub struct LaymchM {
+    sel: SelectPhase,
+    /// The objects to change, once selected.
+    picked: Option<Vec<Handle>>,
+    /// The Name option: the layer is typed.
+    naming: bool,
+}
+
+impl LaymchM {
+    fn apply(&self, s: &mut Session, layer: &str) -> Result<Step> {
+        let hs: Vec<String> = self.picked.iter().flatten().map(|h| h.hex()).collect();
+        let n = call(s, "laymch", &json!({ "handles": hs, "layer": layer }))?.get("changed").and_then(Value::as_u64).unwrap_or(0);
+        s.echo(format!("{n} object{} changed to layer \"{layer}\".", if n == 1 { "" } else { "s" }));
+        s.set_selection(Vec::new());
+        Ok(Step::Done)
+    }
+}
+
+impl Interactive for LaymchM {
+    fn name(&self) -> &'static str {
+        "LAYMCH"
+    }
+    fn begin(&mut self, s: &mut Session) -> Result<Step> {
+        self.sel = SelectPhase::begin(s);
+        if self.sel.done {
+            self.picked = Some(self.sel.picked.clone());
+        }
+        Ok(Step::Continue)
+    }
+    fn prompt(&self, _s: &Session) -> Prompt {
+        match (&self.picked, self.naming) {
+            (None, _) if self.sel.removing => self.sel.prompt(),
+            (None, _) => Prompt::new("Select objects to be changed", Accept::SELECT),
+            (Some(_), false) => Prompt::new("Select object on destination layer", Accept::SELECT).kw(&["Name"]),
+            (Some(_), true) => Prompt::new("Enter layer name", Accept::TEXT),
+        }
+    }
+    fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        if matches!(i, Input::Cancel) {
+            return Ok(Step::Cancel);
+        }
+        if self.picked.is_none() {
+            return Ok(match self.sel.feed(s, &i)? {
+                SelOutcome::More => Step::Continue,
+                SelOutcome::Empty => Step::Done,
+                SelOutcome::Done(hs) => {
+                    self.picked = Some(hs);
+                    Step::Continue
+                }
+            });
+        }
+        match i {
+            Input::Keyword(k) if k == "Name" => {
+                self.naming = true;
+                Ok(Step::Continue)
+            }
+            Input::Pick(hs) => {
+                let layer = hs.first().and_then(|h| s.doc().ok()?.entity(*h).map(|e| e.common.layer.clone()));
+                match layer {
+                    Some(l) => self.apply(s, &l),
+                    None => Ok(Step::Continue),
+                }
+            }
+            Input::Text(t) if self.naming => match s.doc()?.layer(t.trim()).map(|l| l.name.clone()) {
+                Some(l) => self.apply(s, &l),
+                None => Err(retry(format!("Cannot find layer \"{}\".", t.trim()))),
+            },
+            Input::Enter => {
+                s.set_selection(Vec::new());
+                Ok(Step::Done)
+            }
+            _ => Ok(Step::Continue),
+        }
+    }
+}
+
+/// LAYISO typed or chosen from the menu: the objects whose layers stay on (the pickfirst
+/// selection isolates at once).
+// ponytail: only AutoCAD's Off setting (other layers are turned off everywhere); Lock and fade
+// and VP freeze when LAYISO gets a LAYISOMODE.
+#[derive(Default)]
+pub struct LayisoM {
+    sel: SelectPhase,
+}
+
+impl LayisoM {
+    fn run(s: &mut Session, hs: &[Handle]) -> Result<Step> {
+        let r = call(s, "layiso", &json!({ "handles": hs.iter().map(|h| h.hex()).collect::<Vec<_>>() }))?;
+        if let Some(m) = r.get("message").and_then(Value::as_str) {
+            s.echo(m.to_string());
+        }
+        s.set_selection(Vec::new());
+        Ok(Step::Done)
+    }
+}
+
+impl Interactive for LayisoM {
+    fn name(&self) -> &'static str {
+        "LAYISO"
+    }
+    fn begin(&mut self, s: &mut Session) -> Result<Step> {
+        s.echo("Current setting: Hide layers, Viewports=Off");
+        self.sel = SelectPhase::begin(s);
+        if self.sel.done {
+            let hs = self.sel.picked.clone();
+            return Self::run(s, &hs);
+        }
+        Ok(Step::Continue)
+    }
+    fn prompt(&self, _s: &Session) -> Prompt {
+        if self.sel.removing {
+            return self.sel.prompt();
+        }
+        Prompt::new("Select objects on the layer(s) to be isolated", Accept::SELECT).kw(&["Settings"])
+    }
+    fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        if matches!(&i, Input::Keyword(k) if k == "Settings") {
+            s.echo("Layers not isolated are turned off (Lock and fade is not available yet).");
+            return Ok(Step::Continue);
+        }
+        match self.sel.feed(s, &i)? {
+            SelOutcome::More => Ok(Step::Continue),
+            SelOutcome::Empty => Ok(Step::Done),
+            SelOutcome::Done(hs) => Self::run(s, &hs),
+        }
+    }
+}
+
+/// -LAYERSTATE: the layer states at the command line, through the `layerstate.*` commands. An
+/// option loop that ends on Enter.
+// ponytail: no Edit, Import or EXport (LAS files) yet; the Layer States Manager has no files either.
+#[derive(Default)]
+pub struct LayerStateM {
+    stage: StateStage,
+}
+
+#[derive(Default)]
+enum StateStage {
+    #[default]
+    Option,
+    List,
+    Save,
+    Restore,
+    Delete,
+    RenameFrom,
+    RenameTo(String),
+}
+
+impl LayerStateM {
+    /// The saved state called `name` (any case).
+    fn find(s: &Session, name: &str) -> Result<String> {
+        let d = s.doc()?;
+        let found = d.layer_states.iter().find(|st| st.name.eq_ignore_ascii_case(name.trim())).map(|st| st.name.clone());
+        found.ok_or_else(|| retry(format!("Cannot find layer state \"{}\".", name.trim())))
+    }
+    fn list(s: &mut Session, pattern: &str) -> Result<()> {
+        let names: Vec<String> = s.doc()?.layer_states.iter().filter(|st| wildcard(pattern, &st.name)).map(|st| st.name.clone()).collect();
+        if names.is_empty() {
+            s.echo("No matching layer states.");
+        }
+        for n in names {
+            s.echo(format!("  {n}"));
+        }
+        Ok(())
+    }
+    fn run(s: &mut Session, id: &str, p: Value, done: String) -> Result<()> {
+        call(s, id, &p).map_err(|e| retry(message(&e)))?;
+        s.echo(done);
+        Ok(())
+    }
+}
+
+impl Interactive for LayerStateM {
+    fn name(&self) -> &'static str {
+        "-LAYERSTATE"
+    }
+    fn prompt(&self, _s: &Session) -> Prompt {
+        match self.stage {
+            StateStage::Option => Prompt::new("Enter an option", KW).kw(&["?", "Save", "Restore", "Name", "Delete"]),
+            StateStage::List => Prompt::new("Enter layer state name(s) to list", NAME).default("*"),
+            StateStage::Save | StateStage::RenameTo(_) => Prompt::new("Enter new layer state name", NAME),
+            StateStage::Restore => Prompt::new("Enter name of layer state to restore", NAME).kw(&["?"]),
+            StateStage::Delete => Prompt::new("Enter name of layer state to delete", NAME).kw(&["?"]),
+            StateStage::RenameFrom => Prompt::new("Enter name of layer state to rename", NAME).kw(&["?"]),
+        }
+    }
+    fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        let t = match (&self.stage, i) {
+            (_, Input::Cancel) => return Ok(Step::Cancel),
+            (StateStage::Option, Input::Enter) => return Ok(Step::Done),
+            (StateStage::Option, Input::Keyword(k)) => {
+                self.stage = match k.as_str() {
+                    "?" => StateStage::List,
+                    "Save" => StateStage::Save,
+                    "Restore" => StateStage::Restore,
+                    "Delete" => StateStage::Delete,
+                    _ => StateStage::RenameFrom,
+                };
+                return Ok(Step::Continue);
+            }
+            (StateStage::Option, _) => return Err(retry("Invalid option keyword.")),
+            (StateStage::List, Input::Enter) => "*".to_string(),
+            (_, Input::Keyword(k)) if k == "?" => {
+                Self::list(s, "*")?;
+                return Ok(Step::Continue);
+            }
+            (_, Input::Enter) => {
+                self.stage = StateStage::Option;
+                return Ok(Step::Continue);
+            }
+            (_, Input::Text(t) | Input::Keyword(t)) => t.trim().to_string(),
+            _ => return Ok(Step::Continue),
+        };
+        // A refused name asks again; anything else goes back to the options.
+        let stage = std::mem::take(&mut self.stage);
+        let r = match &stage {
+            StateStage::List => Self::list(s, &t),
+            StateStage::Save => Self::run(s, "layerstate.save", json!({ "name": t }), format!("Layer state \"{t}\" saved.")),
+            StateStage::Restore => Self::find(s, &t)
+                .and_then(|name| Self::run(s, "layerstate.restore", json!({ "name": name }), format!("Layer state \"{name}\" restored."))),
+            StateStage::Delete => Self::find(s, &t)
+                .and_then(|name| Self::run(s, "layerstate.delete", json!({ "name": name }), format!("Layer state \"{name}\" deleted."))),
+            StateStage::RenameFrom => Self::find(s, &t).map(|name| self.stage = StateStage::RenameTo(name)),
+            StateStage::RenameTo(from) => {
+                let done = format!("Layer state \"{from}\" renamed to \"{t}\".");
+                Self::run(s, "layerstate.rename", json!({ "from": from, "to": t }), done)
+            }
+            StateStage::Option => Ok(()),
+        };
+        if r.is_err() {
+            self.stage = stage;
+        }
+        r?;
+        Ok(Step::Continue)
     }
 }

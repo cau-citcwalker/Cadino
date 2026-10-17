@@ -392,7 +392,19 @@ pub fn submit(app: &mut CadApp) {
     // No height left from a 3D snap: typed points (and Dynamic Input's) carry their own
     // (`x,y,z`), others are on the XY plane.
     app.session.point_z = None;
-    app.cmdline(&text);
+    // AutoComplete: at `Command:` a name nothing runs as typed runs the highlighted (first)
+    // suggestion, as AutoCAD's does (DIMST runs DIMSTYLE). Whatever runs as typed (a command or
+    // alias, a system variable, a LISP command, a UI name such as AI) still runs as typed, so the
+    // line is tried first and only an unknown-command refusal of this very name is replaced.
+    let pick = if app.session.prompting() { None } else { suggestions(text.trim()).into_iter().next() };
+    let refused = app.cmdline(&text);
+    if let (Some(s), Some(e)) = (pick, refused)
+        && e == cadcraft_engine::EngineError::UnknownCommand(text.trim().to_string()).to_string()
+        && app.session.log.last() == Some(&e)
+    {
+        app.session.log.pop();
+        app.start(&s.id.to_ascii_lowercase());
+    }
 }
 
 fn visible_lines(app: &CadApp, canvas: Rect, bar: Rect) -> usize {
@@ -428,7 +440,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui, canvas: Rect) {
     match &prompt {
         Some(pr) => {
             // The grip modes name themselves ("** STRETCH **…").
-            let name = app.session.running.as_ref().filter(|r| r.id != "grip").map(|r| r.id.to_ascii_uppercase() + " ").unwrap_or_default();
+            let name = app.session.running.as_ref().filter(|r| r.id != "grip").map(|r| r.shown() + " ").unwrap_or_default();
             let g = p.layout_no_wrap(name, font.clone(), t.text_faint);
             let gw = g.size().x;
             p.galley(pos2(x, bar.center().y - g.size().y / 2.0), g, t.text_faint);
@@ -440,7 +452,11 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui, canvas: Rect) {
             p.galley(pos2(x, bar.center().y - g.size().y / 2.0), g, t.text);
             x += gw;
             if !pr.raw && !pr.keywords.is_empty() {
-                let g = p.layout_no_wrap(if pr.message.is_empty() { " [".into() } else { crate::tl!(" or [").into() }, font.clone(), t.text);
+                let open = match pr.keywords_open() {
+                    " or [" => crate::tl!(" or ["),
+                    open => open,
+                };
+                let g = p.layout_no_wrap(open.into(), font.clone(), t.text);
                 let gw = g.size().x;
                 p.galley(pos2(x, bar.center().y - g.size().y / 2.0), g, t.text);
                 x += gw;
@@ -863,5 +879,86 @@ mod autocomplete_tests {
         app.cmd.buffer = "rec".to_string();
         tab(&mut app);
         assert_eq!(app.cmd.buffer, "RECTANG");
+    }
+
+    fn key(key: egui::Key) -> egui::Event {
+        egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
+    }
+
+    /// Type `text` and end it with `end`, as keystrokes through [`keyboard`].
+    fn type_line(app: &mut CadApp, ctx: &egui::Context, text: &str, end: egui::Event) {
+        let events = vec![egui::Event::Text(text.into()), end];
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |ui| keyboard(app, ui.ctx()));
+        out.textures_delta.clear();
+    }
+
+    fn unknown(app: &CadApp) -> bool {
+        app.session.log.iter().any(|l| l.starts_with("unknown command"))
+    }
+
+    /// AutoComplete: Enter or Space on a partial name runs the highlighted (first) suggestion.
+    #[test]
+    fn enter_or_space_runs_the_first_suggestion_of_a_partial_name() {
+        let ctx = egui::Context::default();
+        // (typed, first suggestion, what shows it ran: the log, the prompt or the dialog).
+        let cases = [
+            ("mirr", "mirror", "command: mirror"),
+            ("OFFS", "offset", "command: offset"),
+            ("polyg", "polygon", "command: polygon"),
+            ("rectan", "rectang", "command: rectang"),
+            ("xli", "xline", "command: xline"),
+            ("dimli", "dimlinear", "command: dimlinear"),
+            ("layis", "layiso", "command: layiso"),
+            ("hatche", "hatchedit", "select hatch object"),
+            ("filletedg", "filletedge", "filletedge"),
+            ("extr", "extrude", "extrude"),
+            ("dimst", "dimstyle", "dimstyle"),
+            ("dimsty", "dimstyle", "dimstyle"),
+        ];
+        for (typed, id, sign) in cases {
+            for end in [key(egui::Key::Enter), egui::Event::Text(" ".into())] {
+                let mut app = CadApp::new(cadcraft_engine::Session::new(), crate::Services::default());
+                let want = suggestions(typed).first().map(|s| s.id.to_ascii_lowercase());
+                assert_eq!(want.as_deref(), Some(id), "{typed} suggests {id} first");
+                type_line(&mut app, &ctx, typed, end);
+                assert!(!unknown(&app), "{typed}: {:?}", app.session.log);
+                let seen = format!("{:?} {} {:?}", app.session.log, app.session.prompt_text(), app.ui.dialog).to_lowercase();
+                assert!(seen.contains(sign), "{typed} ran {id}: {seen}");
+            }
+        }
+    }
+
+    /// Whatever runs as typed still does: a UI name (AI is not AI_DESELECT), a LISP command named
+    /// like a command's prefix, a whole command name; and at a prompt the text is the answer.
+    #[test]
+    fn a_name_that_runs_as_typed_is_not_completed() {
+        let ctx = egui::Context::default();
+        let mut app = CadApp::new(cadcraft_engine::Session::new(), crate::Services::default());
+        assert!(suggestions("ai").iter().any(|s| s.id == "AI_DESELECT"));
+        type_line(&mut app, &ctx, "ai", key(egui::Key::Enter));
+        assert!(app.ui.docking.layout.contains(&crate::docking::Panel::Assistant), "AI opens the assistant");
+        assert!(!app.session.log.iter().any(|l| l.contains("AI_DESELECT")));
+
+        let mut app = CadApp::new(cadcraft_engine::Session::new(), crate::Services::default());
+        app.cmdline("(defun c:mirr () (setq ran 1))");
+        type_line(&mut app, &ctx, "mirr", key(egui::Key::Enter));
+        assert!(app.session.running.is_none(), "the LISP command ran, not MIRROR");
+        assert!(app.session.log.iter().any(|l| l == "Command: MIRR"), "{:?}", app.session.log);
+
+        // At a prompt the typed text goes to the command.
+        let mut app = CadApp::new(cadcraft_engine::Session::new(), crate::Services::default());
+        app.cmdline("line");
+        type_line(&mut app, &ctx, "mirr", key(egui::Key::Enter));
+        assert_eq!(app.session.running.as_ref().map(|r| r.id.as_str()), Some("line"));
+
+        // Nothing suggested: the refusal stays.
+        type_line(&mut app, &ctx, "", key(egui::Key::Escape));
+        type_line(&mut app, &ctx, "zzqx", key(egui::Key::Enter));
+        assert!(unknown(&app));
     }
 }

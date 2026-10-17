@@ -1,6 +1,8 @@
 //! Properties: per-object property edits, current properties, MATCHPROP, linetypes, units, RENAME.
 
+mod dimstyle;
 mod matchprop;
+mod prompts;
 mod rename;
 
 pub use matchprop::MatchProps;
@@ -22,21 +24,37 @@ pub fn specs() -> Vec<CommandSpec> {
             .alias(&["ma", "painter"])
             .params("{source, targets?: [hex] (default: selection), properties?: [name] | {name: bool} (default: all; names: color, layer, linetype, ltscale, lineweight, transparency, thickness, plotStyle, dimension, text, hatch, polyline, viewport, table, multileader)} → {changed}")
             .interactive(|_| Ok(Box::new(matchprop::MatchPropM::new()))),
-        CommandSpec::new("color", "Color...", run_color).menu(&["Format", "Color..."]).alias(&["col", "colour"]).params("{color: \"ByLayer\" | \"red\" | 1..255 | \"r,g,b\"}"),
+        CommandSpec::new("color", "Color...", run_color)
+            .menu(&["Format", "Color..."])
+            .alias(&["col", "colour"])
+            .params("{color: \"ByLayer\" | \"red\" | 1..255 | \"r,g,b\"}")
+            .interactive(|_| Ok(Box::<prompts::ColorM>::default())),
         CommandSpec::new("linetype", "Linetype...", run_linetype).menu(&["Format", "Linetype..."]).alias(&["lt", "ltype"]).params("{current?: name, load?: name | \"*\" (with a file: comma-separated names, wildcards), file?: path to a .lin file | text?: its contents, reload?: bool}"),
         CommandSpec::new("hatch.patterns", "Hatch Patterns", super::hatch::run_patterns)
             .params("{file?: path to a .pat file | text?: its contents, clear?: bool} → {standard, user, added, warnings} (HATCH also takes patternFile | patternText)")
             .enabled(always)
             .noundo(),
         CommandSpec::new("-linetype", "Linetype", run_linetype).params("{current?, load?, file? | text?, reload?} (as LINETYPE)").interactive(|_| Ok(Box::new(linfile::DashLinetype::new()))),
-        CommandSpec::new("lweight", "Lineweight...", run_lweight).menu(&["Format", "Lineweight..."]).alias(&["lw", "lineweight"]).params("{lineweight: mm | ByLayer}"),
-        CommandSpec::new("ltscale", "Linetype Scale", run_ltscale).alias(&["lts"]).params("{scale}"),
-        CommandSpec::new("units", "Units...", run_units).menu(&["Format", "Units..."]).alias(&["un"]).params("{lunits?: 1..5, luprec?: 0..8, aunits?: 0..4, auprec?: 0..8, insunits?}"),
-        CommandSpec::new("limits", "Drawing Limits", run_limits).menu(&["Format", "Drawing Limits"]).params("{min: [x,y], max: [x,y]}"),
+        CommandSpec::new("lweight", "Lineweight...", run_lweight)
+            .menu(&["Format", "Lineweight..."])
+            .alias(&["lw", "lineweight"])
+            .params("{lineweight: mm | ByLayer}")
+            .interactive(|_| Ok(Box::new(prompts::LweightM))),
+        CommandSpec::new("ltscale", "Linetype Scale", run_ltscale).alias(&["lts"]).params("{scale}").interactive(|_| Ok(Box::new(prompts::LtscaleM))),
+        CommandSpec::new("units", "Units...", run_units)
+            .menu(&["Format", "Units..."])
+            .alias(&["un"])
+            .params("{lunits?: 1..5, luprec?: 0..8, aunits?: 0..4, auprec?: 0..8, insunits?, angbase?: degrees, angdir?: bool (clockwise)}")
+            .interactive(|s| Ok(Box::new(prompts::UnitsM::new(s)))),
+        CommandSpec::new("limits", "Drawing Limits", run_limits)
+            .menu(&["Format", "Drawing Limits"])
+            .params("{min: [x,y], max: [x,y]}")
+            .interactive(|_| Ok(Box::<prompts::LimitsM>::default())),
         CommandSpec::new("style", "Text Style...", run_style)
             .menu(&["Format", "Text Style..."])
             .alias(&["st"])
-            .params("{name, font?, bigFont?, height?, widthFactor?, oblique? (degrees), backwards?, upsideDown?, vertical?, annotative?, current?} → styles"),
+            .params("{name, font?, bigFont?, height?, widthFactor?, oblique? (degrees), backwards?, upsideDown?, vertical?, annotative?, current?} → styles")
+            .interactive(|_| Ok(Box::<prompts::StyleM>::default())),
         CommandSpec::new("style.list", "List Text Styles", run_style_list).params("{} → text styles").noundo(),
         CommandSpec::new("style.rename", "Rename Text Style", run_style_rename).params("{from, to}"),
         CommandSpec::new("style.delete", "Delete Text Style", run_style_delete).params("{name} (not Standard, the current style or one in use)"),
@@ -44,8 +62,12 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("dimstyle", "Dimension Style...", run_dimstyle)
             .menu(&["Format", "Dimension Style..."])
             .alias(&["d", "dst", "ddim"])
-            .params("{name, current?, <style fields or DIM* variables, e.g. arrowSize / DIMASZ, DIMTSZ, DIMBLK, DIMTAD, DIMLUNIT…>} → styles"),
-        CommandSpec::new("dimstyle.dimension", "Dimension Style...", run_dimstyle).menu(&["Dimension", "Dimension Style..."]).params("same as `dimstyle`"),
+            .params("{name, current?, <style fields or DIM* variables, e.g. arrowSize / DIMASZ, DIMTSZ, DIMBLK, DIMTAD, DIMLUNIT…>} → styles")
+            .interactive(|_| Ok(Box::<dimstyle::DimStyleM>::default())),
+        CommandSpec::new("dimstyle.dimension", "Dimension Style...", run_dimstyle)
+            .menu(&["Dimension", "Dimension Style..."])
+            .params("same as `dimstyle`")
+            .interactive(|_| Ok(Box::<dimstyle::DimStyleM>::default())),
         CommandSpec::new("dimstyle.list", "List Dimension Styles", run_dimstyle_list).params("{name?} → styles (with all variables for `name`)").noundo(),
         CommandSpec::new("dimstyle.rename", "Rename Dimension Style", run_dimstyle_rename).params("{from, to}"),
         CommandSpec::new("dimstyle.delete", "Delete Dimension Style", run_dimstyle_delete).params("{name} (not Standard, the current style or one in use)"),
@@ -497,10 +519,17 @@ fn run_units(s: &mut Session, p: &Value) -> Result<Value> {
             d.header.set_i64(&k.to_ascii_uppercase(), v.clamp(lo, hi));
         }
     }
+    if let Some(a) = p.get("angbase").and_then(Value::as_f64).filter(|a| a.is_finite() && a.abs() < 1e9) {
+        d.header.set_f64("ANGBASE", cadcraft_geom::norm_angle(a.to_radians()));
+    }
+    if let Some(c) = p.get("angdir").and_then(|v| v.as_bool().or_else(|| v.as_i64().map(|i| i != 0))) {
+        d.header.set_i64("ANGDIR", i64::from(c));
+    }
     let h = &d.header;
-    Ok(
-        json!({ "lunits": h.i64("LUNITS", 2), "luprec": h.i64("LUPREC", 4), "aunits": h.i64("AUNITS", 0), "auprec": h.i64("AUPREC", 0), "insunits": h.i64("INSUNITS", 1) }),
-    )
+    Ok(json!({
+        "lunits": h.i64("LUNITS", 2), "luprec": h.i64("LUPREC", 4), "aunits": h.i64("AUNITS", 0), "auprec": h.i64("AUPREC", 0),
+        "insunits": h.i64("INSUNITS", 1), "angbase": h.f64("ANGBASE", 0.0).to_degrees(), "angdir": h.i64("ANGDIR", 0) != 0,
+    }))
 }
 
 /// LIMITS: the corners are points of the current UCS, and LIMMIN/LIMMAX are world points (as

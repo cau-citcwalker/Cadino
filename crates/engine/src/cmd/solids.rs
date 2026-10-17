@@ -16,6 +16,7 @@ use cadcraft_geom::{EPS, Mat4, PolyVertex, Polyline, Spline, Vec2, Vec3};
 use cadcraft_kernel::{BoolOp, Built, Curve, MAX_SPLINE_POINTS, Placed, Primitive, Seg};
 use serde_json::{Map, Value, json};
 
+use super::exchange3d::AskPath;
 use super::machines::{SelOutcome, SelectPhase, number};
 use super::*;
 use crate::{Accept, EngineError, Input, Interactive, Prompt, Result, Session, Step};
@@ -78,12 +79,17 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("stepout", "Export STEP", run_stepout)
             .menu(&["File", "Export", "STEP"])
             .params("{path, handles?} (3D solids: those given or selected, else all of them)")
-            .noundo(),
+            .noundo()
+            .interactive(|_| Ok(Box::new(AskPath { id: "stepout", name: "STEPOUT", msg: "Enter name of STEP file to write" }))),
         CommandSpec::new("stlout", "Export STL", run_stlout)
             .menu(&["File", "Export", "STL"])
             .params("{path, handles?} (3D solids: those given or selected, else all of them)")
-            .noundo(),
-        CommandSpec::new("stepin", "Import STEP", run_stepin).menu(&["File", "Import", "STEP"]).params("{path}"),
+            .noundo()
+            .interactive(|_| Ok(Box::new(StloutM::default()))),
+        CommandSpec::new("stepin", "Import STEP", run_stepin)
+            .menu(&["File", "Import", "STEP"])
+            .params("{path}")
+            .interactive(|_| Ok(Box::new(AskPath { id: "stepin", name: "STEPIN", msg: "Enter name of STEP file to import" }))),
     ]
 }
 
@@ -663,25 +669,82 @@ fn path_req<'a>(cmd: &str, p: &'a Value) -> Result<&'a str> {
     str_param(p, "path").filter(|x| !x.trim().is_empty()).ok_or_else(|| bad(cmd, "`path` is required"))
 }
 
+fn exported(n: usize, path: &str) -> Value {
+    json!({ "exported": n, "path": path, "message": format!("Exported {n} solid(s) to {path}.") })
+}
+
 fn run_stepout(s: &mut Session, p: &Value) -> Result<Value> {
     let path = path_req("stepout", p)?;
     let xs = export_set(s, p)?;
     cadcraft_kernel::export_step(&xs.iter().map(placed).collect::<Vec<_>>(), Path::new(path)).map_err(kernel)?;
-    Ok(json!({ "exported": xs.len(), "path": path }))
+    Ok(exported(xs.len(), path))
 }
 
 fn run_stlout(s: &mut Session, p: &Value) -> Result<Value> {
     let path = path_req("stlout", p)?;
     let xs = export_set(s, p)?;
     cadcraft_kernel::export_stl(&xs.iter().map(placed).collect::<Vec<_>>(), Path::new(path)).map_err(kernel)?;
-    Ok(json!({ "exported": xs.len(), "path": path }))
+    Ok(exported(xs.len(), path))
 }
 
 /// The file's shape where it is in the world (not placed in the construction plane).
 fn run_stepin(s: &mut Session, p: &Value) -> Result<Value> {
     let path = path_req("stepin", p)?;
     let h = s.add_entity_world(solid(cadcraft_kernel::import_step(Path::new(path)).map_err(kernel)?))?;
-    Ok(json!({ "handle": h.hex() }))
+    Ok(json!({ "handle": h.hex(), "message": format!("Imported 1 solid from {path}.") }))
+}
+
+/// STLOUT typed or chosen from the menu: the solids (the pickfirst selection, if any), then the
+/// file name.
+// ponytail: always a binary STL, so no "Create a binary STL file?" question.
+#[derive(Default)]
+struct StloutM {
+    sel: SelectPhase,
+}
+
+impl Interactive for StloutM {
+    fn name(&self) -> &'static str {
+        "STLOUT"
+    }
+    fn begin(&mut self, s: &mut Session) -> Result<Step> {
+        self.sel = SelectPhase::begin(s);
+        Ok(Step::Continue)
+    }
+    fn prompt(&self, _s: &Session) -> Prompt {
+        match (self.sel.done, self.sel.removing) {
+            (true, _) => {
+                Prompt::new("Enter name of STL file to write", Accept::TEXT).picker(crate::Picker::File { save: true, label: "STL", exts: &["stl"] })
+            }
+            (false, true) => self.sel.prompt(),
+            (false, false) => Prompt::new("Select solids or watertight meshes", Accept::SELECT),
+        }
+    }
+    fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        if matches!(i, Input::Cancel) {
+            return Ok(Step::Cancel);
+        }
+        if !self.sel.done {
+            return Ok(match self.sel.feed(s, &i)? {
+                SelOutcome::Empty => Step::Done,
+                SelOutcome::More | SelOutcome::Done(_) => Step::Continue,
+            });
+        }
+        let path = match &i {
+            Input::Text(t) => t.trim().trim_matches('"').to_string(),
+            Input::Enter => return Ok(Step::Cancel),
+            _ => return Ok(Step::Continue),
+        };
+        if path.is_empty() {
+            return Ok(Step::Cancel);
+        }
+        let hs: Vec<String> = self.sel.picked.iter().map(|h| h.hex()).collect();
+        let r = run_stlout(s, &json!({ "path": path, "handles": hs }))?;
+        if let Some(m) = r.get("message").and_then(Value::as_str) {
+            s.echo(m);
+        }
+        s.set_selection(Vec::new());
+        Ok(Step::Done)
+    }
 }
 
 /// The prompts of a primitive, then its JSON form.

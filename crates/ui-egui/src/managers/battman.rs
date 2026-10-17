@@ -6,6 +6,7 @@ use cadcraft_doc::EntityKind;
 use egui::{RichText, vec2};
 use serde_json::{Value, json};
 
+use super::text_field;
 use crate::CadApp;
 use crate::theme::Tokens;
 
@@ -26,18 +27,6 @@ fn temp<T: Clone + Send + Sync + 'static>(ctx: &egui::Context, id: &str) -> Opti
 
 fn set_temp<T: Clone + Send + Sync + 'static>(ctx: &egui::Context, id: &str, v: T) {
     ctx.data_mut(|d| d.insert_temp(egui::Id::new(id), v));
-}
-
-/// A text field committing on Enter / focus loss when changed (an empty value too).
-fn text_field(ui: &mut egui::Ui, id: egui::Id, value: &str) -> Option<String> {
-    let mut buf = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| value.to_string());
-    let resp = ui.add(egui::TextEdit::singleline(&mut buf).id(id.with("te")).desired_width(180.0));
-    if resp.has_focus() {
-        ui.data_mut(|d| d.insert_temp(id, buf.clone()));
-    } else {
-        ui.data_mut(|d| d.remove::<String>(id));
-    }
-    (resp.lost_focus() && buf != value).then_some(buf)
 }
 
 fn fmt_num(v: f64) -> String {

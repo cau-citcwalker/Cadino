@@ -64,6 +64,7 @@ const SESSION_VARS: &[&str] = &[
     "FONTFALLBACK",
     "SAVETIME",
     "SAVEFILEPATH",
+    "TILEMODE",
 ];
 
 pub fn get(s: &Session, name: &str) -> Option<Value> {
@@ -144,6 +145,8 @@ pub fn get(s: &Session, name: &str) -> Option<Value> {
         // The template NEW/QNEW start from (a profile setting, like FONTALT; "" = none).
         "QNEWTEMPLATE" => json!(crate::cmd::file::qnew_template()),
         "CTAB" => json!(s.state().map(|d| d.space.tab_name().to_string()).unwrap_or_default()),
+        // 1 in the Model tab, 0 on a layout.
+        "TILEMODE" => json!(i32::from(s.state().ok()?.space == cadcraft_doc::Space::Model)),
         // UNDO state of the drawing: Control/Auto/group bits and the number of marks.
         "UNDOCTL" => json!(s.state().ok()?.undo_ctl.bits()),
         "UNDOMARKS" => json!(s.state().ok()?.undo_marks()),
@@ -310,6 +313,28 @@ pub fn set(s: &mut Session, name: &str, v: &Value) -> Result<()> {
             s.doc_mut()?.header.set_f64("ANGBASE", cadcraft_geom::norm_angle(a));
         }
         "CONSTRAINTINFER" => s.doc_mut()?.parametric.settings.infer = as_bool(v).ok_or_else(bad)?,
+        // 1 goes to the Model tab, 0 to the first layout.
+        "TILEMODE" => {
+            let model = as_i(v).filter(|i| (0..=1).contains(i)).ok_or_else(bad)? == 1;
+            let name = if model { "Model".to_string() } else { s.doc()?.layouts.first().map(|l| l.name.clone()).ok_or_else(bad)? };
+            let spec = crate::cmd::find_command("layout.set").ok_or_else(bad)?;
+            (spec.run)(s, &json!({ "name": name }))?;
+        }
+        // The current layer must exist and not be frozen, as LAYER Set requires.
+        "CLAYER" => {
+            let name = match v {
+                Value::String(t) => t.trim().to_string(),
+                Value::Number(x) => x.to_string(),
+                _ => return Err(bad()),
+            };
+            let d = s.doc_mut()?;
+            let layer = d.layer(&name).ok_or_else(|| EngineError::Other(format!("Cannot find layer \"{name}\".")))?;
+            if layer.frozen {
+                return Err(EngineError::Other(format!("Cannot set the current layer to frozen layer \"{}\".", layer.name)));
+            }
+            let name = layer.name.clone();
+            d.header.set_str("CLAYER", &name);
+        }
         _ => {
             if let Some(r) = table::set(s, &n, v) {
                 return r;

@@ -24,6 +24,9 @@ impl Accept {
     pub const NUMBER: Accept = Accept { point: false, number: true, text: false, select: false, enter: true };
     pub const TEXT: Accept = Accept { point: false, number: false, text: true, select: false, enter: true };
     pub const SELECT: Accept = Accept { point: true, number: false, text: false, select: true, enter: true };
+    /// A word or a name (a font, a file name): Space ends it, as in AutoCAD scripts, where a name
+    /// with spaces is quoted.
+    pub const WORD: Accept = Accept { point: false, number: true, text: true, select: false, enter: true };
 }
 
 /// A prompt shown on the command line.
@@ -75,6 +78,10 @@ pub fn parse_polar_text(text: &str, angles: &crate::units::AngleSettings) -> Opt
 pub enum Picker {
     /// A hatch pattern by name (see [`crate::pattern_choices`]); holds the current pattern.
     HatchPattern(String),
+    /// A file to read, or to write (`save`): with FILEDIA 1 the UI asks with its file dialog,
+    /// listing this kind (`label`, `exts`; a new file takes the first extension), and enters the
+    /// chosen path. Cancelling the dialog cancels the command.
+    File { save: bool, label: &'static str, exts: &'static [&'static str] },
 }
 
 impl Prompt {
@@ -124,6 +131,20 @@ impl Prompt {
     pub fn picks_objects(&self) -> bool {
         self.accept.select || (self.accept.point && self.message.starts_with("Select"))
     }
+    /// What comes between the message and its keywords. A question offers its answers ("Fix any
+    /// errors detected? [Yes/No]"), and so does a request for an option or a mode ("Enter an
+    /// option [Distance/Radius]", "Enter mode [ON/OFF]"); anything else offers options besides
+    /// what it asks for ("Specify next point or [Undo]").
+    pub fn keywords_open(&self) -> &'static str {
+        let m = self.message.trim_end();
+        if m.is_empty() {
+            "["
+        } else if m.ends_with('?') || m.ends_with("option") || m.ends_with("mode") {
+            " ["
+        } else {
+            " or ["
+        }
+    }
     /// "Specify next point or [Undo/Close] <default>:".
     pub fn display(&self) -> String {
         if self.raw {
@@ -131,15 +152,7 @@ impl Prompt {
         }
         let mut s = self.message.clone();
         if !self.keywords.is_empty() {
-            // A question offers its answers ("Fix any errors detected? [Yes/No]"); anything else
-            // offers options besides what it asks for ("Specify next point or [Undo]").
-            s.push_str(if self.message.is_empty() {
-                "["
-            } else if self.message.ends_with('?') {
-                " ["
-            } else {
-                " or ["
-            });
+            s.push_str(self.keywords_open());
             s.push_str(&self.keywords.join("/"));
             s.push(']');
         }

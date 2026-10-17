@@ -133,17 +133,19 @@ pub fn install_io() {
 fn services() -> Services {
     Services {
         pick_open: Some(Box::new(|| {
-            rfd::FileDialog::new()
-                .add_filter(i18n::t("Drawings (DWG, DXF)"), &["dwg", "dxf", "dwt"])
-                .add_filter(i18n::t("SVG drawings (SVG, SVGZ)"), &["svg", "svgz"])
-                .add_filter(i18n::t("All files"), &["*"])
-                .pick_file()
-                .map(|p| p.to_string_lossy().to_string())
+            // A command asking for one kind of file (STEPIN, APPLOAD...) lists only that kind.
+            let dialog = match cadcraft_ui_egui::exchange::open_kind() {
+                Some((label, exts)) => rfd::FileDialog::new().add_filter(i18n::t(label), exts),
+                None => rfd::FileDialog::new()
+                    .add_filter(i18n::t("Drawings (DWG, DXF)"), &["dwg", "dxf", "dwt"])
+                    .add_filter(i18n::t("SVG drawings (SVG, SVGZ)"), &["svg", "svgz"]),
+            };
+            dialog.add_filter(i18n::t("All files"), &["*"]).pick_file().map(|p| p.to_string_lossy().to_string())
         })),
         pick_save: Some(Box::new(|name: &str| {
             filters_for_save(name)
                 .iter()
-                .fold(rfd::FileDialog::new().set_file_name(name), |d, (label, ext)| d.add_filter(i18n::t(label), &[*ext]))
+                .fold(rfd::FileDialog::new().set_file_name(name), |d, (label, ext)| d.add_filter(i18n::t(label), &[ext.as_str()]))
                 .save_file()
                 .map(|p| p.to_string_lossy().to_string())
         })),
@@ -153,11 +155,17 @@ fn services() -> Services {
 /// File types for the Save dialog, the suggested name's type first: Windows adds the first
 /// filter's extension, and macOS accepts only listed extensions, replacing any other with the
 /// first one. DWG must be listed for a `.dwg` name to survive, and a drawing opened from DWG
-/// then defaults to DWG; other names keep DXF first.
-fn filters_for_save(name: &str) -> [(&'static str, &'static str); 6] {
-    let mut filters =
+/// then defaults to DWG; other names keep DXF first. Any other kind of file (STEPOUT's `.stp`,
+/// STLOUT's `.stl`) is offered as its own type only, so SAVEAS never lists a type it can't write.
+fn filters_for_save(name: &str) -> Vec<(String, String)> {
+    const DRAWING: [(&str, &str); 6] =
         [("Drawing (DXF)", "dxf"), ("Drawing (DWG)", "dwg"), ("Drawing Template (DWT)", "dwt"), ("SVG", "svg"), ("PNG", "png"), ("PDF", "pdf")];
     let lower = name.to_ascii_lowercase();
+    let ext = std::path::Path::new(&lower).extension().and_then(|e| e.to_str()).unwrap_or("");
+    if (1..=4).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric()) && !DRAWING.iter().any(|(_, d)| *d == ext) {
+        return vec![(ext.to_ascii_uppercase(), ext.to_string())];
+    }
+    let mut filters: Vec<(String, String)> = DRAWING.iter().map(|(l, e)| ((*l).to_string(), (*e).to_string())).collect();
     filters.sort_by_key(|(_, ext)| !lower.ends_with(&format!(".{ext}")));
     filters
 }
@@ -410,7 +418,7 @@ mod tests {
 
     #[test]
     fn save_dialog_offers_dwg_with_the_drawing_format_first() {
-        let first = |name: &str| filters_for_save(name)[0].1;
+        let first = |name: &str| filters_for_save(name)[0].1.clone();
         assert_eq!(first("Waco Winnelson Floorplan.dwg"), "dwg");
         assert_eq!(first("FLOORPLAN.DWG"), "dwg");
         // New drawings and DXF files keep DXF first.
@@ -418,9 +426,15 @@ mod tests {
         assert_eq!(first("Drawing1"), "dxf");
         assert_eq!(first("plan.pdf"), "pdf");
         assert_eq!(first("office.dwt"), "dwt");
-        for name in ["a.dwg", "b.dxf", "c"] {
-            let exts: Vec<_> = filters_for_save(name).iter().map(|(_, e)| *e).collect();
-            assert!(exts.contains(&"dwg") && exts.contains(&"dxf"), "{name}");
+        // STEPOUT and STLOUT: Windows must not append .dxf to the solid's file, and the drawing
+        // types aren't offered for it.
+        assert_eq!(filters_for_save("Drawing1.stp"), [("STP".to_string(), "stp".to_string())]);
+        assert_eq!(filters_for_save("Drawing1.STL"), [("STL".to_string(), "stl".to_string())]);
+        for name in ["a.dwg", "b.dxf", "c", "plan v1.2 final"] {
+            let exts: Vec<_> = filters_for_save(name).into_iter().map(|(_, e)| e).collect();
+            assert!(exts.contains(&"dwg".to_string()) && exts.contains(&"dxf".to_string()), "{name}");
+            // Save As never offers a solid's type.
+            assert!(!exts.iter().any(|e| e == "stp" || e == "stl"), "{name}");
         }
     }
 

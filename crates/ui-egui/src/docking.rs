@@ -289,7 +289,12 @@ impl Workspace {
 }
 
 fn sync(workspace: &mut Workspace, app: &crate::CadApp) -> Result<(), String> {
-    workspace.set_visible(Panel::ToolSets, app.ui.show_toolsets)?;
+    // Panels come back in the reverse of the order they are hidden in (Tool Sets, then Layers,
+    // then Properties), so each returns beside the neighbours it was recorded with: PON after
+    // POFF restores the layout POFF left.
+    if !app.ui.show_toolsets {
+        workspace.set_visible(Panel::ToolSets, false)?;
+    }
     if !app.ui.show_palettes {
         workspace.set_visible(Panel::Layers, false)?;
         workspace.set_visible(Panel::Properties, false)?;
@@ -297,6 +302,9 @@ fn sync(workspace: &mut Workspace, app: &crate::CadApp) -> Result<(), String> {
         // Reopen the last surviving accordion entry before restoring its earlier sibling.
         workspace.set_visible(Panel::Properties, true)?;
         workspace.set_visible(Panel::Layers, true)?;
+    }
+    if app.ui.show_toolsets {
+        workspace.set_visible(Panel::ToolSets, true)?;
     }
     Ok(())
 }

@@ -80,7 +80,6 @@ pub struct UiState {
     pub show_status_bar: bool,
     pub show_command_line: bool,
     pub show_viewcube: bool,
-    pub show_ucs_icon: bool,
     /// Rhino's gumball on objects selected in 3D views (`ui.gumball`).
     pub gumball: bool,
     pub show_layer_list: bool,
@@ -168,7 +167,6 @@ impl Default for UiState {
             show_status_bar: true,
             show_command_line: true,
             show_viewcube: true,
-            show_ucs_icon: true,
             gumball: true,
             show_layer_list: false,
             system_cursor: std::env::var("CADCRAFT_SYSTEM_CURSOR").is_ok_and(|v| !matches!(v.trim(), "" | "0" | "false" | "off")),
@@ -361,9 +359,22 @@ impl CadApp {
         let _ = self.run(id, params);
     }
 
+    /// Run the UI side of a name typed or picked bare (no parameters): the name as typed, else the
+    /// command it is an alias of (MO opens the Properties palette as PROPERTIES does). The name
+    /// comes first, so QC and QUICKCALC, aliases of CAL, still open QuickCalc. Dash forms are the
+    /// command-line versions and never reach a dialog. True if the UI handled it.
+    fn typed_ui_command(&mut self, name: &str) -> bool {
+        let name = name.to_ascii_lowercase();
+        if menus::run_ui_command(self, &name, &Value::Null).is_some() {
+            return true;
+        }
+        let id = cadcraft_engine::cmd::resolve_alias(&name);
+        !name.starts_with('-') && id != name && menus::run_ui_command(self, &id, &Value::Null).is_some()
+    }
+
     /// Start a command as if typed (interactive when it has prompts).
     pub fn start(&mut self, name: &str) {
-        if menus::run_ui_command(self, name, &Value::Null).is_some() {
+        if self.typed_ui_command(name) {
             return;
         }
         if let Err(e) = self.session.start(name) {
@@ -378,7 +389,13 @@ impl CadApp {
             let first = text.split_whitespace().next().unwrap_or("");
             // `cmd {json}` is a programmatic call: the engine runs it with those parameters.
             let json_form = text.trim_start().get(first.len()..).is_some_and(|rest| rest.trim_start().starts_with('{'));
-            if !first.is_empty() && !json_form && menus::run_ui_command(self, &first.to_ascii_lowercase(), &Value::Null).is_some() {
+            // A command given its answers on the line (`color red`, from a script, the control
+            // channel or the AI's command line) runs its command-line prompts, as AutoCAD's
+            // `(command ...)` does; typed alone it opens its dialog. One without prompts keeps
+            // its dialog.
+            let prompts = cadcraft_engine::cmd::find_command(&cadcraft_engine::cmd::resolve_alias(first)).is_some_and(|c| c.interactive.is_some());
+            let answered = prompts && text.split_whitespace().nth(1).is_some();
+            if !first.is_empty() && !json_form && !answered && self.typed_ui_command(first) {
                 return None;
             }
         }
@@ -618,6 +635,7 @@ impl CadApp {
         self.gpu_fault_tick(ctx);
         managers::plot_window_resume(self, ctx);
         hatchdlg::resume(self);
+        exchange::file_prompt(self);
         self.autosave_tick(ctx);
         menus::shortcuts(self, ctx);
         #[cfg(not(target_arch = "wasm32"))]

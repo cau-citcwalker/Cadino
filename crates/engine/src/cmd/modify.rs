@@ -89,7 +89,10 @@ pub fn specs() -> Vec<CommandSpec> {
             .alias(&["br"])
             .params("{handle, p1, p2}")
             .interactive(|_| Ok(Box::new(BreakM::default()))),
-        CommandSpec::new("breakatpoint", "Break At Point", run_breakat).menu(&["Modify", "Break At Point"]).params("{handle, at}"),
+        CommandSpec::new("breakatpoint", "Break At Point", run_breakat)
+            .menu(&["Modify", "Break At Point"])
+            .params("{handle, at}")
+            .interactive(|_| Ok(Box::new(BreakM { at_point: true, ..BreakM::default() }))),
         CommandSpec::new("join", "Join", run_join)
             .menu(&["Modify", "Join"])
             .alias(&["j"])
@@ -2948,15 +2951,18 @@ struct BreakM {
     obj: Option<(Handle, Vec2)>,
     /// The `First point` option: the next point replaces the selection pick as the first break point.
     first_point: bool,
+    /// BREAKATPOINT: one break point, both ends there.
+    at_point: bool,
 }
 
 impl Interactive for BreakM {
     fn name(&self) -> &'static str {
-        "BREAK"
+        if self.at_point { "BREAKATPOINT" } else { "BREAK" }
     }
     fn prompt(&self, _s: &Session) -> Prompt {
         match self.obj {
             None => Prompt::new("Select object", Accept::POINT),
+            Some(_) if self.at_point => Prompt::new("Specify break point", Accept::POINT),
             Some(_) if self.first_point => Prompt::new("Specify first break point", Accept::POINT),
             Some(_) => Prompt::new("Specify second break point", Accept::POINT).kw(&["First point"]),
         }
@@ -2974,6 +2980,11 @@ impl Interactive for BreakM {
                     None => s.echo("*Invalid selection*"),
                 }
                 Ok(Step::Continue)
+            }
+            (Some((h, _)), Input::Point(p)) if self.at_point => {
+                break_entity(s, h, p, p)?;
+                s.set_selection(Vec::new());
+                Ok(Step::Done)
             }
             (Some(_), Input::Keyword(k)) if k == "First point" => {
                 self.first_point = true;

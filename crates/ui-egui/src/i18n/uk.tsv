@@ -1468,3 +1468,221 @@
 	Could not save the key in the system keychain: {error}	Не вдалося зберегти ключ у системному сховищі ключів: {error}
 	Could not remove the key from the system keychain: {error}	Не вдалося вилучити ключ із системного сховища ключів: {error}
 	Asking the system keychain…	Звернення до системного сховища ключів…
+	Select Color	Вибір кольору
+	Color:	Колір:
+	Lineweight Settings	Параметри товщини ліній
+	Lineweights	Товщини ліній
+	Units for Listing	Одиниці у списку
+	Millimeters (mm)	Міліметри (мм)
+	Inches (in)	Дюйми (дюйм)
+	Display Lineweight	Показувати товщину ліній
+	Current Lineweight: {lineweight}	Поточна товщина лінії: {lineweight}
+	Dimension lines	Розмірні лінії
+	Extend beyond ticks	Подовження за засічки
+	Baseline spacing	Крок базових розмірів
+	Extension lines	Виносні лінії
+	Suppress ext line 1	Приховати виносну лінію 1
+	Suppress ext line 2	Приховати виносну лінію 2
+	Extend beyond dim lines	Подовження за розмірну лінію
+	Offset from origin	Відступ від початку
+	Arrowheads	Стрілки
+	First and second	Перша й друга
+	Arrow size	Розмір стрілки
+	Center marks	Позначки центру
+	Mark	Позначка
+	Size	Розмір
+	Text appearance	Вигляд тексту
+	Text placement	Розташування тексту
+	Above	Над лінією
+	Outside	Зовні
+	JIS	JIS
+	Below	Під лінією
+	At Ext Line 1	Біля виносної лінії 1
+	At Ext Line 2	Біля виносної лінії 2
+	Over Ext Line 1	Над виносною лінією 1
+	Over Ext Line 2	Над виносною лінією 2
+	Offset from dim line	Відступ від розмірної лінії
+	Vertical position	Положення по вертикалі
+	Horizontal position	Положення по горизонталі
+	Text alignment	Вирівнювання тексту
+	Aligned with dimension line	Уздовж розмірної лінії
+	ISO standard	Стандарт ISO
+	Alignment	Вирівнювання
+	Fit options	Параметри розміщення
+	Either text or arrows (best fit)	Текст або стрілки (найкраще розміщення)
+	Arrows	Стрілки
+	Both text and arrows	І текст, і стрілки
+	Move outside first	Спершу виносити назовні
+	Always keep text between ext lines	Завжди тримати текст між виносними лініями
+	Suppress arrows if they don't fit inside extension lines	Приховувати стрілки, що не вміщаються між виносними лініями
+	Scale for dimension features	Масштаб елементів розміру
+	Use overall scale of	Загальний масштаб
+	Fine tuning	Точне налаштування
+	Draw dim line between ext lines	Розмірна лінія між виносними лініями
+	Linear dimensions	Лінійні розміри
+	Scientific	Науковий
+	Decimal	Десятковий
+	Engineering	Інженерний
+	Architectural	Архітектурний
+	Fractional	Дробовий
+	Windows Desktop	Як у Windows
+	Unit format	Формат одиниць
+	Precision	Точність
+	'.' (Period)	'.' (крапка)
+	',' (Comma)	',' (кома)
+	' ' (Space)	' ' (пробіл)
+	Decimal separator	Десятковий роздільник
+	Round off	Округлення
+	Scale factor	Масштабний коефіцієнт
+	Suppress leading zeros	Прибирати початкові нулі
+	Suppress trailing zeros	Прибирати кінцеві нулі
+	Angular dimensions	Кутові розміри
+	Decimal Degrees	Десяткові градуси
+	Degrees Minutes Seconds	Градуси, мінути, секунди
+	Gradians	Гради
+	Radians	Радіани
+	Units format	Формат одиниць
+	Dimension Style Manager	Диспетчер розмірних стилів
+	Current dimension style: {name}	Поточний розмірний стиль: {name}
+	Styles	Стилі
+	Rename	Перейменувати
+	Standard and the current style cannot be deleted	Стиль Standard і поточний стиль видалити не можна
+	Create New Dimension Style	Новий розмірний стиль
+	New style name	Назва нового стилю
+	Start With	На основі
+	Preview of: {name}	Попередній перегляд: {name}
+	Lines	Лінії
+	Symbols and Arrows	Символи та стрілки
+	Fit	Розміщення
+	Primary Units	Основні одиниці
+	Closed filled	Замкнена зафарбована
+	Closed blank	Замкнена порожня
+	Dot	Крапка
+	Architectural tick	Архітектурна засічка
+	Oblique tick	Похила засічка
+	Open arrow	Відкрита стрілка
+	Origin indicator	Позначка початку
+	Origin indicator 2	Позначка початку 2
+	Right angle	Прямий кут
+	Open 30	Відкрита 30°
+	Dot small	Мала крапка
+	Dot blank	Порожня крапка
+	Dot small blank	Мала порожня крапка
+	Box blank	Порожній квадрат
+	Box filled	Зафарбований квадрат
+	Datum triangle	Базовий трикутник
+	Datum triangle filled	Зафарбований базовий трикутник
+	Integral	Інтеграл
+	Find what:	Знайти:
+	Replace with:	Замінити на:
+	Match case	Враховувати регістр
+	Find whole words only	Лише цілі слова
+	Select this object	Виділити цей об’єкт
+	Find	Знайти
+	Replace All	Замінити все
+	Done	Готово
+	Layer States Manager	Диспетчер станів шарів
+	Layer states	Стани шарів
+	Save the layers' current settings as a new layer state	Зберегти поточні параметри шарів як новий стан
+	Save the layers' current settings in the selected state	Зберегти поточні параметри шарів у вибраний стан
+	Multiline Style	Стиль мультилінії
+	Current multiline style: {name}	Поточний стиль мультилінії: {name}
+	A copy of the selected style	Копія вибраного стилю
+	Elements	Елементи
+	Caps	Закінчення
+	End	Кінець
+	Outer arc	Зовнішня дуга
+	Inner arcs	Внутрішні дуги
+	Fill	Заливка
+	Display joints	Показувати з’єднання
+	Source	Джерело
+	Objects	Об’єкти
+	Base point	Базова точка
+	Pick point <	Вказати точку <
+	Select objects <	Вибрати об’єкти <
+	No objects selected	Об’єкти не вибрано
+	Destination	Призначення
+	File name and path:	Ім’я файлу та шлях:
+	Choose the file	Вибрати файл
+@plural	{n} layer	{n} шар|{n} шари|{n} шарів
+@plural	{n} object selected	Вибрано {n} об’єкт|Вибрано {n} об’єкти|Вибрано {n} об’єктів
+	Quick Leader	Швидка виноска
+	Quick Text	Швидкий текст
+	Enter default object color	Введіть типовий колір об’єктів
+	Red, Green, Blue	Червоний, зелений, синій
+	Enter default lineweight for new objects	Введіть типову товщину ліній для нових об’єктів
+	Enter new linetype scale factor	Введіть новий масштаб типів ліній
+	Specify lower left corner	Укажіть лівий нижній кут
+	Specify upper right corner	Укажіть правий верхній кут
+	Enter choice, 1 to 5	Введіть номер від 1 до 5
+	Enter number of digits to right of decimal point (0 to 8)	Введіть кількість цифр після десяткової коми (від 0 до 8)
+	Enter denominator of smallest fraction to display (1, 2, 4, 8, 16, 32, 64, 128, or 256)	Введіть знаменник найменшого показуваного дробу (1, 2, 4, 8, 16, 32, 64, 128 або 256)
+	Enter number of fractional places for display of angles (0 to 8)	Введіть кількість десяткових знаків для кутів (від 0 до 8)
+	Enter direction for angle 0	Введіть напрямок кута 0
+	Do you want angles measured clockwise?	Вимірювати кути за годинниковою стрілкою?
+	Enter name of text style	Введіть назву стилю тексту
+	Enter text style(s) to list	Введіть стилі тексту для переліку
+	Specify full font name or font filename (TTF or SHX)	Укажіть повну назву шрифту або назву файлу шрифту (TTF або SHX)
+	Specify height of text	Укажіть висоту тексту
+	Specify paper text height	Укажіть висоту тексту на аркуші
+	Specify width factor	Укажіть коефіцієнт ширини
+	Specify obliquing angle	Укажіть кут нахилу
+	Display text backwards?	Показувати текст дзеркально?
+	Display text upside-down?	Показувати текст догори дном?
+	Vertical?	Вертикальний?
+	Enter a dimension style option	Введіть параметр стилю розмірів
+	Create annotative dimension style	Створити анотативний стиль розмірів
+	Enter name for new dimension style	Введіть назву нового стилю розмірів
+	That name is already in use, redefine it?	Ця назва вже використовується. Перевизначити?
+	Enter a dimension style name, [?] or <select dimension>	Введіть назву стилю розмірів, [?] або <виберіть розмір>
+	Enter dimension style(s) to list	Введіть стилі розмірів для переліку
+	Select dimension	Виберіть розмір
+	Specify leader start point	Укажіть початкову точку виноски
+	Enter leader format option	Введіть параметр формату виноски
+	Enter first line of annotation text or <options>	Введіть перший рядок тексту примітки або <параметри>
+	Enter next line of annotation text	Введіть наступний рядок тексту примітки
+	Specify first leader point,	Укажіть першу точку виноски,
+	Specify text width	Укажіть ширину тексту
+	Enter first line of annotation text	Введіть перший рядок тексту примітки
+	Select a 3D solid	Виберіть 3D-тіло
+	Select arc, circle, line, or <specify vertex>	Виберіть дугу, коло, відрізок або <укажіть вершину>
+	Enter text to find	Введіть текст для пошуку
+	Enter replacement text	Введіть текст для заміни
+	Select object whose layer will become current	Виберіть об’єкт, шар якого стане поточним
+	Select objects to be changed	Виберіть об’єкти для зміни
+	Select object on destination layer	Виберіть об’єкт на цільовому шарі
+	Enter layer name	Введіть назву шару
+	Select objects on the layer(s) to be isolated	Виберіть об’єкти на шарах, які треба ізолювати
+	Enter layer state name(s) to list	Введіть назви станів шарів для переліку
+	Enter new layer state name	Введіть назву нового стану шарів
+	Enter name of layer state to restore	Введіть назву стану шарів для відновлення
+	Enter name of layer state to delete	Введіть назву стану шарів для видалення
+	Enter name of layer state to rename	Введіть назву стану шарів для перейменування
+	Enter base point	Введіть базову точку
+	Enter name of output file	Введіть назву вихідного файлу
+	A drawing with this name already exists. Do you want to replace it?	Креслення з такою назвою вже існує. Замінити його?
+	Enter name of existing block	Введіть назву наявного блоку
+	Enter variable name	Введіть назву змінної
+	Enter list of object snap modes	Введіть перелік режимів об’єктної прив’язки
+	Specify break point	Укажіть точку розриву
+	Select solids or watertight meshes	Виберіть тіла або замкнені сітки
+	Enter name of STL file to write	Введіть назву STL-файлу для запису
+	Enter name of STEP file to write	Введіть назву STEP-файлу для запису
+	Enter name of STEP file to import	Введіть назву STEP-файлу для імпорту
+	Enter name of IGES file to write	Введіть назву IGES-файлу для запису
+	Enter name of IGES file to import	Введіть назву IGES-файлу для імпорту
+	Select a table	Виберіть таблицю
+	Enter name of CSV file to link	Введіть назву CSV-файлу для зв’язування
+	Enter LISP expression	Введіть вираз LISP
+	Enter a loaded linetype name	Введіть назву завантаженого типу ліній
+	Enter a plotting preference	Введіть параметр друку
+	Enter color name or number (1-255)	Введіть назву або номер кольору (1-255)
+	Enter layer description	Введіть опис шару
+	Enter layer name to make current	Введіть назву шару, який стане поточним
+	Enter layer name(s) to list	Введіть назви шарів для переліку
+	Enter lineweight (0.0mm - 2.11mm)	Введіть товщину лінії (0.0mm - 2.11mm)
+	Enter name for new layer (becomes the current layer)	Введіть назву нового шару (він стане поточним)
+	Enter name list for new layer(s)	Введіть перелік назв нових шарів
+	Enter new layer name	Введіть нову назву шару
+	Enter old layer name	Введіть стару назву шару
+	Enter transparency value (0-90)	Введіть значення прозорості (0-90)

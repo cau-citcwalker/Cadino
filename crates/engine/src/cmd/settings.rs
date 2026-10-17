@@ -86,11 +86,28 @@ pub fn specs() -> Vec<CommandSpec> {
             .noundo(),
         CommandSpec::new("osnap", "Object Snap", run_osnap)
             .key("F3")
-            .alias(&["os", "ddosnap"])
+            .alias(&["os"])
             .params("{on?: bool, modes?: [\"end\",\"mid\",...] | osmode?: n}")
             .enabled(always)
             .noundo()
             .transparent(),
+        CommandSpec::new("-osnap", "Object Snap", run_osnap)
+            .params("as OSNAP")
+            .enabled(always)
+            .noundo()
+            .transparent()
+            .interactive(|_| Ok(Box::new(OsnapM))),
+        CommandSpec::new("fill", "Fill", |s, p| run_mode(s, p, "FILLMODE"))
+            .params("{on?: bool} (FILLMODE) → {on}")
+            .interactive(|_| Ok(Box::new(ModeM { var: "FILLMODE", name: "FILL" }))),
+        CommandSpec::new("qtext", "Quick Text", |s, p| run_mode(s, p, "QTEXTMODE"))
+            .params("{on?: bool} (QTEXTMODE) → {on}")
+            .interactive(|_| Ok(Box::new(ModeM { var: "QTEXTMODE", name: "QTEXT" }))),
+        CommandSpec::new("ucsicon", "UCS Icon", |s, p| run_mode(s, p, "UCSICON"))
+            .params("{on?: bool} (UCSICON) → {on}")
+            .enabled(always)
+            .noundo()
+            .interactive(|_| Ok(Box::new(ModeM { var: "UCSICON", name: "UCSICON" }))),
         CommandSpec::new("dsettings", "Drafting Settings...", run_dsettings)
             .menu(&["Tools", "Drafting Settings..."])
             .alias(&["ds", "se"])
@@ -102,9 +119,41 @@ pub fn specs() -> Vec<CommandSpec> {
             .params("{name, value}")
             .transparent()
             .interactive(|_| Ok(Box::new(SetvarM::default()))),
-        CommandSpec::new("getvar", "Get Variable", run_getvar).params("{name}").enabled(always).noundo(),
+        CommandSpec::new("getvar", "Get Variable", run_getvar)
+            .params("{name}")
+            .enabled(always)
+            .noundo()
+            .interactive(|_| Ok(Box::new(SetvarM { name: None, get: true }))),
         CommandSpec::new("sysvars", "List System Variables", |s, _| Ok(crate::sysvars::list(s))).enabled(always).noundo(),
     ]
+}
+
+/// Object snap modes by the short names typed at -OSNAP (the first three letters are enough).
+const SNAP_NAMES: [(u32, &str); 14] = {
+    use crate::snap::mode::*;
+    [
+        (END, "End"),
+        (MID, "Mid"),
+        (CEN, "Cen"),
+        (GCEN, "Gcen"),
+        (NOD, "Nod"),
+        (QUA, "Qua"),
+        (INT, "Int"),
+        (EXT, "Ext"),
+        (INS, "Ins"),
+        (PER, "Per"),
+        (TAN, "Tan"),
+        (NEA, "Nea"),
+        (APP, "App"),
+        (PAR, "Par"),
+    ]
+};
+
+/// The OSMODE bit of an object snap mode name (END, MID, CEN...).
+fn snap_bit(name: &str) -> Option<u32> {
+    let l = name.trim().to_ascii_lowercase();
+    let key = l.get(..3)?;
+    SNAP_NAMES.iter().find(|(_, n)| n.to_ascii_lowercase().starts_with(key)).map(|(b, _)| *b)
 }
 
 fn run_osnap(s: &mut Session, p: &Value) -> Result<Value> {
@@ -113,28 +162,7 @@ fn run_osnap(s: &mut Session, p: &Value) -> Result<Value> {
         s.settings.osmode = (n as u32) & 0x7fff;
     }
     if let Some(ms) = p.get("modes").and_then(Value::as_array) {
-        let mut bits = 0u32;
-        for m in ms.iter().filter_map(Value::as_str) {
-            let b = match m.to_ascii_lowercase().get(..3).unwrap_or("") {
-                "end" => mode::END,
-                "mid" => mode::MID,
-                "cen" => mode::CEN,
-                "nod" => mode::NOD,
-                "qua" => mode::QUA,
-                "int" => mode::INT,
-                "ins" => mode::INS,
-                "per" => mode::PER,
-                "tan" => mode::TAN,
-                "nea" => mode::NEA,
-                "gce" => mode::GCEN,
-                "app" => mode::APP,
-                "ext" => mode::EXT,
-                "par" => mode::PAR,
-                _ => 0,
-            };
-            bits |= b;
-        }
-        s.settings.osmode = bits;
+        s.settings.osmode = ms.iter().filter_map(Value::as_str).filter_map(snap_bit).fold(0, |a, b| a | b);
     }
     if p.get("osmode").is_none() && p.get("modes").is_none() {
         let on = p.get("on").and_then(Value::as_bool).unwrap_or(s.settings.osmode & mode::OFF != 0);
@@ -148,6 +176,83 @@ fn run_osnap(s: &mut Session, p: &Value) -> Result<Value> {
     let on = s.settings.osmode & mode::OFF == 0;
     let active: Vec<&str> = mode::ALL.iter().filter(|(b, _)| s.settings.osmode & b != 0).map(|(_, n)| *n).collect();
     Ok(json!({ "on": on, "osmode": s.settings.osmode, "modes": active, "message": format!("<Osnap {}>", if on { "on" } else { "off" }) }))
+}
+
+/// -OSNAP: "Enter list of object snap modes" (END,MID,CEN...; NONe turns them all off). Enter keeps
+/// the current modes.
+struct OsnapM;
+
+impl Interactive for OsnapM {
+    fn name(&self) -> &'static str {
+        "-OSNAP"
+    }
+    fn begin(&mut self, s: &mut Session) -> Result<Step> {
+        let osmode = s.settings.osmode;
+        let on = osmode & crate::snap::mode::OFF == 0;
+        let names: Vec<&str> = SNAP_NAMES.iter().filter(|(b, _)| on && osmode & b != 0).map(|(_, n)| *n).collect();
+        s.echo(format!("Current osnap modes: {}", if names.is_empty() { "None".to_string() } else { names.join(",") }));
+        Ok(Step::Continue)
+    }
+    fn prompt(&self, _s: &Session) -> Prompt {
+        Prompt::new("Enter list of object snap modes", Accept::WORD)
+    }
+    fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        let t = match i {
+            Input::Text(t) | Input::Keyword(t) => t,
+            Input::Cancel => return Ok(Step::Cancel),
+            Input::Enter => return Ok(Step::Done),
+            _ => return Ok(Step::Continue),
+        };
+        let mut bits = 0;
+        for name in t.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+            if name.len() >= 3 && "none".starts_with(&name.to_ascii_lowercase()) {
+                continue;
+            }
+            bits |= snap_bit(name).ok_or_else(|| EngineError::Other(format!("Unknown object snap mode \"{name}\".")))?;
+        }
+        s.settings.osmode = bits;
+        s.touch();
+        Ok(Step::Done)
+    }
+}
+
+/// FILL, QTEXT and UCSICON: an on/off system variable, `{on}` sets it.
+fn run_mode(s: &mut Session, p: &Value, var: &str) -> Result<Value> {
+    if let Some(on) = p.get("on").and_then(Value::as_bool) {
+        crate::sysvars::set(s, var, &json!(i32::from(on)))?;
+        s.touch();
+    }
+    Ok(json!({ "on": crate::sysvars::get(s, var).and_then(|v| v.as_i64()).unwrap_or(0) != 0 }))
+}
+
+/// FILL, QTEXT and UCSICON at the command line: "Enter mode [ON/OFF] <current>".
+// ponytail: UCSICON offers ON/OFF only (no Noorigin/ORigin/Properties).
+struct ModeM {
+    var: &'static str,
+    name: &'static str,
+}
+
+impl Interactive for ModeM {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn prompt(&self, s: &Session) -> Prompt {
+        const KW: Accept = Accept { point: false, number: false, text: false, select: false, enter: true };
+        let on = crate::sysvars::get(s, self.var).and_then(|v| v.as_i64()).unwrap_or(0) != 0;
+        let message = if self.var == "UCSICON" { "Enter an option" } else { "Enter mode" };
+        Prompt::new(message, KW).kw(&["ON", "OFF"]).default(if on { "ON" } else { "OFF" })
+    }
+    fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        match i {
+            Input::Keyword(k) => {
+                run_mode(s, &json!({ "on": k == "ON" }), self.var)?;
+                Ok(Step::Done)
+            }
+            Input::Enter => Ok(Step::Done),
+            Input::Cancel => Ok(Step::Cancel),
+            _ => Ok(Step::Continue),
+        }
+    }
 }
 
 fn run_dsettings(s: &mut Session, p: &Value) -> Result<Value> {
@@ -185,14 +290,16 @@ fn show_value(v: &Value) -> String {
 }
 
 /// SETVAR at the command line: "Enter variable name or [?]", then "Enter new value for NAME <current>".
+/// GETVAR asks only for the name and shows "NAME = value".
 #[derive(Default)]
 struct SetvarM {
     name: Option<String>,
+    get: bool,
 }
 
 impl Interactive for SetvarM {
     fn name(&self) -> &'static str {
-        "SETVAR"
+        if self.get { "GETVAR" } else { "SETVAR" }
     }
     fn prompt(&self, s: &Session) -> Prompt {
         // Not a free-text prompt: Space ends the input, as it does for names and numbers.
@@ -202,6 +309,8 @@ impl Interactive for SetvarM {
             Some(n) => {
                 let p = Prompt::new(format!("Enter new value for {n}"), accept);
                 match crate::sysvars::get(s, n) {
+                    // A text variable's value is quoted, as AutoCAD shows it: <"0">.
+                    Some(Value::String(t)) => p.default(format!("\"{t}\"")),
                     Some(v) => p.default(show_value(&v)),
                     None => p,
                 }
@@ -224,6 +333,10 @@ impl Interactive for SetvarM {
                 match crate::sysvars::get(s, &n) {
                     None => {
                         s.echo(format!("Unknown variable {n}. Type SETVAR ? to list variables."));
+                        Ok(Step::Done)
+                    }
+                    Some(v) if self.get => {
+                        s.echo(format!("{n} = {}", show_value(&v)));
                         Ok(Step::Done)
                     }
                     Some(v) if crate::sysvars::is_read_only(&n) => {

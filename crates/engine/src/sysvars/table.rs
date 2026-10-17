@@ -53,7 +53,12 @@ const HEADER: &[(&str, Kind, Def)] = &[
     ("DIMASSOC", Kind::Choice(&[0, 1, 2]), Def::Int(2)),
     ("DONUTID", Kind::Real { min: 0.0, strict: false }, Def::Real(0.5)),
     ("DONUTOD", Kind::Real { min: 0.0, strict: true }, Def::Real(1.0)),
+    // Accepted for scripts and LISP routines that set them; nothing here changes with them.
+    // ponytail: no drag-mode, blip, regen-prompt or expert-question behaviour to switch.
+    ("DRAGMODE", Kind::Choice(&[0, 1, 2]), Def::Int(2)),
     ("EDGEMODE", Kind::Choice(&[0, 1]), Def::Int(0)),
+    ("EXPERT", Kind::Int(0, 5), Def::Int(0)),
+    ("BLIPMODE", Kind::Choice(&[0, 1]), Def::Int(0)),
     ("HPANG", Kind::Angle, Def::Real(0.0)),
     // 1: HATCH and GRADIENT typed or from a menu open the Hatch and Gradient dialog; 0: the command line.
     ("HPDLGMODE", Kind::Choice(&[0, 1]), Def::Int(1)),
@@ -61,18 +66,23 @@ const HEADER: &[(&str, Kind, Def)] = &[
     ("HPSCALE", Kind::Real { min: 0.0, strict: true }, Def::Real(1.0)),
     ("INSNAME", Kind::Name, Def::Str("")),
     ("LWDEFAULT", Kind::Choice(&LINEWEIGHTS), Def::Int(25)),
+    ("MAXACTVP", Kind::Int(2, 64), Def::Int(64)),
     // Negative: Through (OFFSET picks a point).
     ("OFFSETDIST", Kind::AnyReal, Def::Real(-1.0)),
     ("OFFSETERASE", Kind::Choice(&[0, 1]), Def::Int(0)),
     ("OFFSETLAYER", Kind::Choice(&[0, 1]), Def::Int(0)),
     ("POLYSIDES", Kind::Int(3, 1024), Def::Int(4)),
     ("PROJMODE", Kind::Choice(&[0, 1, 2]), Def::Int(1)),
+    // QTEXT: 1 would draw text as its outline box (text always draws here).
+    ("QTEXTMODE", Kind::Choice(&[0, 1]), Def::Int(0)),
+    ("REGENAUTO", Kind::Choice(&[0, 1]), Def::Int(1)),
     ("REVCLOUDARCLEN", Kind::Real { min: 0.0, strict: true }, Def::Units(0.5, 15.0)),
     ("SPLINESEGS", Kind::Int(-32768, 32767), Def::Int(8)),
     ("SPLKNOTS", Kind::Choice(&[0, 1, 2]), Def::Int(0)),
     ("TEXTFILL", Kind::Choice(&[0, 1]), Def::Int(1)),
     ("TRIMEXTENDMODE", Kind::Choice(&[0, 1]), Def::Int(1)),
     ("TRIMMODE", Kind::Choice(&[0, 1]), Def::Int(1)),
+    ("UCSFOLLOW", Kind::Choice(&[0, 1]), Def::Int(0)),
     ("WIPEOUTFRAME", Kind::Choice(&[0, 1, 2]), Def::Int(1)),
 ];
 
@@ -81,7 +91,14 @@ const LINEWEIGHTS: [i64; 24] = [0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53,
 
 /// On/off session settings: name, read, write.
 type Toggle = (&'static str, fn(&Settings) -> bool, fn(&mut Settings, bool));
-const SETTINGS: &[Toggle] = &[("TRANSPARENCYDISPLAY", |s| s.transparency_display, |s, v| s.transparency_display = v)];
+const SETTINGS: &[Toggle] = &[
+    ("TRANSPARENCYDISPLAY", |s| s.transparency_display, |s, v| s.transparency_display = v),
+    ("FILEDIA", |s| s.filedia, |s, v| s.filedia = v),
+    ("CMDDIA", |s| s.cmddia, |s, v| s.cmddia = v),
+    ("CMDECHO", |s| s.cmdecho, |s, v| s.cmdecho = v),
+    ("LWUNITS", |s| s.lwunits_mm, |s, v| s.lwunits_mm = v),
+    ("UCSICON", |s| s.ucsicon, |s, v| s.ucsicon = v),
+];
 
 fn header_var(name: &str) -> Option<&'static (&'static str, Kind, Def)> {
     HEADER.iter().find(|(n, _, _)| *n == name)

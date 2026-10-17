@@ -19,7 +19,8 @@ pub fn specs() -> Vec<CommandSpec> {
             .params(
                 "{code: LISP source, inputs?: [answers to get… calls: numbers, strings, [x,y] points]} → {value (printed as prin1), output: lines printed, error?}",
             )
-            .noundo(),
+            .noundo()
+            .interactive(|_| Ok(Box::new(LispM))),
     ]
 }
 
@@ -71,6 +72,33 @@ fn run_lisp(s: &mut Session, p: &Value) -> Result<Value> {
         e => e,
     })?;
     Ok(report(s, from, r))
+}
+
+/// LISP typed: asks for an expression and evaluates it as `(expression)` typed at Command: does.
+struct LispM;
+
+impl Interactive for LispM {
+    fn name(&self) -> &'static str {
+        "LISP"
+    }
+    fn prompt(&self, _: &Session) -> Prompt {
+        Prompt::new("Enter LISP expression", Accept::TEXT)
+    }
+    fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        match i {
+            Input::Cancel | Input::Enter => Ok(Step::Cancel),
+            Input::Text(t) if !t.trim().is_empty() => {
+                let src = t.trim();
+                let src = src.strip_prefix('!').unwrap_or(src).to_string();
+                // The routine may wait for the user: it carries on after this command ends.
+                if let Err(e) = s.lisp_eval(&src, true, false, Vec::new()) {
+                    s.echo(e.to_string());
+                }
+                Ok(Step::Done)
+            }
+            _ => Ok(Step::Continue),
+        }
+    }
 }
 
 /// APPLOAD typed or chosen from the menu: asks for the file by name.

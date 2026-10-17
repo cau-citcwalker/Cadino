@@ -532,6 +532,16 @@ pub struct Settings {
     pub polarsnap: bool,
     /// POLARDIST: the PolarSnap step; 0 uses the snap X spacing.
     pub polardist: f64,
+    /// FILEDIA: commands that read or write a file ask with the file dialog (when the UI has one)
+    /// instead of at the command line.
+    pub filedia: bool,
+    /// CMDDIA and CMDECHO, kept for scripts and LISP routines that set them.
+    pub cmddia: bool,
+    pub cmdecho: bool,
+    /// LWUNITS: lineweights listed in millimetres (else inches).
+    pub lwunits_mm: bool,
+    /// UCSICON (on/off): the UCS icon shows.
+    pub ucsicon: bool,
 }
 
 impl Default for Settings {
@@ -590,6 +600,11 @@ impl Default for Settings {
             polaraddang: Vec::new(),
             polarsnap: false,
             polardist: 0.0,
+            filedia: true,
+            cmddia: true,
+            cmdecho: true,
+            lwunits_mm: true,
+            ucsicon: true,
         }
     }
 }
@@ -600,6 +615,18 @@ pub struct Running {
     pub machine: Box<dyn Interactive>,
     pub before: Arc<Drawing>,
     pub selection_before: Vec<Handle>,
+    /// Started by a dash name that runs this command's prompts (-DIMSTYLE runs DIMSTYLE's).
+    pub dashed: bool,
+}
+
+impl Running {
+    /// The command name shown before its prompts: AutoCAD's name for a menu entry with an id of
+    /// its own (Dimension ▸ Align Text ▸ Left, `dimtedit.left`, shows DIMTEDIT), with the dash it
+    /// was typed with.
+    pub fn shown(&self) -> String {
+        let name = if self.id.contains('.') { self.machine.name().to_string() } else { self.id.to_ascii_uppercase() };
+        if self.dashed && !name.starts_with('-') { format!("-{name}") } else { name }
+    }
 }
 
 /// A pending window/crossing selection started by a click on empty space.
@@ -1071,8 +1098,13 @@ impl Session {
             None => (false, name),
         };
         let lower = name.trim_start_matches(['_', '.', '-']).to_ascii_lowercase();
-        // A command-line form with an id of its own (-ATTEDIT) is not the command it prefixes.
-        let dashed = cmd::resolve_alias(&name.trim_start_matches(['_', '.']).to_ascii_lowercase());
+        // A command-line form with an id of its own (-ATTEDIT, and -LT for -LINETYPE) is not the
+        // command it prefixes.
+        let bare = name.trim_start_matches(['_', '.']).to_ascii_lowercase();
+        let mut dashed = cmd::resolve_alias(&bare);
+        if find_command(&dashed).is_none() && bare.starts_with('-') {
+            dashed = format!("-{}", cmd::resolve_alias(&lower));
+        }
         let id = if find_command(&dashed).is_some() { dashed } else { cmd::resolve_alias(&lower) };
         let Some(spec) = find_command(&id) else {
             // A command defined in LISP: (defun c:NAME …).
@@ -1084,14 +1116,20 @@ impl Session {
                 self.echo(format!("Command: {}", lower.to_ascii_uppercase()));
                 return self.lisp_run_command(&lower, f);
             }
-            // A bare system variable name (ORTHOMODE, GRIDMODE…) acts as SETVAR on that variable.
-            let var = lower.to_ascii_uppercase();
+            // A bare system variable name (ORTHOMODE, GRIDMODE…, or an alias such as TH) acts as
+            // SETVAR on that variable.
+            let var = cmd::sysvar_name(&lower);
             if !name.starts_with(['_', '.', '-']) && sysvars::get(self, &var).is_some() {
                 self.start(if transparent { "'setvar" } else { "setvar" })?;
                 return self.input(Input::Text(var));
             }
             return Err(EngineError::UnknownCommand(name.to_string()));
         };
+        // A dash form with no prompts of its own (-PLOT) would run the dialog command's defaults.
+        if bare.starts_with('-') && !spec.id.starts_with('-') && spec.interactive.is_none() {
+            let (typed, id) = (bare.to_ascii_uppercase(), spec.id.to_ascii_uppercase());
+            return Err(EngineError::Other(format!("{typed}: the command-line form isn't available yet; use {id}")));
+        }
         if transparent && spec.transparent && self.running.is_some() {
             // Transparent commands (zoom, pan…) run without cancelling the active one.
             if spec.interactive.is_none() {
@@ -1117,12 +1155,15 @@ impl Session {
         if let Some(why) = cmd::blocks::bedit::refused_in_editor(self, spec.id).or_else(|| cplane::refused(self, spec.id)) {
             return Err(EngineError::Disabled(spec.id.into(), why));
         }
+        // A dash name running this command's prompts (-DIMSTYLE) echoes as typed.
+        let dashed = bare.starts_with('-') && !spec.id.starts_with('-');
+        let shown = if dashed { format!("-{}", spec.id.to_ascii_uppercase()) } else { spec.id.to_ascii_uppercase() };
         if nested {
             // The outer command stays the one Enter repeats.
-            self.echo(format!(">>{}", spec.id.to_ascii_uppercase()));
+            self.echo(format!(">>{shown}"));
         } else {
-            self.last_command = Some(spec.id.to_string());
-            self.echo(format!("Command: {}", spec.id.to_ascii_uppercase()));
+            self.last_command = Some(if dashed { format!("-{}", spec.id) } else { spec.id.to_string() });
+            self.echo(format!("Command: {shown}"));
         }
         match spec.interactive {
             Some(factory) => {
@@ -1134,7 +1175,7 @@ impl Session {
                     self.suspended = self.running.take();
                 }
                 self.starts = self.starts.wrapping_add(1);
-                self.running = Some(Running { id: spec.id.to_string(), machine, before, selection_before });
+                self.running = Some(Running { id: spec.id.to_string(), machine, before, selection_before, dashed });
                 self.pending_window = None;
                 // Some commands complete immediately (e.g. ERASE with a pickfirst selection).
                 self.feed(None)?;
@@ -1531,8 +1572,8 @@ impl Session {
             return p.display();
         }
         match &self.running {
-            Some(r) if self.suspended.is_some() => format!(">>{} {}", r.id.to_ascii_uppercase(), r.machine.prompt(self).display()),
-            Some(r) => format!("{} {}", r.id.to_ascii_uppercase(), r.machine.prompt(self).display()),
+            Some(r) if self.suspended.is_some() => format!(">>{} {}", r.shown(), r.machine.prompt(self).display()),
+            Some(r) => format!("{} {}", r.shown(), r.machine.prompt(self).display()),
             None => "Command:".into(),
         }
     }
@@ -1998,6 +2039,11 @@ fn next_token(rest: &str) -> (&str, Option<&str>) {
         }
         // Unbalanced: all of it (the reader reports the error).
         return (rest, None);
+    }
+    // A quoted name keeps its spaces ("C:/My Drawings/part.dwg"); the command strips the quotes.
+    if let Some(end) = rest.strip_prefix('"').and_then(|r| r.find('"')).map(|i| i + 2) {
+        let more = rest.get(end..).filter(|m| !m.is_empty()).map(|m| m.strip_prefix([' ', '\t']).unwrap_or(m));
+        return (&rest[..end], more);
     }
     match rest.split_once([' ', '\t']) {
         Some((tok, more)) => (tok, Some(more)),

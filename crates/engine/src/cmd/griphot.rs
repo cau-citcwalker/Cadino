@@ -512,7 +512,7 @@ impl Session {
         let machine = crate::guard::Guarded::wrap(Box::new(g), false);
         let st = self.state()?;
         let (before, selection_before) = (st.doc.clone(), st.selection.clone());
-        self.running = Some(Running { id: "grip".into(), machine, before, selection_before });
+        self.running = Some(Running { id: "grip".into(), machine, before, selection_before, dashed: false });
         self.pending_window = None;
         self.point_mods.clear();
         self.echo(label);

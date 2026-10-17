@@ -2364,7 +2364,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     }
     draw_tiles(app, ui, &tiles);
     // UCS icon, ViewCube and viewport label.
-    if app.ui.show_ucs_icon {
+    if app.session.settings.ucsicon {
         draw_ucs_icon(&painter, rect, &xf);
         crate::viewcube::ucs_icon(app, ui, rect, &xf);
     }

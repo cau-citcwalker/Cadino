@@ -231,12 +231,52 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
         "export" | "exp" | "import" | "imp" | "publish" | "preview" | "pre" if params.is_null() && app.session.state().is_ok() => {
             return Some(crate::exchange::route(app, id));
         }
+        // With FILEDIA 0 these ask on the command line, as AutoCAD's do.
+        "stepin" | "stepout" | "stlout" | "datalink" if params.is_null() && app.session.state().is_ok() && app.session.settings.filedia => {
+            return Some(crate::exchange::route(app, id));
+        }
+        // With a file dialog to hand (and FILEDIA 1) these ask for their file; without one, on
+        // the command line.
+        "appload" | "script" | "aliasedit" if params.is_null() && app.services.pick_open.is_some() && app.session.settings.filedia => {
+            return Some(crate::exchange::route(app, id));
+        }
         "ui.toggle.statusbar" => {
             toggle(&mut app.ui.show_status_bar, params);
             Ok(Value::Null)
         }
         "ui.toggle.cmdline" => {
             toggle(&mut app.ui.show_command_line, params);
+            Ok(Value::Null)
+        }
+        // AutoCAD's names for the windows and palettes, typed.
+        "commandline" | "commandlineclose" if params.is_null() => {
+            app.ui.show_command_line = id == "commandline";
+            Ok(Value::Null)
+        }
+        "help" | "about" | "blockspalette" if params.is_null() => {
+            app.ui.dialog = Some(match id {
+                "help" => "commands".into(),
+                "about" => "about".into(),
+                _ => "blocks".into(),
+            });
+            Ok(Value::Null)
+        }
+        "showpalettes" | "pon" if params.is_null() => {
+            app.ui.show_palettes = true;
+            app.ui.show_toolsets = true;
+            Ok(Value::Null)
+        }
+        "toolpalettes" | "tp" if params.is_null() => return run_ui_command_inner(app, "ui.toggle.toolsets", &json!({"on": true})),
+        "propertiesclose" | "prclose" if params.is_null() => crate::docking::command(app, false, &json!({"operation":"close", "panel":"properties"})),
+        "layerclose" if params.is_null() => {
+            if app.ui.dialog.as_deref() == Some("layers") {
+                app.ui.dialog = None;
+            }
+            Ok(Value::Null)
+        }
+        // The command line's own lines again (TEXTSCR expands the history).
+        "graphscr" if params.is_null() => {
+            app.cmd.expanded = false;
             Ok(Value::Null)
         }
         "ui.toggle.systemcursor" => {
@@ -248,7 +288,8 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
             Ok(Value::Null)
         }
         "ui.toggle.ucsicon" => {
-            toggle(&mut app.ui.show_ucs_icon, params);
+            // UCSICON, the system variable the UCSICON command sets.
+            toggle(&mut app.session.settings.ucsicon, params);
             Ok(Value::Null)
         }
         // `{"on": bool}` sets it; without, toggles. Reports the state.
@@ -316,7 +357,7 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
                 None => Ok(json!({ "saveVersion": app.ui.save_version })),
             }
         }
-        "ui.hidepalettes" => {
+        "ui.hidepalettes" | "hidepalettes" | "poff" => {
             app.ui.show_palettes = false;
             app.ui.show_toolsets = false;
             Ok(Value::Null)

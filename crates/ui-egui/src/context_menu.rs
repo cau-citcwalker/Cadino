@@ -86,9 +86,12 @@ fn push(groups: &mut Vec<Vec<Entry>>, group: Vec<Entry>) {
 pub fn entries(app: &CadApp) -> Vec<Vec<Entry>> {
     let mut groups = Vec::new();
     let mut first = Vec::new();
-    if let Some(last) = app.session.last_command.as_deref().and_then(find_command) {
-        let label = crate::tf!("Repeat {command}", command = last.id.to_ascii_uppercase());
-        first.push(Entry::Item { label, id: last.id.to_string(), shortcut: None, enabled: (last.enabled)(&app.session).is_ok() });
+    // A dash name that ran a command's prompts (-DIMSTYLE) repeats as typed.
+    if let Some(last) = app.session.last_command.clone()
+        && let Some(spec) = find_command(&last).or_else(|| find_command(last.trim_start_matches('-')))
+    {
+        let label = crate::tf!("Repeat {command}", command = last.to_ascii_uppercase());
+        first.push(Entry::Item { label, id: last, shortcut: None, enabled: (spec.enabled)(&app.session).is_ok() });
     }
     let recent: Vec<Entry> = app
         .session

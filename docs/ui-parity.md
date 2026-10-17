@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (animation effects follow the operating system's setting) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-17 · **Change:** minor (AutoComplete runs the highlighted command; commands typed bare prompt or open their dialog) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
 
 How CADCraft's interaction compares with AutoCAD's: point entry, object snaps, tracking, dynamic
 input, grips, selection, the command line, chrome and navigation. A drafter's speed in AutoCAD
@@ -140,8 +140,10 @@ down-arrow options menu (DYNPROMPT), and DYNDIM.
 
 | Feature | AutoCAD | CADCraft |
 |---|---|---|
-| AutoComplete (commands, sysvars, mid-string, synonyms) | yes | command list with Tab to accept (`cmdline.rs:30,176,317`); no sysvar or mid-string search confirmed |
-| Aliases | about 250 in `acad.pgp` | 144 aliases across the commands (counted from source) |
+| AutoComplete (commands, sysvars, mid-string, synonyms) | yes | command list with Tab to accept; Enter or Space at `Command:` runs the highlighted (first) suggestion when the name doesn't run as typed (DIMST runs DIMSTYLE; AI still opens the assistant) (`cmdline.rs` `submit`); no sysvar or mid-string search |
+| A command typed bare starts its prompts or opens its dialog | yes | yes: DIMSTYLE, COLOR, LWEIGHT, FIND, WBLOCK, LAYERSTATE and MLSTYLE open their dialogs; LIMITS, LTSCALE, LEADER, QLEADER/LE, BASE, GETVAR, MEASUREGEOM, LAYMCUR, LAYMCH, LAYISO, REGION and the file commands prompt. With answers on the line (`color red`, scripts) the command-line form runs. Dash forms (-DIMSTYLE, -STYLE, -COLOR, -LWEIGHT, -UNITS, -WBLOCK, -OSNAP, -LAYERSTATE) prompt; -PLOT, -PUBLISH, -PAGESETUP, -PLOTSTYLE, -EXPORT, -PARAMETERS and -CONSTRAINTSETTINGS say their command-line form isn't available yet |
+| File prompts open the file dialog (FILEDIA 1) | yes | yes: STLOUT, DATALINK, STEPIN/STEPOUT and IGESIN/IGESOUT file prompts; cancelling cancels the command; FILEDIA 0 keeps them on the command line |
+| Aliases | about 250 in `acad.pgp` | 144 aliases across the commands, plus AutoCAD's other aliases and legacy DD… names (`ACAD_NAMES` in `cmd/mod.rs`: DIMSTY, MO, MEA, DDCOLOR, DDOSNAP, VP…) and TH/TI for THICKNESS/TILEMODE |
 | History (F2), Up/Down recall | yes | yes |
 | Transparent commands (`'zoom`, `'pan`, `'osnap`) | yes | yes (`lib.rs:496-503`) |
 | Enter/Space repeats last command | yes | yes |
@@ -202,6 +204,7 @@ down-arrow options menu (DYNPROMPT), and DYNDIM.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-17 | minor | AutoComplete: Enter/Space runs the highlighted suggestion; commands typed bare prompt or open their dialog (DIMSTYLE, COLOR, LWEIGHT, FIND, WBLOCK, Layer States, MLSTYLE dialogs); AutoCAD aliases and DD… names; file prompts use the file dialog (FILEDIA); -OSNAP, -LAYERSTATE, QLEADER, FILL, QTEXT, UCSICON; option prompts read "Enter an option [..]" without "or" |
 | 2026-10-12 | minor | Selected and hovered objects redrawn in the selection colour (text and arrowheads included); Options ▸ Selection laid out as AutoCAD's: Object grouping, Show grips, grip object limit, selection preview, Visual Effect Settings (selection area, preview filter) |
 | 2026-10-12 | minor | Animation effects (dialog and menu fades, smoothed wheel scrolling and ⌘/Ctrl+wheel zoom) follow the operating system's setting; View ▸ Accessibility ▸ Animation Effects chooses System, On or Off |
 | 2026-10-12 | minor | Hatch and Gradient / Hatch Edit dialogs (HATCH, GRADIENT, HATCHEDIT, double-click a hatch; HPDLGMODE) |

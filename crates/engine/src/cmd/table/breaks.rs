@@ -24,7 +24,8 @@ pub fn specs() -> Vec<CommandSpec> {
             .interactive(|_| Ok(Box::new(BreakM::default()))),
         CommandSpec::new("datalink", "Data Link...", run_datalink)
             .menu(&["Insert", "Data Link..."])
-            .params("{handle, path (.csv, .txt/.tsv tab-separated), startRow? (default: below the title), remove?: bool} → {rows, cols}"),
+            .params("{handle, path (.csv, .txt/.tsv tab-separated), startRow? (default: below the title), remove?: bool} → {rows, cols}")
+            .interactive(|_| Ok(Box::new(BreakM { link: true, ..BreakM::default() }))),
         CommandSpec::new("datalinkupdate", "Update Data Links", run_update)
             .params("{handles?} (default: every linked table) → {updated}")
             .interactive(|_| Ok(Box::new(SelectRun::new("datalinkupdate", "DATALINKUPDATE")))),
@@ -99,19 +100,33 @@ fn run_break(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "handle": r["handle"], "parts": parts }))
 }
 
-/// `table.break` at the command line: select a table, then the part height (or Off).
+/// `table.break` at the command line: select a table, then the part height (or Off). DATALINK:
+/// the table (a selected one, if any), then the file to link.
 #[derive(Default)]
 struct BreakM {
     table: Option<Handle>,
+    link: bool,
 }
 
 impl Interactive for BreakM {
     fn name(&self) -> &'static str {
-        "TABLEBREAK"
+        if self.link { "DATALINK" } else { "TABLEBREAK" }
+    }
+    fn begin(&mut self, s: &mut Session) -> Result<Step> {
+        if self.link {
+            let d = s.doc()?;
+            self.table = s.selection().into_iter().find(|h| d.entity(*h).is_some_and(|e| matches!(e.kind, EntityKind::Table(_))));
+        }
+        Ok(Step::Continue)
     }
     fn prompt(&self, _s: &Session) -> Prompt {
         match self.table {
             None => Prompt::new("Select a table", Accept::SELECT),
+            Some(_) if self.link => Prompt::new("Enter name of CSV file to link", Accept::TEXT).picker(crate::Picker::File {
+                save: false,
+                label: "CSV (CSV, TXT, TSV)",
+                exts: &["csv", "txt", "tsv"],
+            }),
             Some(_) => Prompt::new("Enter maximum part height or", Accept::POINT_OR_NUMBER).kw(&["Off"]),
         }
     }
@@ -140,6 +155,13 @@ impl Interactive for BreakM {
             (None, Input::Enter) => Ok(Step::Cancel),
             (None, _) => Ok(Step::Continue),
             (Some(_), Input::Enter) => Ok(Step::Done),
+            (Some(h), Input::Text(t)) if self.link => {
+                let path = t.trim().trim_matches('"');
+                let r = run_datalink(s, &json!({ "handle": h.hex(), "path": path }))?;
+                s.echo(format!("Linked {path}: {} row(s), {} column(s).", r["rows"], r["cols"]));
+                s.set_selection(Vec::new());
+                Ok(Step::Done)
+            }
             (Some(h), Input::Text(t) | Input::Keyword(t)) => {
                 let params = if t.trim().eq_ignore_ascii_case("off") || t.trim().eq_ignore_ascii_case("o") {
                     json!({ "handle": h.hex(), "enabled": false })

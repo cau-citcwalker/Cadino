@@ -1369,3 +1369,223 @@ menu	Modify	수정
 	Could not save the key in the system keychain: {error}	시스템 키체인에 키를 저장하지 못했습니다: {error}
 	Could not remove the key from the system keychain: {error}	시스템 키체인에서 키를 지우지 못했습니다: {error}
 	Asking the system keychain…	시스템 키체인을 확인하는 중…
+	Select Color	색상 선택
+	Color:	색상:
+	Lineweight Settings	선가중치 설정
+	Lineweights	선가중치
+	Units for Listing	목록 단위
+	Millimeters (mm)	밀리미터(mm)
+	Inches (in)	인치(in)
+	Display Lineweight	선가중치 표시
+	Current Lineweight: {lineweight}	현재 선가중치: {lineweight}
+	Dimension lines	치수선
+	Extend beyond ticks	틱 너머 연장
+	Baseline spacing	기준선 간격
+	Extension lines	치수보조선
+	Suppress ext line 1	치수보조선 1 숨기기
+	Suppress ext line 2	치수보조선 2 숨기기
+	Extend beyond dim lines	치수선 너머 연장
+	Offset from origin	원점에서 띄우기
+	Arrowheads	화살촉
+	First and second	첫 번째와 두 번째
+	Arrow size	화살촉 크기
+	Center marks	중심 표식
+	Mark	표식
+	Size	크기
+	Text appearance	문자 모양
+	Text color	문자 색상
+	Text placement	문자 배치
+	Centered	중앙
+	Above	위
+	Outside	바깥쪽
+	JIS	JIS
+	Below	아래
+	At Ext Line 1	치수보조선 1 옆
+	At Ext Line 2	치수보조선 2 옆
+	Over Ext Line 1	치수보조선 1 위
+	Over Ext Line 2	치수보조선 2 위
+	Offset from dim line	치수선에서 띄우기
+	Vertical position	수직 위치
+	Horizontal position	수평 위치
+	Text alignment	문자 정렬
+	Aligned with dimension line	치수선에 맞춤
+	ISO standard	ISO 표준
+	Alignment	정렬
+	Fit options	맞춤 옵션
+	Either text or arrows (best fit)	문자 또는 화살촉(최적 맞춤)
+	Arrows	화살촉
+	Both text and arrows	문자와 화살촉 모두
+	Move outside first	먼저 밖으로 보낼 요소
+	Always keep text between ext lines	문자를 항상 치수보조선 사이에 두기
+	Suppress arrows if they don't fit inside extension lines	치수보조선 사이에 들어가지 않는 화살촉 숨기기
+	Scale for dimension features	치수 요소 축척
+	Use overall scale of	전체 축척
+	Fine tuning	세부 조정
+	Draw dim line between ext lines	치수보조선 사이에 치수선 그리기
+	Linear dimensions	선형 치수
+	Scientific	과학적 표기
+	Decimal	십진
+	Engineering	엔지니어링
+	Architectural	건축
+	Fractional	분수
+	Windows Desktop	Windows 설정
+	Unit format	단위 형식
+	Precision	정밀도
+	'.' (Period)	'.' (마침표)
+	',' (Comma)	',' (쉼표)
+	' ' (Space)	' ' (공백)
+	Decimal separator	소수 구분 기호
+	Round off	반올림
+	Scale factor	축척 비율
+	Suppress leading zeros	앞자리 0 숨기기
+	Suppress trailing zeros	끝자리 0 숨기기
+	Angular dimensions	각도 치수
+	Decimal Degrees	십진 도
+	Degrees Minutes Seconds	도/분/초
+	Gradians	그라디안
+	Radians	라디안
+	Units format	단위 형식
+	Dimension Style Manager	치수 스타일 관리자
+	Current dimension style: {name}	현재 치수 스타일: {name}
+	Styles	스타일
+	Rename	이름 바꾸기
+	Standard and the current style cannot be deleted	Standard 스타일과 현재 스타일은 삭제할 수 없습니다
+	Create New Dimension Style	새 치수 스타일 만들기
+	New style name	새 스타일 이름
+	Start With	기준 스타일
+	Preview of: {name}	미리보기: {name}
+	Lines	선
+	Symbols and Arrows	기호 및 화살촉
+	Fit	맞춤
+	Primary Units	1차 단위
+	Closed filled	닫힌 채움
+	Closed blank	닫힌 빈 화살촉
+	Dot	점
+	Architectural tick	건축 틱
+	Oblique tick	사선 틱
+	Open arrow	열린 화살촉
+	Origin indicator	원점 표시
+	Origin indicator 2	원점 표시 2
+	Right angle	직각
+	Open 30	30도 열린 화살촉
+	Dot small	작은 점
+	Dot blank	빈 점
+	Dot small blank	작은 빈 점
+	Box blank	빈 사각형
+	Box filled	채운 사각형
+	Datum triangle	데이텀 삼각형
+	Datum triangle filled	채운 데이텀 삼각형
+	Integral	적분 기호
+	Find what:	찾을 내용:
+	Replace with:	바꿀 내용:
+	Match case	대/소문자 구분
+	Find whole words only	단어 단위로만 찾기
+	Select this object	이 객체 선택
+	Find	찾기
+	Replace All	모두 바꾸기
+	Done	완료
+	Layer States Manager	도면층 상태 관리자
+	Layer states	도면층 상태
+	Save the layers' current settings as a new layer state	도면층의 현재 설정을 새 도면층 상태로 저장
+	Save the layers' current settings in the selected state	도면층의 현재 설정을 선택한 상태에 저장
+	Multiline Style	다중선 스타일
+	Current multiline style: {name}	현재 다중선 스타일: {name}
+	A copy of the selected style	선택한 스타일의 사본
+	Elements	요소
+	Caps	끝 처리
+	End	끝
+	Outer arc	바깥쪽 호
+	Inner arcs	안쪽 호
+	Fill	채우기
+	Display joints	접합부 표시
+	Source	원본
+	Objects	객체
+	Base point	기준점
+	Pick point <	점 선택 <
+	Select objects <	객체 선택 <
+	No objects selected	선택한 객체가 없습니다
+	Destination	저장 위치
+	File name and path:	파일 이름 및 경로:
+	Choose the file	파일 선택
+@plural	{n} layer	도면층 {n}개
+@plural	{n} object selected	객체 {n}개 선택됨
+	Quick Leader	빠른 지시선
+	Quick Text	빠른 문자
+	Enter default object color	기본 객체 색상 입력
+	Red, Green, Blue	빨강, 초록, 파랑
+	Enter default lineweight for new objects	새 객체의 기본 선가중치 입력
+	Enter new linetype scale factor	새 선종류 축척 비율 입력
+	Specify lower left corner	왼쪽 아래 구석 지정
+	Specify upper right corner	오른쪽 위 구석 지정
+	Enter choice, 1 to 5	1에서 5 사이의 번호 입력
+	Enter number of digits to right of decimal point (0 to 8)	소수점 아래 자릿수 입력(0~8)
+	Enter denominator of smallest fraction to display (1, 2, 4, 8, 16, 32, 64, 128, or 256)	표시할 가장 작은 분수의 분모 입력(1, 2, 4, 8, 16, 32, 64, 128 또는 256)
+	Enter number of fractional places for display of angles (0 to 8)	각도 표시의 소수 자릿수 입력(0~8)
+	Enter direction for angle 0	0도 각도의 방향 입력
+	Do you want angles measured clockwise?	각도를 시계 방향으로 측정하시겠습니까?
+	Enter name of text style	문자 스타일 이름 입력
+	Enter text style(s) to list	나열할 문자 스타일 입력
+	Specify full font name or font filename (TTF or SHX)	전체 글꼴 이름 또는 글꼴 파일 이름 지정(TTF 또는 SHX)
+	Specify height of text	문자 높이 지정
+	Specify paper text height	용지 문자 높이 지정
+	Specify width factor	폭 비율 지정
+	Specify obliquing angle	기울기 각도 지정
+	Display text backwards?	문자를 좌우로 뒤집어 표시하시겠습니까?
+	Display text upside-down?	문자를 위아래로 뒤집어 표시하시겠습니까?
+	Vertical?	세로쓰기로 하시겠습니까?
+	Enter a dimension style option	치수 스타일 옵션 입력
+	Create annotative dimension style	주석 치수 스타일 작성
+	Enter name for new dimension style	새 치수 스타일 이름 입력
+	That name is already in use, redefine it?	이미 사용 중인 이름입니다. 재정의하시겠습니까?
+	Enter a dimension style name, [?] or <select dimension>	치수 스타일 이름, [?] 또는 <치수 선택> 입력
+	Enter dimension style(s) to list	나열할 치수 스타일 입력
+	Select dimension	치수 선택
+	Specify leader start point	지시선 시작점 지정
+	Enter leader format option	지시선 형식 옵션 입력
+	Enter first line of annotation text or <options>	주석 문자의 첫 줄 입력 또는 <옵션>
+	Enter next line of annotation text	주석 문자의 다음 줄 입력
+	Specify first leader point,	첫 번째 지시선 점 지정
+	Specify text width	문자 폭 지정
+	Enter first line of annotation text	주석 문자의 첫 줄 입력
+	Select a 3D solid	3D 솔리드 선택
+	Select arc, circle, line, or <specify vertex>	호, 원, 선 선택 또는 <정점 지정>
+	Enter text to find	찾을 문자 입력
+	Enter replacement text	바꿀 문자 입력
+	Select object whose layer will become current	현재 도면층으로 만들 객체 선택
+	Select objects to be changed	변경할 객체 선택
+	Select object on destination layer	대상 도면층의 객체 선택
+	Enter layer name	도면층 이름 입력
+	Select objects on the layer(s) to be isolated	격리할 도면층의 객체 선택
+	Enter layer state name(s) to list	나열할 도면층 상태 이름 입력
+	Enter new layer state name	새 도면층 상태 이름 입력
+	Enter name of layer state to restore	복원할 도면층 상태 이름 입력
+	Enter name of layer state to delete	삭제할 도면층 상태 이름 입력
+	Enter name of layer state to rename	이름을 바꿀 도면층 상태 이름 입력
+	Enter base point	기준점 입력
+	Enter name of output file	출력 파일 이름 입력
+	A drawing with this name already exists. Do you want to replace it?	같은 이름의 도면이 이미 있습니다. 바꾸시겠습니까?
+	Enter name of existing block	기존 블록 이름 입력
+	Enter variable name	변수 이름 입력
+	Enter list of object snap modes	객체 스냅 모드 목록 입력
+	Specify break point	끊기점 지정
+	Select solids or watertight meshes	솔리드 또는 닫힌 메쉬 선택
+	Enter name of STL file to write	저장할 STL 파일 이름 입력
+	Enter name of STEP file to write	저장할 STEP 파일 이름 입력
+	Enter name of STEP file to import	가져올 STEP 파일 이름 입력
+	Enter name of IGES file to write	저장할 IGES 파일 이름 입력
+	Enter name of IGES file to import	가져올 IGES 파일 이름 입력
+	Select a table	테이블 선택
+	Enter name of CSV file to link	연결할 CSV 파일 이름 입력
+	Enter LISP expression	LISP 식 입력
+	Enter a loaded linetype name	로드된 선종류 이름 입력
+	Enter a plotting preference	플롯 설정 입력
+	Enter color name or number (1-255)	색상 이름 또는 번호(1-255) 입력
+	Enter layer description	도면층 설명 입력
+	Enter layer name to make current	현재로 설정할 도면층 이름 입력
+	Enter layer name(s) to list	나열할 도면층 이름 입력
+	Enter lineweight (0.0mm - 2.11mm)	선가중치 입력(0.0mm - 2.11mm)
+	Enter name for new layer (becomes the current layer)	새 도면층 이름 입력(현재 도면층이 됨)
+	Enter name list for new layer(s)	새 도면층 이름 목록 입력
+	Enter new layer name	새 도면층 이름 입력
+	Enter old layer name	이전 도면층 이름 입력
+	Enter transparency value (0-90)	투명도 값 입력(0-90)

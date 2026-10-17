@@ -178,10 +178,10 @@ fn run_igesin(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// The interactive form: the file name is typed (no dialog), then the JSON form runs.
-struct AskPath {
-    id: &'static str,
-    name: &'static str,
-    msg: &'static str,
+pub(super) struct AskPath {
+    pub(super) id: &'static str,
+    pub(super) name: &'static str,
+    pub(super) msg: &'static str,
 }
 
 impl Interactive for AskPath {
@@ -190,7 +190,20 @@ impl Interactive for AskPath {
     }
 
     fn prompt(&self, _s: &Session) -> Prompt {
-        Prompt::new(self.msg, Accept::TEXT)
+        let file = |save, label, exts| crate::Picker::File { save, label, exts };
+        let picker = match self.id {
+            "igesout" => Some(file(true, "IGES (IGS, IGES)", &["igs", "iges"])),
+            "igesin" => Some(file(false, "IGES (IGS, IGES)", &["igs", "iges"])),
+            "stepout" => Some(file(true, "STEP (STP, STEP)", &["stp", "step"])),
+            "stepin" => Some(file(false, "STEP (STP, STEP)", &["stp", "step"])),
+            // RHINOOUT writes two files from one name.
+            _ => None,
+        };
+        let p = Prompt::new(self.msg, Accept::TEXT);
+        match picker {
+            Some(f) => p.picker(f),
+            None => p,
+        }
     }
 
     fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {

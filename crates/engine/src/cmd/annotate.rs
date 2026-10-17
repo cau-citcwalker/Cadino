@@ -72,7 +72,14 @@ pub fn specs() -> Vec<CommandSpec> {
             .alias(&["mld"])
             .params("{points: [[arrow], ..., [landing]] ([location] with leaderType none), text?, leaderType?: straight|spline|none, block?: name, blockAttach?: center|insertion}")
             .interactive(|s| Ok(Box::new(MLeaderM::new(s)))),
-        CommandSpec::new("leader", "Leader", run_leader).alias(&["lead"]).params("{points: [[x,y]...], text?}"),
+        CommandSpec::new("leader", "Leader", run_leader)
+            .alias(&["lead"])
+            .params("{points: [[x,y]...], text? (lines separated by \\P), spline?: bool, arrow?: bool (default true)}")
+            .interactive(|_| Ok(Box::<LeaderM>::default())),
+        CommandSpec::new("qleader", "Quick Leader", run_leader)
+            .alias(&["le"])
+            .params("{points: [[x,y]...], text? (lines separated by \\P), width? (text width, 0: none)} (as LEADER)")
+            .interactive(|_| Ok(Box::<QleaderM>::default())),
         CommandSpec::new("dimstyle.update", "Update", run_update)
             .menu(&["Dimension", "Update"])
             .params("{handles?}")
@@ -91,16 +98,26 @@ pub fn specs() -> Vec<CommandSpec> {
             .alias(&["dda"])
             .params("{handles?}")
             .interactive(|_| Ok(Box::new(SelectRun::new("dimdisassociate", "DIMDISASSOCIATE")))),
-        CommandSpec::new("dimtedit.home", "Home", |s, p| run_tedit(s, p, "home")).menu(&["Dimension", "Align Text", "Home"]).params("{handles?}"),
+        CommandSpec::new("dimtedit.home", "Home", |s, p| run_tedit(s, p, "home"))
+            .menu(&["Dimension", "Align Text", "Home"])
+            .params("{handles?}")
+            .interactive(|_| Ok(Box::new(tedit::TEditM::fixed("home")))),
         CommandSpec::new("dimtedit.angle", "Angle", |s, p| run_tedit(s, p, "angle"))
             .menu(&["Dimension", "Align Text", "Angle"])
             .params("{handles?, angle: degrees}")
             .interactive(|_| Ok(Box::new(tedit::TEditM::angle()))),
-        CommandSpec::new("dimtedit.left", "Left", |s, p| run_tedit(s, p, "left")).menu(&["Dimension", "Align Text", "Left"]).params("{handles?}"),
+        CommandSpec::new("dimtedit.left", "Left", |s, p| run_tedit(s, p, "left"))
+            .menu(&["Dimension", "Align Text", "Left"])
+            .params("{handles?}")
+            .interactive(|_| Ok(Box::new(tedit::TEditM::fixed("left")))),
         CommandSpec::new("dimtedit.center", "Center", |s, p| run_tedit(s, p, "center"))
             .menu(&["Dimension", "Align Text", "Center"])
-            .params("{handles?}"),
-        CommandSpec::new("dimtedit.right", "Right", |s, p| run_tedit(s, p, "right")).menu(&["Dimension", "Align Text", "Right"]).params("{handles?}"),
+            .params("{handles?}")
+            .interactive(|_| Ok(Box::new(tedit::TEditM::fixed("center")))),
+        CommandSpec::new("dimtedit.right", "Right", |s, p| run_tedit(s, p, "right"))
+            .menu(&["Dimension", "Align Text", "Right"])
+            .params("{handles?}")
+            .interactive(|_| Ok(Box::new(tedit::TEditM::fixed("right")))),
         CommandSpec::new("dimtedit", "Dimension Text Edit", run_dimtedit)
             .alias(&["dimted"])
             .params("{handles?, at?: [x,y], mode?: home|angle|left|center|right, angle?}")
@@ -510,8 +527,8 @@ fn run_leader(s: &mut Session, p: &Value) -> Result<Value> {
     let st = style(s);
     let h = s.add_entity(EntityKind::Leader(cadcraft_doc::Leader {
         vertices: pts.iter().map(|q| v3(*q)).collect(),
-        arrow: true,
-        spline: false,
+        arrow: bool_or(p, "arrow", true),
+        spline: bool_or(p, "spline", false),
         style: st,
     }))?;
     let mut out = vec![h.hex()];
@@ -521,7 +538,7 @@ fn run_leader(s: &mut Session, p: &Value) -> Result<Value> {
             s.add_entity(EntityKind::MText(MText {
                 insert: v3(*last + Vec2::new(th * 0.5, th * 0.5)),
                 height: th,
-                width: 0.0,
+                width: f64_or(p, "width", 0.0).clamp(0.0, 1e9),
                 attach: 4,
                 rotation: 0.0,
                 style: "Standard".into(),
@@ -536,15 +553,206 @@ fn run_leader(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "handles": out }))
 }
 
-fn run_update(s: &mut Session, p: &Value) -> Result<Value> {
+/// LEADER at the command line: "Specify leader start point", next points with
+/// Annotation/Format/Undo, then the annotation typed a line at a time.
+#[derive(Default)]
+struct LeaderM {
+    pts: Vec<Vec2>,
+    spline: bool,
+    no_arrow: bool,
+    /// "Enter leader format option [Spline/STraight/Arrow/None] <Exit>:".
+    format: bool,
+    /// The annotation lines, once the points are done (`Some`).
+    lines: Option<Vec<String>>,
+}
+
+impl LeaderM {
+    fn create(&self, s: &mut Session) -> Result<Step> {
+        let mut p = json!({ "points": self.pts.iter().map(|q| [q.x, q.y]).collect::<Vec<_>>(), "spline": self.spline, "arrow": !self.no_arrow });
+        if let Some(ls) = self.lines.as_ref().filter(|l| !l.is_empty()) {
+            p["text"] = json!(ls.join("\\P"));
+        }
+        run_leader(s, &p)?;
+        Ok(Step::Done)
+    }
+}
+
+impl Interactive for LeaderM {
+    fn name(&self) -> &'static str {
+        "LEADER"
+    }
+    fn prompt(&self, _s: &Session) -> Prompt {
+        if let Some(ls) = &self.lines {
+            // ponytail: Enter at the first line ends with no annotation (the None option);
+            // Tolerance, Copy, Block and Mtext annotations come from TOLERANCE, COPY and MLEADER.
+            let msg = if ls.is_empty() { "Enter first line of annotation text or <options>" } else { "Enter next line of annotation text" };
+            return Prompt::new(msg, Accept::TEXT);
+        }
+        if self.format {
+            const KW: Accept = Accept { point: false, number: false, text: false, select: false, enter: true };
+            return Prompt::new("Enter leader format option", KW).kw(&["Spline", "STraight", "Arrow", "None"]).default("Exit");
+        }
+        match self.pts.last() {
+            None => Prompt::new("Specify leader start point", Accept::POINT),
+            Some(b) if self.pts.len() == 1 => Prompt::new("Specify next point", Accept::POINT).base(*b),
+            Some(b) => Prompt::new("Specify next point", Accept::POINT).kw(&["Annotation", "Format", "Undo"]).default("Annotation").base(*b),
+        }
+    }
+    fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        if matches!(i, Input::Cancel) {
+            return Ok(Step::Cancel);
+        }
+        if let Some(ls) = &mut self.lines {
+            return match i {
+                Input::Text(t) if !t.is_empty() && ls.len() < 1000 => {
+                    ls.push(t);
+                    Ok(Step::Continue)
+                }
+                Input::Enter | Input::Text(_) => self.create(s),
+                _ => Ok(Step::Continue),
+            };
+        }
+        if self.format {
+            match i {
+                Input::Keyword(k) => match k.as_str() {
+                    "Spline" => self.spline = true,
+                    "STraight" => self.spline = false,
+                    "Arrow" => self.no_arrow = false,
+                    _ => self.no_arrow = true,
+                },
+                Input::Enter => {}
+                _ => return Ok(Step::Continue),
+            }
+            self.format = false;
+            return Ok(Step::Continue);
+        }
+        match i {
+            Input::Point(p) if self.pts.len() < 10_000 => self.pts.push(p),
+            Input::Keyword(k) if k == "Format" => self.format = true,
+            Input::Keyword(k) if k == "Undo" => {
+                self.pts.pop();
+            }
+            Input::Keyword(_) | Input::Enter if self.pts.len() >= 2 => self.lines = Some(Vec::new()),
+            Input::Enter => return Ok(Step::Cancel),
+            _ => {}
+        }
+        Ok(Step::Continue)
+    }
+    fn preview(&self, s: &Session, c: Vec2) -> Vec<EntityKind> {
+        if self.pts.is_empty() || self.lines.is_some() || self.format {
+            return Vec::new();
+        }
+        let vertices = self.pts.iter().chain(std::iter::once(&c)).map(|q| v3(*q)).collect();
+        vec![EntityKind::Leader(cadcraft_doc::Leader { vertices, arrow: !self.no_arrow, spline: self.spline, style: style(s) })]
+    }
+}
+
+/// QLEADER (LE) at the command line: up to three points ("Specify first leader point, or
+/// [Settings]", "Specify next point"), the text width, then the annotation a line at a time.
+// ponytail: the Leader Settings dialog's choices (more points, splines, other annotation types)
+// are not offered: a straight leader with an arrow and an MText annotation, as QLEADER's defaults.
+#[derive(Default)]
+struct QleaderM {
+    pts: Vec<Vec2>,
+    /// The text width, once the points are done.
+    width: Option<f64>,
+    /// The annotation lines, once the width is known (`Some`).
+    lines: Option<Vec<String>>,
+}
+
+/// QLEADER's default Maximum Points.
+const QLEADER_POINTS: usize = 3;
+
+impl QleaderM {
+    fn create(&self, s: &mut Session) -> Result<Step> {
+        let pts: Vec<[f64; 2]> = self.pts.iter().map(|q| [q.x, q.y]).collect();
+        let mut p = json!({ "points": pts, "width": self.width.unwrap_or(0.0) });
+        if let Some(ls) = self.lines.as_ref().filter(|l| !l.is_empty()) {
+            p["text"] = json!(ls.join("\\P"));
+        }
+        run_leader(s, &p)?;
+        Ok(Step::Done)
+    }
+}
+
+impl Interactive for QleaderM {
+    fn name(&self) -> &'static str {
+        "QLEADER"
+    }
+    fn prompt(&self, _s: &Session) -> Prompt {
+        match (&self.lines, self.width, self.pts.last()) {
+            (Some(ls), _, _) if ls.is_empty() => Prompt::new("Enter first line of annotation text", Accept::TEXT).default("Mtext"),
+            (Some(_), _, _) => Prompt::new("Enter next line of annotation text", Accept::TEXT),
+            (None, Some(_), _) => Prompt::new("Specify text width", Accept::NUMBER).default("0.0000"),
+            (None, None, None) => Prompt::new("Specify first leader point,", Accept::POINT).kw(&["Settings"]).default("Settings"),
+            (None, None, Some(b)) => Prompt::new("Specify next point", Accept::POINT).base(*b),
+        }
+    }
+    fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        if matches!(i, Input::Cancel) {
+            return Ok(Step::Cancel);
+        }
+        if let Some(ls) = &mut self.lines {
+            return match i {
+                Input::Text(t) if !t.is_empty() && ls.len() < 1000 => {
+                    ls.push(t);
+                    Ok(Step::Continue)
+                }
+                // ponytail: Enter at the first line (<Mtext>) leaves the leader without text; the
+                // in-place editor comes with MLEADER.
+                Input::Enter | Input::Text(_) => self.create(s),
+                _ => Ok(Step::Continue),
+            };
+        }
+        if self.width.is_some() {
+            match i {
+                Input::Text(t) => match super::machines::number(&t).filter(|w| *w >= 0.0 && *w < 1e9) {
+                    Some(w) => self.width = Some(w),
+                    None => return Err(EngineError::Other("Requires a distance of 0 or more.".into())),
+                },
+                Input::Enter => {}
+                _ => return Ok(Step::Continue),
+            }
+            self.lines = Some(Vec::new());
+            return Ok(Step::Continue);
+        }
+        match i {
+            Input::Point(p) => {
+                self.pts.push(p);
+                if self.pts.len() >= QLEADER_POINTS {
+                    self.width = Some(0.0);
+                }
+            }
+            Input::Enter if self.pts.len() >= 2 => self.width = Some(0.0),
+            Input::Keyword(_) | Input::Enter if self.pts.is_empty() => {
+                s.echo("The Leader Settings dialog is not available yet: QLEADER draws a straight leader with an arrow and multiline text.");
+            }
+            _ => {}
+        }
+        Ok(Step::Continue)
+    }
+    fn preview(&self, s: &Session, c: Vec2) -> Vec<EntityKind> {
+        if self.pts.is_empty() || self.width.is_some() {
+            return Vec::new();
+        }
+        let vertices = self.pts.iter().chain(std::iter::once(&c)).map(|q| v3(*q)).collect();
+        vec![EntityKind::Leader(cadcraft_doc::Leader { vertices, arrow: true, spline: false, style: style(s) })]
+    }
+}
+
+/// Dimension ▸ Update (and DIMSTYLE Apply): the dimensions take the current style and the DIM*
+/// variables set over it, in place of their own overrides.
+pub(super) fn run_update(s: &mut Session, p: &Value) -> Result<Value> {
     let hs = targets(s, p)?;
     let st = style(s);
     let d = s.doc_mut()?;
+    let overrides = d.dim_overrides();
     let mut n = 0;
     for h in hs {
         let _ = d.modify_entity(h, |e| {
             if let EntityKind::Dimension(dm) = &mut e.kind {
                 dm.style = st.clone();
+                dm.overrides.clone_from(&overrides);
                 dm.block = None;
                 n += 1;
             }

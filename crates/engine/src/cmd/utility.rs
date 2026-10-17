@@ -25,16 +25,33 @@ pub fn specs() -> Vec<CommandSpec> {
             .params("{mode: point|distance|angle|intersection, points: [[x,y],...]} → {value} | {point}")
             .noundo()
             .interactive(|_| Ok(Box::<PickM>::default())),
-        CommandSpec::new("find", "Find...", run_find).menu(&["Edit", "Find..."]).params("{find, replace?, matchCase?: bool, wholeWord?: bool}"),
-        CommandSpec::new("measuregeom", "Measure Geometry", run_measuregeom).params("{mode: distance|radius|angle|area, ...}").noundo(),
-        CommandSpec::new("radius.measure", "Radius", run_radius).menu(&["Tools", "Inquiry", "Radius"]).params("{handle}").noundo(),
-        CommandSpec::new("angle.measure", "Angle", run_angle).menu(&["Tools", "Inquiry", "Angle"]).params("{vertex, p1, p2} | {h1, h2}").noundo(),
+        CommandSpec::new("find", "Find...", run_find)
+            .menu(&["Edit", "Find..."])
+            .params("{find, replace?, matchCase?: bool, wholeWord?: bool}")
+            .interactive(|_| Ok(Box::<FindM>::default())),
+        CommandSpec::new("measuregeom", "Measure Geometry", run_measuregeom)
+            .params("{mode: distance|radius|angle|area|volume, ...} (volume: {handle} of a 3D solid)")
+            .noundo()
+            .interactive(|_| Ok(Box::new(MeasureM::new(None)))),
+        CommandSpec::new("radius.measure", "Radius", run_radius)
+            .menu(&["Tools", "Inquiry", "Radius"])
+            .params("{handle}")
+            .noundo()
+            .interactive(|_| Ok(Box::new(MeasureM::new(Some(Mode::Radius))))),
+        CommandSpec::new("angle.measure", "Angle", run_angle)
+            .menu(&["Tools", "Inquiry", "Angle"])
+            .params("{vertex, p1, p2} | {h1, h2}")
+            .noundo()
+            .interactive(|_| Ok(Box::new(MeasureM::new(Some(Mode::Angle))))),
     ]
 }
 
 // ---------------- CAL ----------------
 
 mod calc;
+mod measure;
+
+use measure::{MeasureM, Mode};
 
 /// What QuickCalc's "get from the drawing" picks put on the command line before the value (the
 /// palette reads it back from there).
@@ -272,6 +289,48 @@ fn run_find(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "matches": found, "total": total, "message": msg }))
 }
 
+/// FIND with no dialog (the command line, scripts without the interface): "Enter text to find",
+/// then "Enter replacement text <none>" (Enter finds and selects, without replacing).
+#[derive(Default)]
+struct FindM {
+    find: Option<String>,
+}
+
+impl Interactive for FindM {
+    fn name(&self) -> &'static str {
+        "FIND"
+    }
+    fn prompt(&self, _s: &Session) -> Prompt {
+        match self.find {
+            None => Prompt::new("Enter text to find", Accept::TEXT),
+            Some(_) => Prompt::new("Enter replacement text", Accept::TEXT).default("none"),
+        }
+    }
+    fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        let Some(find) = self.find.clone() else {
+            return Ok(match i {
+                Input::Text(t) => {
+                    self.find = Some(t);
+                    Step::Continue
+                }
+                Input::Enter | Input::Cancel => Step::Cancel,
+                _ => Step::Continue,
+            });
+        };
+        let p = match i {
+            Input::Text(t) => json!({ "find": find, "replace": t }),
+            Input::Enter => json!({ "find": find }),
+            Input::Cancel => return Ok(Step::Cancel),
+            _ => return Ok(Step::Continue),
+        };
+        let r = run_find(s, &p)?;
+        if let Some(m) = r.get("message").and_then(Value::as_str) {
+            s.echo(m.to_string());
+        }
+        Ok(Step::Done)
+    }
+}
+
 // ---------------- MEASUREGEOM ----------------
 // (MASSPROP is in `inquiry/regions.rs`.)
 
@@ -315,8 +374,23 @@ fn run_measuregeom(s: &mut Session, p: &Value) -> Result<Value> {
         "radius" | "r" => run_radius(s, p),
         "angle" | "a" => run_angle(s, p),
         "area" | "ar" => s.execute("area", p),
-        _ => Err(bad("measuregeom", "mode must be distance, radius, angle or area")),
+        "volume" | "v" => run_volume(s, p),
+        _ => Err(bad("measuregeom", "mode must be distance, radius, angle, area or volume")),
     }
+}
+
+/// The volume a 3D solid encloses, from its display mesh.
+/// ponytail: the tessellation's volume, within its tolerance of the exact B-rep volume; ask the
+/// kernel (`cadcraft_kernel`) when that difference matters.
+fn run_volume(s: &mut Session, p: &Value) -> Result<Value> {
+    let h = targets(s, p)?.first().copied().ok_or_else(|| bad("measuregeom", "`handle` (a 3D solid) is required"))?;
+    let d = s.doc()?;
+    let Some(EntityKind::Solid3d(x)) = d.entity(h).map(|e| &e.kind) else { return Err(bad("measuregeom", "select a 3D solid")) };
+    if x.mesh.open || x.mesh.tris.is_empty() {
+        return Err(bad("measuregeom", "the object is not a closed solid"));
+    }
+    let v = x.mesh.tris.iter().filter_map(|t| x.mesh.tri(t)).map(|[a, b, c]| x.world(a).dot(x.world(b).cross(x.world(c))) / 6.0).sum::<f64>().abs();
+    Ok(json!({ "volume": v, "message": format!("Volume = {v:.4}") }))
 }
 
 #[cfg(test)]
@@ -337,6 +411,48 @@ mod tests {
         let mut vars = serde_json::Map::new();
         vars.insert("x".into(), json!(3));
         assert_eq!(eval("x*x", &vars), Ok(9.0));
+    }
+
+    /// FIND typed with no dialog layer asks for the text (it refused "`find` is required").
+    #[test]
+    fn find_prompts_without_a_dialog() {
+        let mut s = Session::new();
+        s.execute("text", &json!({ "at": [0, 0], "height": 1, "text": "Bolt M8" })).unwrap();
+        s.cmdline("find").unwrap();
+        assert_eq!(s.prompt_text(), "FIND Enter text to find:");
+        s.cmdline("Bolt").unwrap();
+        assert_eq!(s.prompt_text(), "FIND Enter replacement text <none>:");
+        s.cmdline("").unwrap();
+        assert!(s.running.is_none());
+        assert_eq!(s.log.last().map(String::as_str), Some("1 match(es) in 1 object(s)"));
+        assert_eq!(s.selection().len(), 1);
+        s.cmdline("find").unwrap();
+        s.cmdline("Bolt").unwrap();
+        s.cmdline("Hex bolt").unwrap();
+        match &s.doc().unwrap().model.last().unwrap().kind {
+            EntityKind::Text(t) => assert_eq!(t.value, "Hex bolt M8"),
+            other => panic!("{other:?}"),
+        }
+        assert!(s.execute("find", &json!({})).is_err(), "the JSON form is unchanged");
+    }
+
+    #[test]
+    fn volume_of_a_box() {
+        let mut s = Session::new();
+        let k = cadcraft_geom::Mesh3 {
+            verts: vec![
+                cadcraft_geom::Vec3::new(0.0, 0.0, 0.0),
+                cadcraft_geom::Vec3::new(1.0, 0.0, 0.0),
+                cadcraft_geom::Vec3::new(0.0, 1.0, 0.0),
+                cadcraft_geom::Vec3::new(0.0, 0.0, 1.0),
+            ],
+            tris: vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]],
+            ..Default::default()
+        };
+        let solid = cadcraft_doc::Solid3d { mesh: std::sync::Arc::new(k), ..Default::default() };
+        let h = s.add_entity(EntityKind::Solid3d(solid)).unwrap();
+        let r = s.execute("measuregeom", &json!({ "mode": "volume", "handle": h.hex() })).unwrap();
+        assert!((r["volume"].as_f64().unwrap() - 1.0 / 6.0).abs() < 1e-12, "{r}");
     }
 
     #[test]

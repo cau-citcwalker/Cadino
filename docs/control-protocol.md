@@ -30,7 +30,7 @@ field. `engine.commands` returns a separate command catalog, not a list of addit
 
 | Method | Params | What it does |
 |---|---|---|
-| `cmdline.input` | `{text}` | Type a line at the command line exactly like a user. Starts commands by name/alias and answers prompts (points `x,y`, `@dx,dy`, `@d<a`, distances, keywords, empty = Enter). Spaces act as Enter except at text prompts. |
+| `cmdline.input` | `{text}` | Type a line at the command line exactly like a user. Starts commands by name/alias and answers prompts (points `x,y`, `@dx,dy`, `@d<a`, distances, keywords, empty = Enter). Spaces act as Enter except at text prompts. A command typed alone opens its dialog as a user's would (`color`); with its answers on the line it runs its command-line prompts instead (`color red`). AutoComplete (a partial name) applies only to keys typed in the window. |
 | `cmdline.script` | `{text}` | Run a multi-line script (like `.scr` files). |
 | `cmdline.key` | `{key: "enter"\|"escape"}` | Press Enter or Escape. Replies like `cmdline.input`: the state, `output`, and `error` when Enter was refused. |
 | `cmdline.state` | | Current prompt, keywords, accepted input kinds, history tail. |

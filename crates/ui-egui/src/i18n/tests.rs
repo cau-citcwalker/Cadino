@@ -112,6 +112,12 @@ fn missing_marked_ui_literals(language: &str) -> BTreeSet<String> {
         include_str!("../options/dialog.rs"),
         include_str!("../options/ai.rs"),
         include_str!("../assistant.rs"),
+        include_str!("../managers/current.rs"),
+        include_str!("../managers/dimstyle.rs"),
+        include_str!("../managers/find.rs"),
+        include_str!("../managers/layerstates.rs"),
+        include_str!("../managers/mlstyle.rs"),
+        include_str!("../managers/wblock.rs"),
     ];
     let mut missing = BTreeSet::new();
     for source in sources {
@@ -146,6 +152,34 @@ fn missing_marked_ui_literals(language: &str) -> BTreeSet<String> {
         }
     }
     missing
+}
+
+/// The prompts of the commands typed bare (the settings, styles, layer tools, measurements and
+/// file commands that used to need JSON parameters) reach the command line translated: the
+/// command line looks a prompt up by its text ([`crate::cmdline`]).
+#[test]
+fn typed_command_prompts_are_translated() {
+    let sources = [
+        include_str!("../../../engine/src/cmd/props/prompts.rs"),
+        include_str!("../../../engine/src/cmd/props/dimstyle.rs"),
+        include_str!("../../../engine/src/cmd/utility/measure.rs"),
+        include_str!("../../../engine/src/cmd/blocks/wblock.rs"),
+        include_str!("../../../engine/src/cmd/layer/prompts.rs"),
+    ];
+    for language in ["uk", "ko"] {
+        let catalog = catalog(language).unwrap();
+        let mut missing = BTreeSet::new();
+        for source in sources {
+            for rest in source.split("Prompt::new(\"").skip(1) {
+                let Some(end) = rest.find('"') else { continue };
+                let key = &rest[..end];
+                if !key.is_empty() && !catalog.contains_key(&("", key)) {
+                    missing.insert(key.to_string());
+                }
+            }
+        }
+        assert!(missing.is_empty(), "{language}: prompts without a translation: {missing:?}");
+    }
 }
 
 /// The AI assistant's own messages reach the palette in English with their `{names}` filled in;

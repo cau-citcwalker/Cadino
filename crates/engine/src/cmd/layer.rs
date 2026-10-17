@@ -20,18 +20,25 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("layer.new", "New Layer", run_new).params("{name, color?, linetype?, lineweight? (mm), current?: bool}"),
         CommandSpec::new("layer.set", "Set Layer Properties", run_set)
             .params("{name, on?, frozen?, locked?, plot?, color?, linetype?, lineweight?, transparency?, description?, newVpFreeze?, plotStyle? (named plot style), newName?}"),
-        CommandSpec::new("layer.current", "Make Current", run_current)
-            .menu(&["Format", "Layer Tools", "Make Current"])
-            .alias(&["clayer"])
-            .params("{name}"),
+        // Not aliased CLAYER: typed bare, CLAYER is the system variable (SETVAR CLAYER).
+        CommandSpec::new("layer.current", "Make Current", run_current).params("{name}"),
         CommandSpec::new("layer.delete", "Delete Layer", run_delete).params("{name}"),
-        CommandSpec::new("laymcur", "Make Object's Layer Current", run_laymcur).params("{handles?}"),
-        CommandSpec::new("laymch", "Layer Match", run_laymch).menu(&["Format", "Layer Tools", "Layer Match"]).params("{handles?, layer}"),
+        CommandSpec::new("laymcur", "Make Object's Layer Current", run_laymcur)
+            .menu(&["Format", "Layer Tools", "Make Current"])
+            .params("{handles?}")
+            .interactive(|_| Ok(Box::new(SelectRun::single("laymcur", "LAYMCUR", "Select object whose layer will become current")))),
+        CommandSpec::new("laymch", "Layer Match", run_laymch)
+            .menu(&["Format", "Layer Tools", "Layer Match"])
+            .params("{handles?, layer}")
+            .interactive(|_| Ok(Box::new(prompts::LaymchM::default()))),
         CommandSpec::new("laycur", "Change to Current Layer", run_laycur)
             .menu(&["Format", "Layer Tools", "Change to Current Layer"])
             .params("{handles?}")
             .interactive(|_| Ok(Box::new(SelectRun::new("laycur", "LAYCUR")))),
-        CommandSpec::new("layiso", "Isolate Layer", run_layiso).menu(&["Format", "Layer Tools", "Isolate Layer"]).params("{handles?}"),
+        CommandSpec::new("layiso", "Isolate Layer", run_layiso)
+            .menu(&["Format", "Layer Tools", "Isolate Layer"])
+            .params("{handles?}")
+            .interactive(|_| Ok(Box::new(prompts::LayisoM::default()))),
         CommandSpec::new("layuniso", "Unisolate Layer", run_layuniso).menu(&["Format", "Layer Tools", "Unisolate Layer"]),
         CommandSpec::new("layfrz", "Freeze Layer", |s, p| set_obj_layers(s, p, |l| l.frozen = true))
             .menu(&["Format", "Layer Tools", "Freeze Layer"])
@@ -57,6 +64,9 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("layerstate.list", "List Layer States", run_state_list).params("{} → states").noundo(),
         CommandSpec::new("layerstate.delete", "Delete Layer State", run_state_delete).params("{name}"),
         CommandSpec::new("layerstate.rename", "Rename Layer State", run_state_rename).params("{from, to}"),
+        CommandSpec::new("-layerstate", "Layer States Manager", run_state_list)
+            .params("{} → states (as layerstate.list)")
+            .interactive(|_| Ok(Box::<prompts::LayerStateM>::default())),
         CommandSpec::new("laymrg", "Layer Merge", merge::run_laymrg)
             .menu(&["Format", "Layer Tools", "Layer Merge"])
             .params("{from: [names], to} (the from layers' objects move to `to`, then the from layers are deleted)")

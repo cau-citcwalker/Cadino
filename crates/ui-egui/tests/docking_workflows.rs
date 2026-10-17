@@ -334,3 +334,15 @@ fn canvas_reset_during_splitter_drag_discards_old_resize_and_ends_gesture() {
     assert_eq!(h.state().ui.docking.layout, expected.layout);
     assert_eq!(h.state().session.doc().unwrap(), &drawing);
 }
+
+/// POFF hides Tool Sets, Layers and Properties; PON brings each back where it was, Tool Sets at
+/// its 220 px width rather than half the window.
+#[test]
+fn poff_then_pon_restores_the_panel_layout() {
+    let mut h = harness(None, 1280.0, 1.0);
+    let before = h.state().ui.docking.layout.clone();
+    type_command(&mut h, "POFF");
+    assert!(!h.state().ui.docking.layout.contains(&Panel::ToolSets));
+    type_command(&mut h, "PON");
+    assert_eq!(h.state().ui.docking.layout, before);
+}

@@ -19,6 +19,7 @@ mod attedit;
 mod dyngrip;
 mod extract;
 pub(crate) mod refedit;
+mod wblock;
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -44,8 +45,14 @@ pub fn specs() -> Vec<CommandSpec> {
             .interactive(|_| Ok(Box::new(AttdefM::default()))),
         attedit::attedit_spec(),
         attedit::dash_attedit_spec(),
-        CommandSpec::new("wblock", "Write Block", run_wblock).alias(&["w"]).params("{path, name? | handles?, base?}"),
-        CommandSpec::new("base", "Base", run_base).menu(&["Draw", "Block", "Base"]).params("{at: [x,y]}"),
+        CommandSpec::new("wblock", "Write Block", run_wblock)
+            .alias(&["w"])
+            .params("{path, name? | handles?, base?}")
+            .interactive(|_| Ok(Box::new(wblock::WblockM::default()))),
+        CommandSpec::new("base", "Base", run_base)
+            .menu(&["Draw", "Block", "Base"])
+            .params("{at: [x,y]}")
+            .interactive(|_| Ok(Box::new(wblock::BaseM))),
         CommandSpec::new("blocks.dynamic", "Dynamic Block Data", run_dynamic)
             .params("{name (a block, or \"*Model_Space\" for a drawing that is a dynamic block's own)} → {parameters, actions, other} | null (not a dynamic block)")
             .enabled(has_doc)

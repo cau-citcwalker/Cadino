@@ -1,7 +1,10 @@
 //! EXPORT, IMPORT, PUBLISH and PREVIEW from a menu, the tool bar or the command line: the first
-//! three ask for a file, PREVIEW shows the plot in a window. Calls with parameters (scripts, the
-//! control channel, MCP) never get here and never open a dialog: they run the engine commands.
+//! three ask for a file, PREVIEW shows the plot in a window. So do the commands that read or
+//! write one file (STEPIN, STEPOUT, STLOUT, DATALINK, APPLOAD, SCRIPT, ALIASEDIT), as AutoCAD's
+//! do with FILEDIA 1. Calls with parameters (scripts, the control channel, MCP) never get here and
+//! never open a dialog: they run the engine commands.
 
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use egui::TextureHandle;
@@ -12,12 +15,123 @@ use crate::CadApp;
 /// Bumped each time PREVIEW is started, so the window renders the drawing as it is now.
 static PREVIEW_GEN: AtomicU32 = AtomicU32::new(0);
 
+/// A kind of file to open: the file dialog's filter label and its extensions.
+pub type OpenKind = (&'static str, &'static [&'static str]);
+
+thread_local! {
+    // ponytail: a hint beside `Services::pick_open` rather than a new picker signature, so hosts
+    // and tests that build `Services` keep compiling; a typed picker if more kinds turn up.
+    static OPEN_KIND: Cell<Option<OpenKind>> = const { Cell::new(None) };
+    /// The file prompt the file dialog was shown for (the command's start count and the prompt).
+    static ASKED: RefCell<Option<(u64, String)>> = const { RefCell::new(None) };
+}
+
+/// The kind of file the open dialog being shown asks for (`None`: a drawing), so the host can
+/// list that kind first.
+pub fn open_kind() -> Option<OpenKind> {
+    OPEN_KIND.with(Cell::get)
+}
+
+/// Ask for a file of `kind` to open. `None`: cancelled.
+fn pick_file(app: &CadApp, kind: OpenKind) -> Option<String> {
+    let pick = app.services.pick_open.as_ref()?;
+    OPEN_KIND.with(|k| k.set(Some(kind)));
+    let picked = pick();
+    OPEN_KIND.with(|k| k.set(None));
+    picked
+}
+
+/// A command's file-name prompt (STLOUT's after its objects, DATALINK's after its table,
+/// STEPIN's, IGESOUT's...) asks with the file dialog when FILEDIA is 1, as AutoCAD's do: the chosen
+/// path is entered, and cancelling the dialog cancels the command. Without a file dialog, or with
+/// FILEDIA 0, the name is typed. Called every frame.
+pub fn file_prompt(app: &mut CadApp) {
+    let Some(prompt) = app.session.current_prompt() else { return };
+    let Some(cadcraft_engine::Picker::File { save, label, exts }) = prompt.picker else { return };
+    let has_picker = if save { app.services.pick_save.is_some() } else { app.services.pick_open.is_some() };
+    if !app.session.settings.filedia || !has_picker {
+        return;
+    }
+    // Once per prompt: a path the command refuses leaves its prompt for typing.
+    let key = (app.session.starts, prompt.message.clone());
+    if ASKED.with(|a| a.borrow().as_ref() == Some(&key)) {
+        return;
+    }
+    ASKED.with(|a| *a.borrow_mut() = Some(key));
+    let picked = if save {
+        let title = app.session.state().map(|s| s.title.clone()).unwrap_or_default();
+        let stem = std::path::Path::new(&title).file_stem().map(|s| s.to_string_lossy().to_string()).filter(|s| !s.is_empty());
+        let name = format!("{}.{}", stem.unwrap_or_else(|| "Drawing".into()), exts.first().copied().unwrap_or("dat"));
+        app.services.pick_save.as_ref().and_then(|pick| pick(&name))
+    } else {
+        pick_file(app, (label, exts))
+    };
+    let input = match picked {
+        Some(path) => cadcraft_engine::Input::Text(path),
+        None => cadcraft_engine::Input::Cancel,
+    };
+    if let Err(e) = app.session.input(input) {
+        app.session.echo(e.to_string());
+    }
+}
+
 /// Handle a typed or menu-invoked file exchange command (`id` may be an alias).
 pub fn route(app: &mut CadApp, id: &str) -> Result<Value, String> {
     let title = app.session.state().map(|s| s.title.clone()).unwrap_or_default();
     let stem = std::path::Path::new(&title).file_stem().map(|s| s.to_string_lossy().to_string()).filter(|s| !s.is_empty());
     let stem = stem.unwrap_or_else(|| "Drawing".into());
     match id {
+        // STLOUT exports the objects selected first; with none, it asks for them, then (as its
+        // file prompt) for the file.
+        "stlout" if app.session.selection().is_empty() => start(app, "stlout"),
+        "stepout" | "stlout" => {
+            let (name, ext) = if id == "stepout" { ("STEPOUT", "stp") } else { ("STLOUT", "stl") };
+            let Some(pick) = app.services.pick_save.as_ref() else { return no_picker(app, name, &format!(r#"{id} {{"path": "part.{ext}"}}"#)) };
+            match pick(&format!("{stem}.{ext}")) {
+                Some(path) => app.run(id, json!({ "path": path })),
+                None => Ok(Value::Null),
+            }
+        }
+        "stepin" | "datalink" | "appload" | "script" | "aliasedit" => {
+            let (name, kind, example): (&str, OpenKind, &str) = match id {
+                "stepin" => ("STEPIN", ("STEP (STP, STEP)", &["stp", "step"]), r#"stepin {"path": "part.stp"}"#),
+                "datalink" => ("DATALINK", ("CSV (CSV, TXT, TSV)", &["csv", "txt", "tsv"]), r#"datalink {"path": "data.csv"}"#),
+                "appload" => ("APPLOAD", ("LISP (LSP)", &["lsp"]), r#"appload {"path": "tools.lsp"}"#),
+                "script" => ("SCRIPT", ("Script (SCR)", &["scr"]), r#"script {"path": "setup.scr"}"#),
+                _ => ("ALIASEDIT", ("PGP", &["pgp"]), r#"aliasedit {"file": "acad.pgp"}"#),
+            };
+            if app.services.pick_open.is_none() {
+                return no_picker(app, name, example);
+            }
+            // DATALINK links the selected table's cells to the file; with no table selected, it asks
+            // for one, then (as its file prompt) for the file.
+            if id == "datalink" && !table_selected(app) {
+                return start(app, "datalink");
+            }
+            let Some(path) = pick_file(app, kind) else { return Ok(Value::Null) };
+            match id {
+                // As a LISP file dropped on the window loads: its routine may wait for the user.
+                "appload" => match cadcraft_engine::lisp::builtins::read_text_file(&path) {
+                    Some(text) => {
+                        app.load_lisp(&path, &text);
+                        Ok(Value::Null)
+                    }
+                    None => {
+                        let msg = format!("APPLOAD: can't read {path}");
+                        app.session.echo(msg.clone());
+                        Err(msg)
+                    }
+                },
+                "aliasedit" => {
+                    let r = app.run("aliasedit", json!({ "file": path }));
+                    if let Ok(v) = &r {
+                        app.session.echo(format!("{} command alias(es) loaded from {path}.", v["loaded"].as_u64().unwrap_or(0)));
+                    }
+                    r
+                }
+                _ => app.run(id, json!({ "path": path })),
+            }
+        }
         "preview" | "pre" => {
             PREVIEW_GEN.fetch_add(1, Ordering::Relaxed);
             app.ui.dialog = Some("preview".into());
@@ -45,6 +159,19 @@ pub fn route(app: &mut CadApp, id: &str) -> Result<Value, String> {
             }
         }
     }
+}
+
+/// Start the command's prompts; its file prompt then asks with the file dialog ([`file_prompt`]).
+fn start(app: &mut CadApp, id: &str) -> Result<Value, String> {
+    app.session.start(id).map(|()| Value::Null).map_err(|e| {
+        app.session.echo(e.to_string());
+        e.to_string()
+    })
+}
+
+fn table_selected(app: &CadApp) -> bool {
+    let Ok(d) = app.session.doc() else { return false };
+    app.session.selection().iter().any(|h| d.entity(*h).is_some_and(|e| matches!(e.kind, cadcraft_doc::EntityKind::Table(_))))
 }
 
 fn no_picker(app: &mut CadApp, name: &str, example: &str) -> Result<Value, String> {

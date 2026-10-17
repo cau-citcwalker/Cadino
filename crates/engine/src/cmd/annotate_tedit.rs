@@ -12,12 +12,20 @@ use crate::{Accept, Input, Interactive, Prompt, Result, Session, Step};
 pub(super) struct TEditM {
     dim: Option<Handle>,
     asking_angle: bool,
+    /// Align Text > Home, Left, Center or Right: applied as soon as the dimension is known.
+    fixed: Option<&'static str>,
 }
 
 impl TEditM {
     /// Align Text > Angle: select the dimension (or use the preselected one), then ask for the angle.
     pub(super) fn angle() -> Self {
-        Self { dim: None, asking_angle: true }
+        Self { asking_angle: true, ..Self::default() }
+    }
+
+    /// Align Text > Home, Left, Center or Right: select the dimension (or use the preselected
+    /// one) and apply `mode`.
+    pub(super) fn fixed(mode: &'static str) -> Self {
+        Self { fixed: Some(mode), ..Self::default() }
     }
 
     fn run(&self, s: &mut Session, mut p: Value) -> Result<Step> {
@@ -41,7 +49,10 @@ impl Interactive for TEditM {
         {
             self.dim = Some(h);
         }
-        Ok(Step::Continue)
+        match self.fixed {
+            Some(m) if self.dim.is_some() => self.run(s, json!({ "mode": m })),
+            _ => Ok(Step::Continue),
+        }
     }
     fn prompt(&self, _s: &Session) -> Prompt {
         if self.dim.is_none() {
@@ -60,6 +71,9 @@ impl Interactive for TEditM {
                         Some(h) => self.dim = Some(*h),
                         None if hs.is_empty() => {}
                         None => s.echo("Object selected is not a dimension."),
+                    }
+                    if let (Some(m), Some(_)) = (self.fixed, self.dim) {
+                        return self.run(s, json!({ "mode": m }));
                     }
                     Step::Continue
                 }

@@ -1,5 +1,7 @@
 //! Style and settings dialogs opened from the menus: Linetype Manager, Point Style, Text Style,
-//! Table Style, Multileader Style, Page Setup Manager, Plot and Constraint Settings.
+//! Table Style, Multileader Style, Page Setup Manager, Plot and Constraint Settings; the Dimension
+//! Style Manager, Select Color, Lineweight Settings, Find and Replace, Write Block, Layer States
+//! Manager and Multiline Style are in their own files.
 //!
 //! Typed or chosen from a menu (no parameters) these commands open their dialog; JSON calls run
 //! the command. The dialogs read the drawing and change it only through the same commands
@@ -16,15 +18,40 @@ use crate::theme::Tokens;
 
 /// The Block Attribute Manager (BATTMAN).
 mod battman;
+/// Select Color (COLOR) and Lineweight Settings (LWEIGHT).
+mod current;
+/// The Dimension Style Manager (DIMSTYLE).
+mod dimstyle;
+/// Find and Replace (FIND).
+mod find;
+/// The Layer States Manager (LAYERSTATE).
+mod layerstates;
+/// Multiline Style (MLSTYLE).
+mod mlstyle;
+/// Write Block (WBLOCK).
+mod wblock;
+
+/// Bumped each time `route` opens a dialog, so a dialog that keeps settings until OK starts again
+/// from the drawing.
+static OPEN_GEN: AtomicU32 = AtomicU32::new(0);
 
 /// Open the dialog for a typed or menu-invoked command. `None` if `id` has no dialog here or the
-/// call carries parameters.
+/// call carries parameters. Aliases (built-in and the user's) resolve first; dash forms
+/// (`-DIMSTYLE`, `-COLOR`…) are the command-line versions and never open a dialog.
 pub fn route(app: &mut CadApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
     if !params.is_null() {
         return None;
     }
-    let dialog = match id {
+    let canon = if id.starts_with('-') { id.to_string() } else { cadcraft_engine::cmd::resolve_alias(id) };
+    let dialog = match canon.as_str() {
         "battman" => "battman",
+        "dimstyle" | "dimstyle.dimension" | "dimsty" => "dimstyle",
+        "color" | "ddcolor" => "color",
+        "lweight" => "lweight",
+        "find" => "find",
+        "wblock" => "wblock",
+        "layerstate.save" | "layerstate" | "las" | "lman" => "layerstates",
+        "mlstyle" => "mlstyle",
         "linetype" | "lt" | "ltype" => "linetype",
         "ddptype" | "ptype" => "ptype",
         "style" | "st" => "textstyle",
@@ -38,6 +65,7 @@ pub fn route(app: &mut CadApp, id: &str, params: &Value) -> Option<Result<Value,
         }
         _ => return None,
     };
+    OPEN_GEN.fetch_add(1, Ordering::Relaxed);
     app.ui.dialog = Some(dialog.into());
     Some(Ok(Value::Null))
 }
@@ -46,6 +74,13 @@ pub fn route(app: &mut CadApp, id: &str, params: &Value) -> Option<Result<Value,
 pub fn dialog(app: &mut CadApp, ctx: &egui::Context, name: &str, open: &mut bool) {
     let action = match name {
         "battman" => battman::dialog(app, ctx, open),
+        "dimstyle" => dimstyle::dialog(app, ctx, open),
+        "color" => current::color(app, ctx, open),
+        "lweight" => current::lweight(app, ctx, open),
+        "find" => find::dialog(app, ctx, open),
+        "wblock" => wblock::dialog(app, ctx, open),
+        "layerstates" => layerstates::dialog(app, ctx, open),
+        "mlstyle" => mlstyle::dialog(app, ctx, open),
         "linetype" => linetype(app, ctx, open),
         "ptype" => point_style(app, ctx, open),
         "textstyle" => text_style(app, ctx, open),
@@ -84,6 +119,28 @@ fn temp<T: Clone + Send + Sync + 'static>(ctx: &egui::Context, id: &str) -> Opti
 
 fn set_temp<T: Clone + Send + Sync + 'static>(ctx: &egui::Context, id: &str, v: T) {
     ctx.data_mut(|d| d.insert_temp(egui::Id::new(id), v));
+}
+
+/// A text field committing on Enter / focus loss when changed (an empty value too).
+fn text_field(ui: &mut egui::Ui, id: egui::Id, value: &str) -> Option<String> {
+    let mut buf = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| value.to_string());
+    let resp = ui.add(egui::TextEdit::singleline(&mut buf).id(id.with("te")).desired_width(180.0));
+    if resp.has_focus() {
+        ui.data_mut(|d| d.insert_temp(id, buf.clone()));
+    } else {
+        ui.data_mut(|d| d.remove::<String>(id));
+    }
+    (resp.lost_focus() && buf != value).then_some(buf)
+}
+
+/// Dialog state kept until the dialog is opened again ([`OPEN_GEN`]).
+fn state<T: Clone + Send + Sync + 'static>(ctx: &egui::Context, id: &str, fresh: impl FnOnce() -> T) -> T {
+    let generation = OPEN_GEN.load(Ordering::Relaxed);
+    temp::<(u32, T)>(ctx, id).filter(|(g, _)| *g == generation).map_or_else(fresh, |(_, v)| v)
+}
+
+fn set_state<T: Clone + Send + Sync + 'static>(ctx: &egui::Context, id: &str, v: T) {
+    set_temp(ctx, id, (OPEN_GEN.load(Ordering::Relaxed), v));
 }
 
 fn no_drawing(ctx: &egui::Context, title: &str, open: &mut bool) {
@@ -781,7 +838,9 @@ pub(crate) const PLOT_NOW: &str = "plot_now";
 
 /// Every frame: once PLOTWINDOW (started by the Plot dialog's "Window <") ends, bring the dialog
 /// back with its settings, plotting the picked window (unchanged if the pick was cancelled).
+/// The Write Block dialog comes back the same way after its "Select objects <" and "Pick point <".
 pub fn plot_window_resume(app: &mut CadApp, ctx: &egui::Context) {
+    wblock::resume(app, ctx);
     if temp::<bool>(ctx, PICKING_WINDOW) != Some(true) || app.session.running.is_some() {
         return;
     }
