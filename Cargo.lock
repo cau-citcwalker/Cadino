@@ -759,11 +759,22 @@ name = "cadcraft-kernel"
 version = "0.7.0"
 dependencies = [
  "cadcraft-geom",
+ "cadcraft-kernel-occt",
  "glam",
  "opencascade",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "cadcraft-kernel-occt"
+version = "0.7.0"
+dependencies = [
+ "cxx",
+ "cxx-build",
+ "occt-sys",
+ "opencascade-sys",
 ]
 
 [[package]]

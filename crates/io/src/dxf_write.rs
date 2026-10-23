@@ -132,6 +132,8 @@ struct Ctx {
     /// The version the file ends up in (the DWG version for a DWG save): it decides which
     /// entity types exist (MULTILEADER from 2007).
     target: Version,
+    /// The tags go to the DWG bridge, which reads polyface meshes but not polygon meshes.
+    dwg: bool,
 }
 
 impl Ctx {
@@ -291,6 +293,8 @@ const HEADER_VARS: &[(&str, i32)] = &[
     ("INSUNITS", 70),
     ("MEASUREMENT", 70),
     ("PSLTSCALE", 70),
+    ("SURFTAB1", 70),
+    ("SURFTAB2", 70),
 ];
 
 fn header_vars(w: &mut W, d: &Drawing) {
@@ -626,6 +630,81 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
                 w.s(100, "AcDb3dPolylineVertex");
                 w.p(10, *q);
                 w.i(70, 32);
+            }
+            let sh = w.h();
+            w.s(0, "SEQEND");
+            w.s(5, sh);
+            w.s(330, e.handle.hex());
+            w.s(100, "AcDbEntity");
+            w.s(8, &e.common.layer);
+        }
+        // DXF Reference, POLYLINE and VERTEX: a polygon mesh (70 bit 16, M × N in 71/72, its
+        // vertices 70 = 64), or a polyface mesh (70 bit 64, vertex and face counts in 71/72, its
+        // vertices 70 = 192 and face records 70 = 128 with indices in 71–74).
+        // The counts and indices are 16-bit groups: a mesh too big for them is written as 3D
+        // faces (each an object of its own). A polygon mesh going to a DWG is written as a
+        // polyface mesh, the one kind the bridge reads (it reads a polygon mesh as a polyface with
+        // no faces, and the mesh was lost).
+        EntityKind::PolyMesh(m) => {
+            const MAX16: usize = i16::MAX as usize;
+            let grid = !m.is_polyface() && !cx.dwg && (m.m as usize) <= MAX16 && (m.n as usize) <= MAX16;
+            let quads = m.faces4();
+            let count = if m.is_polyface() { m.faces.len() } else { quads.len() };
+            if !grid && (m.vertices.len() > MAX16 || count > MAX16) {
+                for (f, hidden) in quads {
+                    let corners = f.map(|i| m.vertices.get(i).copied().unwrap_or(Vec3::ZERO));
+                    let mut fe =
+                        Entity::new(Handle::parse_hex(&w.h()).unwrap_or(e.handle), EntityKind::Face3d(Face3d { corners, hidden_edges: hidden }));
+                    fe.common = e.common.clone();
+                    entity(w, d, &fe, owner, paper, cx);
+                }
+                return;
+            }
+            w.s(0, "POLYLINE");
+            let face = !grid;
+            common(w, e, owner, paper, if face { "AcDbPolyFaceMesh" } else { "AcDbPolygonMesh" });
+            w.i(66, 1);
+            w.p(10, Vec3::ZERO);
+            if face {
+                w.i(70, 64);
+                w.i(71, m.vertices.len() as i64);
+                w.i(72, count as i64);
+            } else {
+                w.i(70, 16 | i64::from(m.closed_m) | if m.closed_n { 32 } else { 0 });
+                w.i(71, i64::from(m.m));
+                w.i(72, i64::from(m.n));
+            }
+            let vertex = |w: &mut W, sub: &[&str]| {
+                let vh = w.h();
+                w.s(0, "VERTEX");
+                w.s(5, vh);
+                w.s(330, e.handle.hex());
+                w.s(100, "AcDbEntity");
+                w.s(8, &e.common.layer);
+                for s in sub {
+                    w.s(100, *s);
+                }
+            };
+            for q in &m.vertices {
+                vertex(w, &["AcDbVertex", if face { "AcDbPolyFaceMeshVertex" } else { "AcDbPolygonMeshVertex" }]);
+                w.p(10, *q);
+                w.i(70, if face { 192 } else { 64 });
+            }
+            // A polygon mesh's faces as polyface records: its quads, 1-based.
+            let records: Vec<[i32; 4]> = if m.is_polyface() || !face {
+                m.faces.clone()
+            } else {
+                quads.iter().map(|(f, _)| f.map(|i| i32::try_from(i + 1).unwrap_or(0))).collect()
+            };
+            for f in &records {
+                vertex(w, &["AcDbFaceRecord"]);
+                w.p(10, Vec3::ZERO);
+                w.i(70, 128);
+                for (code, ix) in [71, 72, 73, 74].into_iter().zip(f) {
+                    if *ix != 0 {
+                        w.i(code, i64::from(*ix));
+                    }
+                }
             }
             let sh = w.h();
             w.s(0, "SEQEND");
@@ -1582,11 +1661,13 @@ fn vport_table(w: &mut W, d: &Drawing, ext: Bounds2) {
         w.f(41, if t.aspect.is_finite() && t.aspect > 0.0 { t.aspect } else { 1.0 });
         w.f(42, 50.0);
         w.f(50, d.header.f64("SNAPANG", 0.0));
-        // Render mode: 0 2D optimised, 4 Gouraud shaded, 6 Gouraud shaded with wireframe.
+        // Render mode: 0 2D optimised, 2 hidden line, 4 Gouraud shaded, 6 Gouraud shaded with
+        // wireframe (Hidden is unshaded with edges).
         w.i(
             281,
             match (t.shaded, t.edges) {
-                (false, _) => 0,
+                (false, false) => 0,
+                (false, true) => 2,
                 (true, false) => 4,
                 (true, true) => 6,
             },
@@ -1641,13 +1722,13 @@ pub fn write(d: &Drawing) -> String {
 
 /// The drawing's DXF tags, declaring `version` in `$ACADVER`.
 pub fn tags(d: &Drawing, version: Version) -> Vec<Tag> {
-    tags_for(d, version, version)
+    tags_for(d, version, version, false)
 }
 
 /// The R2000 DXF the DWG bridge converts to a `dwg` version DWG: its entity types are the DWG
 /// version's (MULTILEADER from 2007).
 pub(crate) fn dwg_bridge(d: &Drawing, dwg: Version) -> String {
-    let mut tags = tags_for(d, Version::R2000, dwg);
+    let mut tags = tags_for(d, Version::R2000, dwg, true);
     bridge_markers(&mut tags);
     cadcraft_dxf::write_ascii(&tags)
 }
@@ -1665,8 +1746,9 @@ fn bridge_markers(tags: &mut [Tag]) {
 }
 
 /// The drawing's DXF tags, declaring `version` in `$ACADVER`, with what `target` (the version the
-/// file ends up in: `version`, or the DWG version the bridge writes) has.
-fn tags_for(d: &Drawing, version: Version, target: Version) -> Vec<Tag> {
+/// file ends up in: `version`, or the DWG version the bridge writes) has; `dwg` when they go to
+/// the DWG bridge.
+fn tags_for(d: &Drawing, version: Version, target: Version, dwg: bool) -> Vec<Tag> {
     // An in-place block edit in progress is not written: the drawing as before it.
     let committed = d.committed();
     let d: &Drawing = &committed;
@@ -1700,7 +1782,7 @@ fn tags_for(d: &Drawing, version: Version, target: Version) -> Vec<Tag> {
         .collect();
     user_blocks.iter_mut().for_each(|b| b.1 = format!("{:X}", 0));
     let user_blocks: Vec<(String, String, &Block)> = user_blocks.into_iter().map(|(n, _, b)| (n, w.h(), b)).collect();
-    let mut cx = Ctx { paper_views: paper_views(d), target, ..Ctx::default() };
+    let mut cx = Ctx { paper_views: paper_views(d), target, dwg, ..Ctx::default() };
     cx.block_records = user_blocks.iter().map(|(n, h, _)| (n.to_ascii_uppercase(), h.clone())).collect();
     // Dimension blocks.
     let mut dim_defs: Vec<(String, String, Vec<Entity>)> = Vec::new(); // filled below

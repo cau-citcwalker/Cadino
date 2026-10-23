@@ -1,6 +1,6 @@
 # Where CADCraft falls short of AutoCAD
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-23 · **Change:** minor (AutoCAD command-line forms, OOPS/CHANGE/CHPROP and the text tools, XCLIP, LAYWALK/LAYTRANS/FILTER, 3D picks and snaps, command-line history translated: F2, F15, U14 and L1 narrowed) · **Target:** Autodesk AutoCAD 2027
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (3D modelling round: face and edge editing, PRESSPULL, sections, FLATSHOT, INTERFERE, polysolids, conversions, meshes, Hidden: F24 narrowed) · **Target:** Autodesk AutoCAD 2027
 
 Every known shortfall, one row each, ranked within each section by user impact. This is the work
 list: agents pick from here (top of a section first), and remove or update a row in the same PR
@@ -45,7 +45,7 @@ do them first.
 | F21 | MLINE, REGION and HELIX are objects since #510, with gaps: MLEDIT has no Merged Tee and tees trim square; UNION/SUBTRACT/INTERSECT only combine regions whose boundaries don't meet; regions are saved as closed polylines (no ACIS data); PURGE skips multiline styles | `draw2/mline.rs`, `inquiry/regions.rs`, `dxf_region.rs` | Low | 6–10 |
 | F22 | Inquiry leftovers (COUNT across spaces and nested blocks, the QuickCalc palette and COMPARE landed, #563; MASSPROP on regions, #510): COMPARE compares the tab shown, not every layout at once, and has no COMPAREEXPORT report; QuickCalc keeps its history and variables for the session only | `file/compare.rs`, `palettes/quickcalc.rs` | Low | 3–5 |
 | F23 | No Sheet Set Manager, eTransmit, Share, Traces, Markup Import, Activity Insights | menu items uncovered | Low-medium (team workflows) | 40–70 |
-| F24 | No 3D: UCS, 3D views, orbit, solids, surfaces, meshes, sections, visual styles, materials, lights, rendering (150 menu items) | [parity-checklist](parity-checklist.md) | Medium (3D users) | 300–450 |
+| F24 | 3D leftovers ([3d.md](3d.md#known-ceilings)): no materials, lights or rendering; no perspective camera; live sections don't cut views; no NURBS surface editing (SURFSCULPT, SURFBLEND, SURFPATCH, control-vertex edits) or Gordon surfaces; SOLIDEDIT face and edge colours and materials; no 3D Print Options. UCS and CPlanes, 3D views and viewports, solids and surfaces with booleans, FILLETEDGE/CHAMFEREDGE on chosen edges, SOLIDEDIT, PRESSPULL, IMPRINT, THICKEN, SLICE options, guided and path lofts, POLYSOLID, 3DARRAY, 3DALIGN, CONVTOSOLID/CONVTOSURFACE, 3DPRINT, polygon meshes (EDGESURF, RULESURF, REVSURF, TABSURF), SECTION, SECTIONPLANE, SECTIONPLANETOBLOCK, FLATSHOT, INTERFERE, Hidden and HIDE landed | [3d.md](3d.md), [parity-checklist](parity-checklist.md) | Medium (3D users) | 120–200 |
 
 ## UI/UX
 
@@ -146,6 +146,7 @@ Detail: [localization-parity.md](localization-parity.md).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-24 | minor | 3D modelling round: FILLETEDGE/CHAMFEREDGE on chosen edges, SOLIDEDIT, PRESSPULL, IMPRINT, THICKEN, XEDGES, SLICE's plane options, LOFT guides and path, PLANESURF holes, POLYSOLID, 3DARRAY, 3DALIGN, CONVTOSOLID, CONVTOSURFACE, 3DPRINT, EDGESURF/RULESURF/REVSURF/TABSURF meshes, SECTION, SECTIONPLANE, LIVESECTION, SECTIONPLANETOBLOCK, FLATSHOT, INTERFERE, Hidden, HIDE and the Visual Styles Manager: F24 narrowed (300–450 → 120–200 h) |
 | 2026-10-23 | minor | -PLOT, -PAGESETUP, -PLOTSTYLE, -EXPORT, -PUBLISH, -PARAMETERS and -CONSTRAINTSETTINGS prompt; OOPS, CHANGE/CHPROP, SCALETEXT, JUSTIFYTEXT, TEXTALIGN, COPYTOLAYER, DIMREGEN, VIEWRES, SKETCH, TRACE, SOLID, 3DFACE, ATTIPEDIT, ATTEXT and DWGPROPS; XCLIP (DXF SPATIAL_FILTER), MVSETUP, VPMAX/VPMIN; Drawing Properties, Paste Special, Object Selection Filters, LayerWalk and Layer Translator dialogs; Drafting Settings tabs with Object Snap; 3D view picks, typed selection windows and NEA/PER/INT/APP 3D snaps; command-line history in Korean and Ukrainian: F2, F15, U14 and L1 narrowed |
 | 2026-10-17 | minor | Dimension Style Manager, Select Color, Lineweight Settings, Find and Replace, Write Block, Layer States Manager and Multiline Style dialogs; commands typed bare prompt or open their dialog; AutoComplete runs the highlighted command: F7 narrowed, U14 lists the dash forms still missing |
 | 2026-10-12 | minor | Object transparency (entity, ByLayer, ByBlock) is drawn: on screen (TRANSPARENCYDISPLAY, on by default), in PNG/SVG exports, and in plots when the page setup's "Plot transparency" is on (PDF alpha, PNG blending, SVG opacity; PLOTTRANSPARENCYOVERRIDE): F14 narrowed |

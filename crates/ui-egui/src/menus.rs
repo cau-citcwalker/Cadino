@@ -40,7 +40,13 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("ui.toggle.cmdline", "Command Line", &["Window", "Command Line"], Some("Cmd+9")),
     ("ui.toggle.viewcube", "ViewCube", &["View", "ViewCube", "On"], None),
     ("ui.toggle.ucsicon", "UCS Icon", &["View", "UCS Icon", "On"], None),
-    ("ui.gumball", "Gumball", &["View", "Gumball"], None),
+    ("ui.gumball", "Gumball", &["View", "Gumball", "Show Gumball"], None),
+    ("ui.gumball.cplane", "Align to CPlane", &["View", "Gumball", "Align to CPlane"], None),
+    ("ui.gumball.world", "Align to World", &["View", "Gumball", "Align to World"], None),
+    ("ui.gumball.object", "Align to Object", &["View", "Gumball", "Align to Object"], None),
+    ("ui.gumball.snap", "Snappy Dragging", &["View", "Gumball", "Snappy Dragging"], None),
+    // VISUALSTYLES and VSM typed or from the menu open the manager; with parameters they are VSCURRENT.
+    ("visualstyles", "Visual Styles Manager...", &["View", "Visual Styles", "Visual Styles Manager..."], None),
     ("ui.theme.system", "Use System Setting", &["View", "Interface Theme", "Use System Setting"], None),
     ("ui.theme.light", "Light", &["View", "Interface Theme", "Light"], None),
     ("ui.theme.dark", "Dark", &["View", "Interface Theme", "Dark"], None),
@@ -297,11 +303,42 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
             toggle(&mut app.session.settings.ucsicon, params);
             Ok(Value::Null)
         }
-        // `{"on": bool}` sets it; without, toggles. Reports the state.
-        "ui.gumball" => {
-            toggle(&mut app.ui.gumball, params);
-            Ok(json!({ "on": app.ui.gumball }))
+        // `{"on": bool}` sets it; without, toggles. `align` (cplane, world or object) and `snap`
+        // (bool) set its options and leave it on or off. Reports the state. GUMBALL typed (Rhino's
+        // name) toggles it; GUMBALLALIGNMENT switches between the CPlane and the object.
+        "ui.gumball" | "gumball" => {
+            let align = match params.get("align").map(|v| v.as_str().and_then(crate::GumballAlign::parse)) {
+                Some(None) => return Some(Err("align must be cplane, world or object".into())),
+                Some(Some(a)) => Some(a),
+                None => None,
+            };
+            if let Some(a) = align {
+                app.ui.gumball_align = a;
+            }
+            if let Some(on) = params.get("snap").and_then(Value::as_bool) {
+                app.ui.gumball_snap = on;
+            }
+            if params.get("on").is_some() || (align.is_none() && params.get("snap").is_none()) {
+                toggle(&mut app.ui.gumball, params);
+            }
+            Ok(json!({ "on": app.ui.gumball, "align": app.ui.gumball_align.as_str(), "snap": app.ui.gumball_snap }))
         }
+        "ui.gumball.cplane" | "ui.gumball.world" | "ui.gumball.object" => {
+            return run_ui_command_inner(app, "ui.gumball", &json!({ "align": id.trim_start_matches("ui.gumball.") }));
+        }
+        "ui.gumball.snap" => {
+            let snap = params.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.gumball_snap);
+            return run_ui_command_inner(app, "ui.gumball", &json!({ "snap": snap }));
+        }
+        "gumballalignment" if params.is_null() => {
+            let align = if app.ui.gumball_align == crate::GumballAlign::Object { "cplane" } else { "object" };
+            return run_ui_command_inner(app, "ui.gumball", &json!({ "align": align }));
+        }
+        "visualstyles" | "vsm" if params.is_null() => {
+            app.ui.dialog = Some("visualstyles".into());
+            Ok(Value::Null)
+        }
+        "visualstyles" | "vsm" => return Some(app.run("vscurrent", params.clone())),
         "ui.toggle.menubar" => {
             toggle(&mut app.ui.in_window_menu, params);
             Ok(Value::Null)

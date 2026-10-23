@@ -519,7 +519,7 @@ const MAX_VISITS: usize = 10_000_000;
 /// space (`seen`: only those on a layer that is on and thawed). A block reference stands for the
 /// solids in its block, once for each of its copies and where it puts them (nested references
 /// too, as the canvas draws them).
-fn chosen(s: &Session, p: &Value, cmd: &str, seen: bool) -> Result<Vec<Solid3d>> {
+pub(super) fn chosen(s: &Session, p: &Value, cmd: &str, seen: bool) -> Result<Vec<Solid3d>> {
     // An empty list (as MCP clients send optional arrays) counts as none given.
     let given = ["handle", "handles"].iter().any(|k| p.get(k).is_some_and(|v| !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty())));
     let d = s.doc()?;

@@ -1,15 +1,19 @@
 //! Rhino's gumball. With objects selected in a 3D view and no command running, handles at the
-//! centre of the selection's bounding box move it along the world axes (arrows: X red, Y green, Z
-//! blue), turn it about them (arcs) and scale it (the centre square). The handle under the cursor
+//! centre of the selection's bounding box move it along three axes (arrows: X red, Y green, Z
+//! blue), turn it about them (arcs) and scale it (the centre square). The axes follow the view's
+//! construction plane, as Rhino's default; `ui.gumball` `align` sets world axes or the object's
+//! own (a solid's or a planar object's axes; the CPlane's for others). The handle under the cursor
 //! lights up; a drag shows the objects where they will go, a number typed during it sets the
 //! exact distance, angle (degrees) or factor, and letting go runs 3DMOVE, 3DROTATE or 3DSCALE with
-//! world values (one undo step). Esc cancels the drag; every other key during it is the
-//! gumball's (none reaches the command line). A grip under a handle wins: the gumball never hides
-//! AutoCAD's grips. `ui.gumball` turns it off; plan views keep AutoCAD's grips.
+//! world values (one undo step). Drags snap (`ui.gumball` `snap`, on by default): an arrow to the
+//! running object snap under the cursor, taken along its axis, else with SNAP on to steps of the
+//! snap spacing; an arc to steps of the polar angle with ORTHO on. Esc cancels the drag; every
+//! other key during it is the gumball's (none reaches the command line). A grip under a handle
+//! wins: the gumball never hides AutoCAD's grips. `ui.gumball` turns it off; plan views keep
+//! AutoCAD's grips.
 //!
-//! ponytail: world axes only (no gumball aligned to the object or the CPlane), drags don't snap to
-//! objects or steps, and an arc whose plane the view sees edge-on is hidden (an axis pointing at
-//! the viewer has no arrow); add Rhino's alignment and snapping options when users ask.
+//! ponytail: the scale square doesn't snap, and an arc whose plane the view sees edge-on is hidden
+//! (an axis pointing at the viewer has no arrow); add when users ask.
 
 use std::sync::Arc;
 
@@ -20,8 +24,8 @@ use egui::{Pos2, Shape, Stroke, vec2};
 use serde_json::{Value, json};
 
 use super::{Xf, draw_list, rebuilt_preview, snap3d};
-use crate::CadApp;
 use crate::theme::Tokens;
+use crate::{CadApp, GumballAlign};
 
 /// Arrow length and arc radius, in points.
 const ARROW: f32 = 80.0;
@@ -32,8 +36,41 @@ const NEAR: f32 = 6.0;
 /// Points dragged right (or up) that double the scale.
 const DOUBLING: f32 = 100.0;
 
-/// Each world axis with the two that span the plane it turns in.
-const AXES: [(Vec3, Vec3, Vec3); 3] = [(Vec3::X, Vec3::Y, Vec3::Z), (Vec3::Y, Vec3::Z, Vec3::X), (Vec3::Z, Vec3::X, Vec3::Y)];
+/// The gumball's X, Y and Z axes (unit vectors, right-handed).
+type Frame = [Vec3; 3];
+
+/// Axis `i` of `f` with the two that span the plane it turns in.
+fn axes(f: &Frame, i: usize) -> Option<(Vec3, Vec3, Vec3)> {
+    Some((*f.get(i)?, *f.get((i + 1) % 3)?, *f.get((i + 2) % 3)?))
+}
+
+/// The unit axes of transform `m`'s turn (a frame's or a solid's), `None` when they don't make
+/// one (a shear, a collapse).
+fn frame_of(m: &Mat4) -> Option<Frame> {
+    let f = [m.col(0).normalized(), m.col(1).normalized(), m.col(2).normalized()];
+    let square = f[0].dot(f[1]).abs() < 1e-6 && f[1].dot(f[2]).abs() < 1e-6 && f[0].dot(f[2]).abs() < 1e-6;
+    (square && f.iter().all(|a| (a.len() - 1.0).abs() < 1e-6)).then(|| [f[0], f[1], f[0].cross(f[1])])
+}
+
+/// The gumball's axes as `align` says: the view's construction plane, the world, or the first
+/// selected object's own (a solid's turn, a planar object's plane; the CPlane's otherwise).
+fn frame(app: &CadApp, xf: &Xf) -> Frame {
+    let cplane = frame_of(&xf.cplane()).unwrap_or([Vec3::X, Vec3::Y, Vec3::Z]);
+    match app.ui.gumball_align {
+        GumballAlign::World => [Vec3::X, Vec3::Y, Vec3::Z],
+        GumballAlign::Cplane => cplane,
+        GumballAlign::Object => {
+            let own = app.session.selection().first().and_then(|h| {
+                let e = app.session.doc().ok()?.entity(*h)?.clone();
+                match &e.kind {
+                    EntityKind::Solid3d(s) => frame_of(&s.xform),
+                    _ => frame_of(&e.plane()?),
+                }
+            });
+            own.unwrap_or(cplane)
+        }
+    }
+}
 
 /// A gumball handle: an axis's arrow or arc (by index into [`AXES`]), or the centre square.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -49,11 +86,19 @@ pub(crate) struct Drag {
     part: Part,
     /// The gumball's centre when the drag started (world).
     origin: Vec3,
+    /// Its axes then.
+    frame: Frame,
     from: Pos2,
     to: Pos2,
     /// A number typed during the drag (it wins over the dragged value).
     typed: String,
     cancelled: bool,
+    /// The object snap the cursor is on (an arrow drag moves to it along its axis), its mode.
+    snap: Option<(Vec3, u32)>,
+    /// Steps an arrow drag snaps to (SNAP on: the snap spacing) and an arc drag turns by (ORTHO
+    /// on: the polar angle, degrees); 0: none.
+    step: f64,
+    turn_step: f64,
 }
 
 /// What the selection's centre was worked out for: drawing uid, revision and copy, selection.
@@ -144,8 +189,8 @@ fn screen_dir(xf: &Xf, v: Vec3) -> egui::Vec2 {
 
 /// Axis `i`'s arrow from the centre `o` (base clear of the centre square, tip); none when the
 /// axis points nearly at the viewer.
-fn arrow(xf: &Xf, o: Vec3, i: usize) -> Option<(Pos2, Pos2)> {
-    let (a, ..) = *AXES.get(i)?;
+fn arrow(xf: &Xf, o: Vec3, f: &Frame, i: usize) -> Option<(Pos2, Pos2)> {
+    let (a, ..) = axes(f, i)?;
     let v = screen_dir(xf, a) * ARROW;
     let so = xf.world_to_screen(o);
     (v.length() >= 0.3 * ARROW).then(|| (so + v * 0.2, so + v))
@@ -153,8 +198,8 @@ fn arrow(xf: &Xf, o: Vec3, i: usize) -> Option<(Pos2, Pos2)> {
 
 /// The quarter arc turning about axis `i` round the centre `o`; none when the view sees its plane
 /// edge-on.
-fn arc(xf: &Xf, o: Vec3, i: usize) -> Option<Vec<Pos2>> {
-    let (a, u, w) = *AXES.get(i)?;
+fn arc(xf: &Xf, o: Vec3, f: &Frame, i: usize) -> Option<Vec<Pos2>> {
+    let (a, u, w) = axes(f, i)?;
     if a.dot(xf.dir().dir).abs() < 0.25 {
         return None;
     }
@@ -171,16 +216,16 @@ fn seg_dist(p: Pos2, a: Pos2, b: Pos2) -> f32 {
 }
 
 /// The handle of the gumball at `o` under screen point `at`.
-fn hit(xf: &Xf, o: Vec3, at: Pos2) -> Option<Part> {
+fn hit(xf: &Xf, o: Vec3, f: &Frame, at: Pos2) -> Option<Part> {
     let so = xf.world_to_screen(o);
     if (at.x - so.x).abs() <= SQUARE + 2.0 && (at.y - so.y).abs() <= SQUARE + 2.0 {
         return Some(Part::Scale);
     }
     let near_arc = |pts: Vec<Pos2>| pts.windows(2).any(|w| matches!(w, [a, b] if seg_dist(at, *a, *b) <= NEAR));
     (0..3)
-        .find(|&i| arrow(xf, o, i).is_some_and(|(a, b)| seg_dist(at, a, b) <= NEAR))
+        .find(|&i| arrow(xf, o, f, i).is_some_and(|(a, b)| seg_dist(at, a, b) <= NEAR))
         .map(Part::Move)
-        .or_else(|| (0..3).find(|&i| arc(xf, o, i).is_some_and(near_arc)).map(Part::Rotate))
+        .or_else(|| (0..3).find(|&i| arc(xf, o, f, i).is_some_and(near_arc)).map(Part::Rotate))
 }
 
 impl Drag {
@@ -191,20 +236,25 @@ impl Drag {
             return v;
         }
         let d = self.to - self.from;
+        let stepped = |v: f64, step: f64| if step > 0.0 && step.is_finite() { (v / step).round() * step } else { v };
         match self.part {
             Part::Move(i) => {
+                let Some((a, ..)) = axes(&self.frame, i) else { return 0.0 };
+                if let Some((p, _)) = self.snap {
+                    return (p - self.origin).dot(a);
+                }
                 // Points per world unit along the axis.
-                let s = AXES.get(i).map_or(egui::Vec2::ZERO, |(a, ..)| screen_dir(xf, *a) * xf.scale as f32);
+                let s = screen_dir(xf, a) * xf.scale as f32;
                 let v = f64::from(d.dot(s)) / f64::from(s.length_sq()).max(1e-12);
-                if v.is_finite() { v } else { 0.0 }
+                if v.is_finite() { stepped(v, self.step) } else { 0.0 }
             }
             Part::Rotate(i) => {
-                let Some((a, ..)) = AXES.get(i) else { return 0.0 };
-                match (xf.ray_on(self.from, self.origin, *a), xf.ray_on(self.to, self.origin, *a)) {
+                let Some((a, ..)) = axes(&self.frame, i) else { return 0.0 };
+                match (xf.ray_on(self.from, self.origin, a), xf.ray_on(self.to, self.origin, a)) {
                     (Some(p), Some(q)) => {
                         let (u, v) = (p - self.origin, q - self.origin);
                         let deg = a.dot(u.cross(v)).atan2(u.dot(v)).to_degrees();
-                        if deg.is_finite() { deg } else { 0.0 }
+                        if deg.is_finite() { stepped(deg, self.turn_step) } else { 0.0 }
                     }
                     _ => 0.0,
                 }
@@ -217,8 +267,8 @@ impl Drag {
     fn matrix(&self, v: f64) -> Option<Mat4> {
         let o = self.origin;
         match self.part {
-            Part::Move(i) => AXES.get(i).filter(|_| v != 0.0).map(|(a, ..)| Mat4::translate(*a * v)),
-            Part::Rotate(i) => AXES.get(i).filter(|_| v != 0.0).map(|(a, ..)| Mat4::rotate_about(o, *a, v.to_radians())),
+            Part::Move(i) => axes(&self.frame, i).filter(|_| v != 0.0).map(|(a, ..)| Mat4::translate(a * v)),
+            Part::Rotate(i) => axes(&self.frame, i).filter(|_| v != 0.0).map(|(a, ..)| Mat4::rotate_about(o, a, v.to_radians())),
             Part::Scale => (v != 1.0).then(|| Mat4::translate(o).mul(&Mat4::scale(Vec3::new(v, v, v))).mul(&Mat4::translate(-o))),
         }
     }
@@ -228,8 +278,8 @@ impl Drag {
         let o = self.origin;
         let p = |q: Vec3| json!([q.x, q.y, q.z]);
         Some(match self.part {
-            Part::Move(i) => ("3dmove", json!({ "handles": handles, "delta": p(AXES.get(i)?.0 * v) })),
-            Part::Rotate(i) => ("3drotate", json!({ "handles": handles, "axis": [p(o), p(o + AXES.get(i)?.0)], "angle": v })),
+            Part::Move(i) => ("3dmove", json!({ "handles": handles, "delta": p(axes(&self.frame, i)?.0 * v) })),
+            Part::Rotate(i) => ("3drotate", json!({ "handles": handles, "axis": [p(o), p(o + axes(&self.frame, i)?.0)], "angle": v })),
             Part::Scale => ("3dscale", json!({ "handles": handles, "base": p(o), "factor": v })),
         })
     }
@@ -258,8 +308,10 @@ pub(super) fn input(app: &mut CadApp, ctx: &egui::Context, xf: &Xf, hover: Optio
             return false;
         }
         let Some(o) = origin(app) else { return false };
-        let Some(part) = hit(xf, o, at) else { return false };
-        app.canvas.gumball.drag = Some(Drag { part, origin: o, from: at, to: at, typed: String::new(), cancelled: false });
+        let f = frame(app, xf);
+        let Some(part) = hit(xf, o, &f, at) else { return false };
+        app.canvas.gumball.drag =
+            Some(Drag { part, origin: o, frame: f, from: at, to: at, typed: String::new(), cancelled: false, snap: None, step: 0.0, turn_step: 0.0 });
         return true;
     };
     let mut enter = false;
@@ -290,6 +342,7 @@ pub(super) fn input(app: &mut CadApp, ctx: &egui::Context, xf: &Xf, hover: Optio
     if let Some(p) = latest {
         d.to = p;
     }
+    snapping(app, xf, &mut d);
     if enter && !d.cancelled {
         // Done: letting go later changes nothing.
         finish(app, xf, &d);
@@ -301,6 +354,22 @@ pub(super) fn input(app: &mut CadApp, ctx: &egui::Context, xf: &Xf, hover: Optio
         finish(app, xf, &d);
     }
     true
+}
+
+/// What drag `d` snaps to now (see the module docs): the object snap under the cursor for an
+/// arrow, the snap spacing with SNAP on, the polar angle with ORTHO on.
+fn snapping(app: &CadApp, xf: &Xf, d: &mut Drag) {
+    let s = &app.session.settings;
+    let on = app.ui.gumball_snap;
+    d.step = if on && s.snapmode { app.session.drafting_settings().snapunit.x } else { 0.0 };
+    d.turn_step = if on && s.orthomode { s.polarang.to_degrees() } else { 0.0 };
+    d.snap = None;
+    let modes = snap3d::running(app);
+    if !on || modes == 0 || !matches!(d.part, Part::Move(_)) {
+        return;
+    }
+    let Ok(st) = app.session.state() else { return };
+    d.snap = snap3d::nearest(&st.doc, &st.edit_space(), xf, d.to, s.aperture, modes, Some(d.origin));
 }
 
 /// Run the command of a drag let go (not while a command started meanwhile runs: its undo step
@@ -328,6 +397,7 @@ pub(super) fn paint(app: &mut CadApp, p: &egui::Painter, xf: &Xf, hover: Option<
     let hover = hover.filter(|h| !on_grip(app, xf, *h));
     let app = &*app;
     let drag = app.canvas.gumball.drag.as_ref().filter(|d| !d.cancelled);
+    let f = drag.map_or_else(|| frame(app, xf), |d| d.frame);
     let t = Tokens::get();
     let mut at = o;
     if let Some(d) = drag {
@@ -354,17 +424,20 @@ pub(super) fn paint(app: &mut CadApp, p: &egui::Painter, xf: &Xf, hover: Option<
         };
         let value = if d.typed.is_empty() { format!("{:.4}", (v * 1e4).round() / 1e4) } else { d.typed.clone() };
         super::tooltip(p, d.to + vec2(16.0, 18.0), &format!("{label}: {value}"));
+        if let Some((q, m)) = d.snap.filter(|_| d.typed.is_empty()) {
+            super::snap_glyph(p, xf.world_to_screen(q), m, 6.0, Stroke::new(2.0, t.snap));
+        }
     }
-    let hot = drag.map(|d| d.part).or_else(|| hover.and_then(|h| hit(xf, o, h)));
+    let hot = drag.map(|d| d.part).or_else(|| hover.and_then(|h| hit(xf, o, &f, h)));
     let color = |part: Part, i: usize| if hot == Some(part) { t.gumball_hot } else { t.gumball.get(i).copied().unwrap_or(t.canvas_ink) };
     for i in 0..3 {
-        if let Some((a, b)) = arrow(xf, at, i) {
+        if let Some((a, b)) = arrow(xf, at, &f, i) {
             let c = color(Part::Move(i), i);
             let (dir, side) = ((b - a).normalized(), (b - a).normalized().rot90());
             p.line_segment([a, b - dir * 8.0], Stroke::new(2.0, c));
             p.add(Shape::convex_polygon(vec![b, b - dir * 11.0 + side * 4.5, b - dir * 11.0 - side * 4.5], c, Stroke::NONE));
         }
-        if let Some(pts) = arc(xf, at, i) {
+        if let Some(pts) = arc(xf, at, &f, i) {
             p.add(Shape::line(pts, Stroke::new(2.0, color(Part::Rotate(i), i))));
         }
     }
@@ -378,9 +451,15 @@ pub(super) fn paint(app: &mut CadApp, p: &egui::Painter, xf: &Xf, hover: Option<
 mod tests {
     use super::*;
 
+    const WORLD: Frame = [Vec3::X, Vec3::Y, Vec3::Z];
+
     fn xf(dir: [f64; 3]) -> Xf {
         Xf::new(egui::Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0)), cadcraft_geom::Vec2::ZERO, 10.0)
             .looking(cadcraft_geom::ViewDir::new(Vec3::new(dir[0], dir[1], dir[2])))
+    }
+
+    fn drag(part: Part, from: Pos2, to: Pos2) -> Drag {
+        Drag { part, origin: Vec3::ZERO, frame: WORLD, from, to, typed: String::new(), cancelled: false, snap: None, step: 0.0, turn_step: 0.0 }
     }
 
     /// The arrows, arcs and centre square are found where they are drawn; an axis pointing at the
@@ -389,18 +468,54 @@ mod tests {
     fn handles_are_hit_where_they_are_drawn() {
         let iso = xf([-1.0, -1.0, 1.0]);
         let o = Vec3::new(1.0, 2.0, 3.0);
-        assert_eq!(hit(&iso, o, iso.world_to_screen(o)), Some(Part::Scale));
+        let f = &WORLD;
+        assert_eq!(hit(&iso, o, f, iso.world_to_screen(o)), Some(Part::Scale));
         for i in 0..3 {
-            let (_, tip) = arrow(&iso, o, i).unwrap();
-            assert_eq!(hit(&iso, o, tip), Some(Part::Move(i)));
+            let (_, tip) = arrow(&iso, o, f, i).unwrap();
+            assert_eq!(hit(&iso, o, f, tip), Some(Part::Move(i)));
             // A point of the arc clear of the arrows (which take the cursor first).
-            let clear = |q: &&Pos2| (0..3).all(|j| arrow(&iso, o, j).is_none_or(|(a, b)| seg_dist(**q, a, b) > NEAR));
-            let pts = arc(&iso, o, i).unwrap();
-            assert_eq!(hit(&iso, o, *pts.iter().find(clear).unwrap()), Some(Part::Rotate(i)));
+            let clear = |q: &&Pos2| (0..3).all(|j| arrow(&iso, o, f, j).is_none_or(|(a, b)| seg_dist(**q, a, b) > NEAR));
+            let pts = arc(&iso, o, f, i).unwrap();
+            assert_eq!(hit(&iso, o, f, *pts.iter().find(clear).unwrap()), Some(Part::Rotate(i)));
         }
         let front = xf([0.0, -1.0, 0.0]);
-        assert!(arrow(&front, o, 1).is_none() && arrow(&front, o, 0).is_some());
-        assert!(arc(&front, o, 0).is_none() && arc(&front, o, 2).is_none() && arc(&front, o, 1).is_some());
+        assert!(arrow(&front, o, f, 1).is_none() && arrow(&front, o, f, 0).is_some());
+        assert!(arc(&front, o, f, 0).is_none() && arc(&front, o, f, 2).is_none() && arc(&front, o, f, 1).is_some());
+    }
+
+    /// A construction plane turned 90° about Z gives the gumball its axes: X along world Y, Y along
+    /// world -X; a sheared transform gives none.
+    #[test]
+    fn the_axes_follow_a_frame() {
+        let turned = Mat4::rotate_about(Vec3::new(3.0, 4.0, 0.0), Vec3::Z, std::f64::consts::FRAC_PI_2);
+        let f = frame_of(&turned).unwrap();
+        assert!((f[0] - Vec3::Y).len() < 1e-12 && (f[1] + Vec3::X).len() < 1e-12 && (f[2] - Vec3::Z).len() < 1e-12, "{f:?}");
+        let mut shear = Mat4::IDENTITY;
+        shear.m[0][1] = 0.5;
+        assert!(frame_of(&shear).is_none());
+        // Dragging the X arrow of that frame moves along world Y, and the command says so.
+        let front = xf([1.0, 0.0, 0.0]);
+        let so = front.world_to_screen(Vec3::ZERO);
+        let d = Drag { frame: f, ..drag(Part::Move(0), so, so + vec2(50.0, 0.0)) };
+        let (id, p) = d.command(d.value(&front), vec![]).unwrap();
+        assert_eq!(id, "3dmove");
+        assert!((p["delta"][1].as_f64().unwrap() - 5.0).abs() < 1e-6 && p["delta"][0].as_f64().unwrap().abs() < 1e-12, "{p}");
+    }
+
+    /// `ui.gumball` sets the alignment and snapping without turning the gumball off; GUMBALL typed
+    /// toggles it and GUMBALLALIGNMENT switches between the CPlane and the object.
+    #[test]
+    fn options_set_the_alignment_and_snapping() {
+        let mut app = CadApp::new(cadcraft_engine::Session::new(), crate::Services::default());
+        let r = app.run("ui.gumball", json!({ "align": "world", "snap": false })).unwrap();
+        assert_eq!(r, json!({ "on": true, "align": "world", "snap": false }));
+        assert!(app.run("ui.gumball", json!({ "align": "sideways" })).is_err());
+        app.start("gumball");
+        assert!(!app.ui.gumball);
+        app.start("GumballAlignment");
+        assert_eq!(app.ui.gumball_align, GumballAlign::Object);
+        app.start("gumballalignment");
+        assert_eq!(app.ui.gumball_align, GumballAlign::Cplane);
     }
 
     /// The gumball sits at the middle of what is drawn: a text's whole box (not its insertion
@@ -436,22 +551,29 @@ mod tests {
 
     /// A typed number wins over the drag; a drag along an arrow is the distance along its axis, and
     /// a turn about the Y axis seen from the front is the angle turned on screen (clockwise there,
-    /// counter-clockwise about +Y).
+    /// counter-clockwise about +Y). Snapped, an arrow goes to the snap point taken along its axis or
+    /// to the nearest step, and an arc to the nearest turn step.
     #[test]
     fn drags_give_distances_angles_and_factors() {
         let front = xf([0.0, -1.0, 0.0]);
-        let o = Vec3::ZERO;
-        let so = front.world_to_screen(o);
-        let mut d = Drag { part: Part::Move(0), origin: o, from: so, to: so + vec2(50.0, 30.0), typed: String::new(), cancelled: false };
+        let so = front.world_to_screen(Vec3::ZERO);
+        let mut d = drag(Part::Move(0), so, so + vec2(50.0, 30.0));
         assert!((d.value(&front) - 5.0).abs() < 1e-6);
         d.typed = "12.5".into();
         assert_eq!(d.value(&front), 12.5);
         d.typed = "-".into();
         assert!((d.value(&front) - 5.0).abs() < 1e-6, "an unfinished number is no number");
-        let r = Drag { part: Part::Rotate(1), from: so + vec2(40.0, 0.0), to: so + vec2(0.0, 40.0), typed: String::new(), ..d.clone() };
+        d.typed.clear();
+        d.step = 3.0;
+        assert!((d.value(&front) - 6.0).abs() < 1e-9, "5 to the nearest 3");
+        d.snap = Some((Vec3::new(7.5, 3.0, -2.0), 1));
+        assert_eq!(d.value(&front), 7.5, "the snap point along X");
+        let r = drag(Part::Rotate(1), so + vec2(40.0, 0.0), so + vec2(0.0, 40.0));
         // From +X (right) to -Z (down on screen): +X turns to -Z, a quarter turn about +Y.
         assert!((r.value(&front) - 90.0).abs() < 1e-6, "{}", r.value(&front));
-        let s = Drag { part: Part::Scale, from: so, to: so + vec2(100.0, 0.0), ..r.clone() };
+        let r = Drag { to: so + vec2(40.0, 30.0), turn_step: 45.0, ..r };
+        assert!((r.value(&front) - 45.0).abs() < 1e-9, "37 degrees to the nearest 45: {}", r.value(&front));
+        let s = drag(Part::Scale, so, so + vec2(100.0, 0.0));
         assert!((s.value(&front) - 2.0).abs() < 1e-9);
         assert!(s.matrix(1.0).is_none() && d.matrix(0.0).is_none());
     }

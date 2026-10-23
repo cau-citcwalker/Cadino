@@ -210,8 +210,14 @@ pub struct DocState {
     pub view_dir: ViewDir,
     /// 3D solids shaded instead of drawn as edges (VSCURRENT).
     pub shaded: bool,
-    /// Shaded solids also show their visible edges (VSCURRENT's Shaded with Edges).
+    /// Shaded solids also show their visible edges (VSCURRENT's Shaded with Edges). With
+    /// `shaded` off: the Hidden style, the visible edges only (faces hide in the background).
+    /// ponytail: Hidden is the (unshaded, edges) pair rather than a style field, so looks and
+    /// VPORT tiles keep their two flags; a `VisualStyle` enum if more styles come.
     pub shaded_edges: bool,
+    /// HIDE: the view shows hidden lines removed (as the Hidden style) until the next REGEN or
+    /// visual style change.
+    pub hide: bool,
     /// The model's 3D centre orbits pivot about, for the revision it was measured at (orbiting
     /// calls for it every frame of a drag).
     pub orbit_center: Option<(u64, cadcraft_geom::Vec3)>,
@@ -251,6 +257,7 @@ impl DocState {
             view_dir: ViewDir::PLAN,
             shaded: false,
             shaded_edges: false,
+            hide: false,
             orbit_center: None,
             orbit_target: None,
             oops: Vec::new(),
@@ -829,6 +836,8 @@ pub struct Session {
     /// The object a view pick gave a point-only prompt and the world point it was picked at,
     /// while that point is fed ([`cmd::curves::pick_in`] picks it there).
     pub(crate) view_pick: Option<(Handle, cadcraft_geom::Vec3)>,
+    /// NAVVCUBE's ON or OFF for the UI, which owns the ViewCube, to take and apply.
+    pub navvcube: Option<bool>,
 }
 
 impl Default for Session {
@@ -883,6 +892,7 @@ impl Session {
             plan_world: std::sync::atomic::AtomicBool::new(false),
             view_at: None,
             view_pick: None,
+            navvcube: None,
         }
     }
     pub fn new_drawing(&mut self, metric: bool) -> usize {
@@ -1134,7 +1144,16 @@ impl Session {
         if find_command(&dashed).is_none() && bare.starts_with('-') {
             dashed = format!("-{}", cmd::resolve_alias(&lower));
         }
-        let id = if find_command(&dashed).is_some() { dashed } else { cmd::resolve_alias(&lower) };
+        // A command defined in LISP comes before an alias of the same name (HI for HIDE), as
+        // AutoCAD searches commands: a command name, then LISP, then the aliases.
+        let lisp_first = !transparent && find_command(&bare).is_none() && self.lisp_command(&lower).is_some();
+        let id = if lisp_first {
+            String::new()
+        } else if find_command(&dashed).is_some() {
+            dashed
+        } else {
+            cmd::resolve_alias(&lower)
+        };
         let Some(spec) = find_command(&id) else {
             // A command defined in LISP: (defun c:NAME …).
             if !transparent && let Some(f) = self.lisp_command(&lower) {

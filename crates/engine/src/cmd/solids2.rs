@@ -1,21 +1,21 @@
-//! More 3D modelling (CAD-rhino): WEDGE, PYRAMID, LOFT, SWEEP, CHAMFEREDGE, SHELL, PLANESURF,
-//! SLICE, and the 3D transforms 3DMOVE, 3DROTATE, MIRROR3D and 3DSCALE. Shapes come from [`cadcraft_kernel`] as in `solids`; a surface is a [`Solid3d`] whose
+//! More 3D modelling (CAD-rhino): WEDGE, PYRAMID, LOFT, SWEEP, PLANESURF, SLICE, and the 3D transforms 3DMOVE, 3DROTATE, MIRROR3D and 3DSCALE. Shapes come from [`cadcraft_kernel`] as in `solids`; a surface is a [`Solid3d`] whose
 //! mesh is open. As AutoCAD's default DELOBJ does, the curves a solid is made from are erased and
 //! those a surface is made from stay.
 
 use std::collections::HashSet;
 
-use cadcraft_doc::{Entity, EntityKind, Handle};
-use cadcraft_geom::{EPS, Mat4, Vec2, Vec3};
-use cadcraft_kernel::{Built, Curve, MAX_PYRAMID_SIDES, Primitive, Seg};
+use cadcraft_doc::{Entity, EntityKind, Handle, Solid3d};
+use cadcraft_geom::{EPS, Mat4, Vec3};
+use cadcraft_kernel::{Built, Curve, FaceInfo, MAX_PYRAMID_SIDES, Placed, Primitive, Seg, SurfaceKind};
 use serde_json::{Value, json};
 
 use super::curves::{KW, handle_param, is_locked, pick_at};
 use super::machines::{SelOutcome, SelectPhase};
 use super::solids::{
-    Ask, BOX, ProfileM, ProfileOp, Q, add, all_or_nothing, box_corners, circle_path, curve_of, in_plane, kernel, locked_err, or_skip, p3, p3_req,
-    p3_value, per_solid, placed, reshape, solid, solids,
+    Ask, BOX, Q, add, all_or_nothing, box_corners, circle_path, curve_of, in_plane, kernel, locked_err, or_skip, p3, p3_req, p3_value, placed,
+    reshape, solid, solids,
 };
+use super::solids3::{Loop, closed_loops, nest, newell};
 use super::*;
 use crate::{Accept, EngineError, Input, Interactive, Prompt, Result, Session, Step};
 
@@ -38,29 +38,26 @@ pub fn specs() -> Vec<CommandSpec> {
             .interactive(|_| Ok(Box::new(Ask::new("pyramid", "PYRAMID", PYRAMID)))),
         CommandSpec::new("loft", "Loft", run_loft)
             .menu(&["Draw", "Modeling", "Loft"])
-            .params("{handles: cross sections in order, ruled?: bool}: closed ones (circles, closed polylines) make a solid, open ones (lines, arcs, open polylines) a surface")
+            .params(
+                "{handles: cross sections in order, ruled?: bool, guides?: [handles] (curves through a corner of every section, first to last; the sections need as many corners each) | path?: handle, mode?: \"solid\" | \"surface\"}: \
+                 closed sections (circles, closed polylines) make a solid (a surface open at its ends in surface mode), open ones (lines, arcs, open polylines) a surface",
+            )
             .interactive(|_| Ok(Box::new(LoftM::default()))),
         CommandSpec::new("sweep", "Sweep", run_sweep)
             .menu(&["Draw", "Modeling", "Sweep"])
             .params("{handles?: profiles, path: handle (line, arc, circle, polyline, spline or helix)}: closed profiles make solids, open ones surfaces")
             .interactive(|_| Ok(Box::new(SweepM::default()))),
-        CommandSpec::new("chamferedge", "Chamfer Edge", run_chamferedge)
-            .menu(&["Modify", "Solid Editing", "Chamfer Edges"])
-            .params("{handle | handles?, distance}: bevels every edge of each solid")
-            .interactive(|_| Ok(Box::new(ProfileM::new(ProfileOp::Chamfer)))),
-        CommandSpec::new("shell", "Shell", run_shell)
-            .menu(&["Modify", "Solid Editing", "Shell"])
-            .params("{handle | handles?, thickness, removeTop?: bool (default true)}: hollows each solid inward, open at its top faces")
-            .interactive(|_| Ok(Box::new(ProfileM::new(ProfileOp::Shell)))),
         CommandSpec::new("planesurf", "Planar Surface", run_planesurf)
             .menu(&["Draw", "Modeling", "Surfaces", "Planar"])
-            .params("{handles?: closed planar curves} | {corner1: [x,y,z?], corner2: [x,y]}")
+            .params("{handles?: closed planar curves (one inside another in its plane is a hole)} | {corner1: [x,y,z?], corner2: [x,y]}")
             .interactive(|_| Ok(Box::new(PlaneSurfM::default()))),
         CommandSpec::new("slice", "Slice", run_slice)
             .menu(&["Modify", "3D Operations", "Slice"])
             .alias(&["sl"])
             .params(
-                "{handles?, point1: [x,y,z?], point2: [x,y,z?], up?: [x,y,z] (the cutting plane holds the line between the points and this direction; default Z: a vertical plane), \
+                "{handles?, the cut: point1: [x,y,z?], point2: [x,y,z?], up?: [x,y,z] (the plane holds the line between the points and this direction; default Z: a vertical plane) \
+                 | points: [p1,p2,p3] | origin: [x,y,z], normal: [x,y,z] | plane: \"xy\" | \"yz\" | \"zx\", point? | zaxis: [on the plane, along its normal] \
+                 | object: handle (a circle, ellipse, arc, 2D spline or 2D polyline: its plane) | view: true, point? | surface: handle, \
                  keep?: \"both\" | \"side\", side?: [x,y,z?] (on the side to keep)}",
             )
             .interactive(|_| Ok(Box::new(SliceM::default()))),
@@ -107,18 +104,18 @@ fn run_pyramid(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// `hs` without repeats, in order.
-fn once(hs: Vec<Handle>) -> Vec<Handle> {
+pub(super) fn once(hs: Vec<Handle>) -> Vec<Handle> {
     let mut seen = HashSet::with_capacity(hs.len());
     hs.into_iter().filter(|h| seen.insert(*h)).collect()
 }
 
-fn hexes(hs: &[Handle]) -> Vec<String> {
+pub(super) fn hexes(hs: &[Handle]) -> Vec<String> {
     hs.iter().map(|h| h.hex()).collect()
 }
 
 /// The shape made from `from`, added in its space with its layer and other properties (and its
 /// part, when `from` is a solid).
-fn add_like(s: &mut Session, from: Handle, b: Built) -> Result<Handle> {
+pub(super) fn add_like(s: &mut Session, from: Handle, b: Built) -> Result<Handle> {
     let d = s.doc_mut()?;
     let (Some(mut e), Some(space)) = (d.entity(from).map(|e| (**e).clone()), d.space_of(from)) else {
         return Err(EngineError::Other("no such object".into()));
@@ -127,34 +124,85 @@ fn add_like(s: &mut Session, from: Handle, b: Built) -> Result<Handle> {
     Ok(d.add(&space, e.common, e.kind)?)
 }
 
-fn type_name(s: &Session, h: Handle) -> String {
+pub(super) fn type_name(s: &Session, h: Handle) -> String {
     s.doc().ok().and_then(|d| d.entity(h).map(|e| e.kind.type_name().to_lowercase())).unwrap_or_else(|| "object".into())
 }
 
-/// LOFT: every section is used; those on locked layers are only read, never erased.
-/// ponytail: cross sections only (Smooth or Ruled); AutoCAD's Guides, Path and surface
-/// continuity options when lofts need steering.
+/// `key`'s object handles (none when it is left out).
+pub(super) fn handle_list(cmd: &str, p: &Value, key: &str) -> Result<Vec<Handle>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(a)) => a
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .and_then(Handle::parse_hex)
+                    .ok_or_else(|| bad(cmd, format!("`{key}` holds object handles (hex strings such as \"1A2\"), not {v}")))
+            })
+            .collect(),
+        Some(v) => Err(bad(cmd, format!("`{key}` must be an array of object handles, not {v}"))),
+    }
+}
+
+/// An optional handle `key`: `None` when left out, an error when it isn't a handle.
+pub(super) fn handle_opt(cmd: &str, p: &Value, key: &str) -> Result<Option<Handle>> {
+    match p.get(key).filter(|v| !v.is_null()) {
+        None => Ok(None),
+        Some(v) => handle_param(p, key).map(Some).ok_or_else(|| bad(cmd, format!("`{key}` must be an object handle, not {v}"))),
+    }
+}
+
+/// LOFT: every section is used; those on locked layers are only read, never erased. One or two
+/// guide curves or a path steer it. In surface mode closed sections make a surface open at its
+/// ends; otherwise a solid, and then the sections, guides and path are erased (AutoCAD's default
+/// DELOBJ).
+/// ponytail: no POint or Join multiple edges options, and the Settings are Ruled or Smooth fit
+/// only (no Normal to or Draft angles: the kernel's lofts take no end conditions).
 fn run_loft(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "loft";
     let hs = once(targets(s, p)?);
     let ruled = bool_or(p, "ruled", false);
+    let surface_mode = match p.get("mode") {
+        None | Some(Value::Null) => false,
+        Some(Value::String(m)) if m.eq_ignore_ascii_case("solid") => false,
+        Some(Value::String(m)) if m.eq_ignore_ascii_case("surface") => true,
+        Some(m) => return Err(bad(CMD, format!("`mode` is \"solid\" or \"surface\", not {m}"))),
+    };
+    let guides = once(handle_list(CMD, p, "guides")?);
+    let path = handle_opt(CMD, p, "path")?;
+    if path.is_some() && !guides.is_empty() {
+        return Err(bad(CMD, "give `guides` or `path`, not both"));
+    }
+    let steer: Vec<Handle> = guides.iter().copied().chain(path).collect();
+    let curve = |s: &Session, h: Handle, what: &str| -> Result<Curve> {
+        let e = s.doc()?.entity(h).ok_or_else(|| bad(CMD, format!("the {what} object does not exist")))?;
+        path_of(e)?.ok_or_else(|| bad(CMD, format!("a {} can't be a {what}: use a line, arc, circle, polyline, spline or helix", type_name(s, h))))
+    };
     let (mut sections, mut used) = (Vec::new(), Vec::new());
-    for h in hs {
+    for h in hs.into_iter().filter(|h| !steer.contains(h)) {
         let Some(e) = s.doc()?.entity(h) else { continue };
         let Some(c) = curve_of(e)? else {
-            return Err(bad(
-                "loft",
-                format!("a {} can't be a cross section: use lines, arcs, circles, polylines, splines or helices", type_name(s, h)),
-            ));
+            return Err(bad(CMD, format!("a {} can't be a cross section: use lines, arcs, circles, polylines, splines or helices", type_name(s, h))));
         };
         sections.push(c);
         used.push(h);
     }
     if used.len() < 2 {
-        return Err(bad("loft", "select at least two cross sections"));
+        return Err(bad(CMD, "select at least two cross sections"));
     }
-    let b = cadcraft_kernel::loft(&sections, ruled).map_err(kernel)?;
+    let b = match path {
+        Some(ph) => cadcraft_kernel::loft_along(&sections, &curve(s, ph, "path")?),
+        None if !guides.is_empty() => {
+            let gs = guides.iter().map(|g| curve(s, *g, "guide")).collect::<Result<Vec<_>>>()?;
+            cadcraft_kernel::loft_guided(&sections, &gs)
+        }
+        None => cadcraft_kernel::loft(&sections, ruled),
+    }
+    .map_err(kernel)?;
+    let b = if surface_mode && !b.mesh.open { uncap(&b, &sections)? } else { b };
     let surface = b.mesh.open;
-    let (locked, free): (Vec<Handle>, Vec<Handle>) = used.iter().partition(|u| is_locked(s, **u));
+    let (locked, free): (Vec<Handle>, Vec<Handle>) = used.iter().chain(&steer).partition(|u| is_locked(s, **u));
+    let locked = locked.iter().filter(|h| used.contains(h)).count();
     // On the current layer, as AutoCAD's LOFT: the sections' layers may be locked. Made where
     // the sections are in the world, not placed in the construction plane again.
     let h = s.add_entity_world(solid(b))?;
@@ -164,12 +212,44 @@ fn run_loft(s: &mut Session, p: &Value) -> Result<Value> {
             d.remove_entity(*u);
         }
     }
-    Ok(json!({ "handle": h.hex(), "surface": surface, "sections": used.len(), "locked": locked.len() }))
+    Ok(json!({ "handle": h.hex(), "surface": surface, "sections": used.len(), "locked": locked }))
+}
+
+/// LOFT's surface mode: the faces of a loft solid round its sides as a surface, without the flat
+/// end caps lying in the first and last sections' planes.
+fn uncap(b: &Built, sections: &[Curve]) -> Result<Built> {
+    let ends: Vec<(Vec3, Vec3)> = [sections.first(), sections.last()].into_iter().flatten().filter_map(section_plane).collect();
+    let id = Mat4::IDENTITY;
+    let at = Placed { brep: &b.brep, xform: &id };
+    let topo = cadcraft_kernel::topology(at).map_err(kernel)?;
+    let sides: Vec<u32> = (0u32..).zip(&topo.faces).filter(|(_, f)| !is_cap(f, &ends)).map(|(i, _)| i).collect();
+    let faces = cadcraft_kernel::copy_faces(at, &sides).map_err(kernel)?;
+    let shapes: Vec<Placed> = faces.iter().map(|f| Placed { brep: &f.brep, xform: &id }).collect();
+    cadcraft_kernel::sew(&shapes, false).map_err(kernel)
+}
+
+/// A flat face in one of the `ends` planes (point, unit normal).
+fn is_cap(f: &FaceInfo, ends: &[(Vec3, Vec3)]) -> bool {
+    let (o, n) = f.axis;
+    let tol = 1e-6 * (1.0 + (f.bbox.1 - f.bbox.0).len());
+    f.kind == SurfaceKind::Plane && ends.iter().any(|(p, m)| n.normalized().cross(*m).len() < 1e-6 && (o - *p).dot(*m).abs() < tol)
+}
+
+/// A flat section's plane: a point on it and its unit normal.
+fn section_plane(c: &Curve) -> Option<(Vec3, Vec3)> {
+    if let Curve::Segs(v) = c
+        && let [Seg::Circle { center, normal, .. }] = v.as_slice()
+    {
+        return Some((*center, normal.normalized()));
+    }
+    let pts = c.points();
+    let n = newell(&pts);
+    (n.len() > 1e-12).then(|| (pts.first().copied().unwrap_or_default(), n.normalized()))
 }
 
 /// A curve object as a sweep path, where it is: a circle runs from its rightmost point (in its
 /// own plane).
-fn path_of(e: &Entity) -> Result<Option<Curve>> {
+pub(super) fn path_of(e: &Entity) -> Result<Option<Curve>> {
     match &e.kind {
         EntityKind::Circle(c) => Ok(Some(in_plane(e, circle_path(c.center, c.radius)))),
         _ => curve_of(e),
@@ -227,23 +307,8 @@ fn run_sweep(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "handles": made, "skipped": skipped, "locked": locked }))
 }
 
-fn run_chamferedge(s: &mut Session, p: &Value) -> Result<Value> {
-    let hs = targets(s, p)?;
-    let distance = f64_req("chamferedge", p, "distance")?;
-    let (n, locked) = per_solid(s, "chamferedge", &hs, |x| cadcraft_kernel::chamfer(x, distance))?;
-    Ok(json!({ "chamfered": n, "locked": locked }))
-}
-
-fn run_shell(s: &mut Session, p: &Value) -> Result<Value> {
-    let hs = targets(s, p)?;
-    let thickness = f64_req("shell", p, "thickness")?;
-    let remove_top = bool_or(p, "removeTop", true);
-    let (n, locked) = per_solid(s, "shell", &hs, |x| cadcraft_kernel::shell(x, thickness, remove_top))?;
-    Ok(json!({ "shelled": n, "locked": locked }))
-}
-
-/// ponytail: one closed curve per surface; AutoCAD's regions with holes (outer and inner loops)
-/// when the kernel takes faces with inner wires.
+/// One surface for each closed curve (a region: for each outer loop); a curve inside another in
+/// its plane is a hole in it, and one inside a hole an island again ([`nest`]).
 fn run_planesurf(s: &mut Session, p: &Value) -> Result<Value> {
     // Corners given (even malformed ones) are the corners form: never the selection instead.
     if p.get("corner1").is_some_and(|v| !v.is_null()) {
@@ -255,26 +320,28 @@ fn run_planesurf(s: &mut Session, p: &Value) -> Result<Value> {
         return add(s, cadcraft_kernel::plane_surface(&segs).map_err(kernel)?);
     }
     let hs = once(targets(s, p)?);
-    let (mut built, mut skipped, mut locked, mut why) = (Vec::new(), 0usize, 0usize, None);
+    let (mut loops, mut skipped, mut locked, mut why) = (Vec::new(), 0usize, 0usize, None);
     for h in hs {
         let Some(e) = s.doc()?.entity(h) else { continue };
         if is_locked(s, h) {
             locked += 1;
             continue;
         }
-        let shape = match curve_of(e) {
-            Ok(Some(c)) if c.is_closed() => match c {
-                Curve::Segs(segs) => or_skip(cadcraft_kernel::plane_surface(&segs), &mut why)?,
-                Curve::Spline { .. } => None,
-            },
-            Ok(_) => None,
+        match closed_loops(e) {
+            Ok(ls) if !ls.is_empty() => loops.extend(ls.into_iter().map(|(pts, curve)| Loop { owner: h, pts, curve })),
+            Ok(_) => skipped += 1,
             Err(e) => {
                 why.get_or_insert(e);
-                None
+                skipped += 1;
             }
-        };
-        match shape {
-            Some(b) => built.push((h, b)),
+        }
+    }
+    let mut built = Vec::new();
+    for (outer, holes) in nest(&loops) {
+        let Some(o) = loops.get(outer) else { continue };
+        let holes: Vec<Curve> = holes.iter().filter_map(|i| loops.get(*i)).map(|l| l.curve.clone()).collect();
+        match or_skip(cadcraft_kernel::planar_surface(&o.curve, &holes), &mut why)? {
+            Some(b) => built.push((o.owner, b)),
             None => skipped += 1,
         }
     }
@@ -294,78 +361,204 @@ fn run_planesurf(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "handles": made, "skipped": skipped, "locked": locked }))
 }
 
-/// ponytail: a plane through two points and a direction only (vertical by default, square to the
-/// construction plane at the prompts); AutoCAD's 3-point, Object, Surface, Zaxis, View and
-/// XY/YZ/ZX planes when slicing needs other planes (the kernel takes any plane already).
-fn run_slice(s: &mut Session, p: &Value) -> Result<Value> {
-    let hs = targets(s, p)?;
-    let (a, b) = (p3_req("slice", p, "point1")?, p3_req("slice", p, "point2")?);
+/// What SLICE cuts with: a plane (a point on it, its unit normal) or a surface.
+enum Cutter {
+    Plane(Vec3, Vec3),
+    Surface(Handle, Box<Solid3d>),
+}
+
+/// The plane of a circle, ellipse, arc, 2D spline or 2D polyline (SLICE's planar Object).
+pub(super) fn planar(e: &Entity) -> Option<Mat4> {
+    let flat =
+        matches!(e.kind, EntityKind::Arc(_) | EntityKind::Circle(_) | EntityKind::Ellipse(_) | EntityKind::LwPolyline(_) | EntityKind::Spline(_));
+    e.plane().filter(|_| flat)
+}
+
+/// SLICE's cut from its JSON form.
+fn cutter(s: &Session, p: &Value) -> Result<Cutter> {
+    const CMD: &str = "slice";
+    let given = |k: &str| p.get(k).is_some_and(|v| !v.is_null());
+    let plane = |o: Vec3, n: Vec3| {
+        let len = n.len();
+        if o.is_finite() && n.is_finite() && len > 1e-12 {
+            Ok(Cutter::Plane(o, n * (1.0 / len)))
+        } else {
+            Err(bad(CMD, "the cutting plane's normal has no length"))
+        }
+    };
+    let point_or_origin = || if given("point") { p3_req(CMD, p, "point") } else { Ok(Vec3::ZERO) };
+    if let Some(h) = handle_opt(CMD, p, "surface")? {
+        let Some((_, x)) = solids(s, &[h])?.into_iter().next() else { return Err(bad(CMD, "`surface` must be a surface or a 3D solid")) };
+        return Ok(Cutter::Surface(h, Box::new(x)));
+    }
+    if let Some(h) = handle_opt(CMD, p, "object")? {
+        let e = s.doc()?.entity(h).ok_or_else(|| bad(CMD, "the planar object does not exist"))?;
+        let pl =
+            planar(e).ok_or_else(|| bad(CMD, format!("a {} has no plane: use a circle, ellipse, arc, 2D spline or 2D polyline", type_name(s, h))))?;
+        return plane(pl.apply(Vec3::ZERO), pl.col(2));
+    }
+    if given("points") {
+        let pts: Option<Vec<Vec3>> =
+            p.get("points").and_then(Value::as_array).filter(|a| a.len() == 3).and_then(|a| a.iter().map(p3_value).collect());
+        let Some([a, b, c]) = pts.as_deref() else { return Err(bad(CMD, "`points` must be three points [[x,y,z],[x,y,z],[x,y,z]]")) };
+        return plane(*a, plane_normal(*a, *b, *c).ok_or_else(|| bad(CMD, "the three points are on one line"))?);
+    }
+    if given("origin") || given("normal") {
+        let n = p3(p, "normal").ok_or_else(|| bad(CMD, "`normal` ([x, y, z]) is required with `origin`"))?;
+        return plane(p3_req(CMD, p, "origin")?, n);
+    }
+    if let Some(v) = p.get("plane").filter(|v| !v.is_null()) {
+        let n = match v.as_str().map(str::to_ascii_lowercase).as_deref() {
+            Some("xy") => Vec3::Z,
+            Some("yz") => Vec3::X,
+            Some("zx" | "xz") => Vec3::Y,
+            _ => return Err(bad(CMD, format!("`plane` is \"xy\", \"yz\" or \"zx\", not {v}"))),
+        };
+        return plane(point_or_origin()?, n);
+    }
+    if given("zaxis") {
+        let pts: Option<Vec<Vec3>> = p.get("zaxis").and_then(Value::as_array).filter(|a| a.len() == 2).and_then(|a| a.iter().map(p3_value).collect());
+        let Some([a, b]) = pts.as_deref() else { return Err(bad(CMD, "`zaxis` must be two points [[x,y,z],[x,y,z]]")) };
+        return plane(*a, *b - *a);
+    }
+    if given("view") {
+        if p.get("view") != Some(&Value::Bool(true)) {
+            return Err(bad(CMD, "`view` is true (the plane square to the view direction)"));
+        }
+        return plane(point_or_origin()?, s.state()?.screen_dir().dir);
+    }
+    let (a, b) = (p3_req(CMD, p, "point1")?, p3_req(CMD, p, "point2")?);
     if (b - a).len() <= EPS * (1.0 + a.len()) {
-        return Err(bad("slice", "`point1` and `point2` must be different points"));
+        return Err(bad(CMD, "`point1` and `point2` must be different points"));
     }
     let up = match p.get("up").filter(|v| !v.is_null()) {
-        Some(v) => p3_value(v).ok_or_else(|| bad("slice", "`up` must be a direction [x, y, z]"))?,
+        Some(v) => p3_value(v).ok_or_else(|| bad(CMD, "`up` must be a direction [x, y, z]"))?,
         None => Vec3::Z,
     };
     // The plane holds the line through the two points and `up`; its normal points left of the
     // line seen from `up`'s end.
     let normal = up.normalized().cross((b - a).normalized());
     if !normal.is_finite() || normal.len() <= 1e-9 {
-        return Err(bad("slice", "`up` must not run along the line between the points"));
+        return Err(bad(CMD, "`up` must not run along the line between the points"));
     }
-    let normal = normal.normalized();
+    plane(a, normal)
+}
+
+/// Which side of the surface `tool` the point `q` is on: along or against the normal of its
+/// mesh triangle nearest `q`.
+/// ponytail: the nearest triangle by its centre, and a piece's side by its points' average; a
+/// point projected onto the surface (the kernel's pick) if a deeply curved cut needs it.
+fn surface_side(tool: &Solid3d, q: Vec3) -> Option<bool> {
+    let m = &tool.mesh;
+    let (_, c, n) = m
+        .tris
+        .iter()
+        .filter_map(|t| m.tri(t))
+        .map(|[a, b, c]| {
+            let (a, b, c) = (tool.world(a), tool.world(b), tool.world(c));
+            let mid = (a + b + c) * (1.0 / 3.0);
+            ((mid - q).len(), mid, (b - a).cross(c - a))
+        })
+        .min_by(|x, y| x.0.total_cmp(&y.0))?;
+    Some(n.dot(q - c) > 0.0)
+}
+
+/// Where a piece of a solid is, for [`surface_side`]: the average of its mesh points.
+fn middle(b: &Built) -> Vec3 {
+    let n = b.mesh.verts.len().max(1) as f64;
+    b.mesh.verts.iter().fold(Vec3::ZERO, |a, p| a + *p) * (1.0 / n)
+}
+
+/// SLICE by a plane or a surface, keeping both sides or the side a point is on (the solid keeps
+/// the piece on the plane normal's side, or the surface's first piece; the others are new).
+fn run_slice(s: &mut Session, p: &Value) -> Result<Value> {
+    let hs = targets(s, p)?;
+    let cut_by = cutter(s, p)?;
     let keep = match p.get("keep") {
         None | Some(Value::Null) => "both".to_string(),
         Some(Value::String(k)) => k.to_ascii_lowercase(),
         Some(k) => return Err(bad("slice", format!("`keep` is \"both\" or \"side\", not {k}"))),
     };
+    // The side to keep: along the plane's normal or not (or the surface's normal there).
     let keep_side = match keep.as_str() {
         "both" => None,
         "side" => {
             let side = p3_req("slice", p, "side")?;
-            let off = normal.dot(side - a);
-            if off.abs() <= EPS * (1.0 + (side - a).len()) {
-                return Err(bad("slice", "the `side` point is on the cutting plane"));
-            }
-            Some(off > 0.0)
+            Some(match &cut_by {
+                Cutter::Plane(a, normal) => {
+                    let off = normal.dot(side - *a);
+                    if off.abs() <= EPS * (1.0 + (side - *a).len()) {
+                        return Err(bad("slice", "the `side` point is on the cutting plane"));
+                    }
+                    off > 0.0
+                }
+                Cutter::Surface(_, tool) => surface_side(tool, side).ok_or_else(|| bad("slice", "the surface has no faces"))?,
+            })
         }
         k => return Err(bad("slice", format!("`keep` is \"both\" or \"side\", not \"{k}\""))),
     };
     let mut xs = solids(s, &hs)?;
+    if let Cutter::Surface(t, _) = &cut_by {
+        xs.retain(|(h, _)| h != t);
+    }
     let all = xs.len();
     xs.retain(|(h, _)| !is_locked(s, *h));
     if xs.is_empty() {
         return Err(if all > 0 { locked_err() } else { bad("slice", "select 3D solids") });
     }
-    // Every solid first; one the plane misses stays as it is.
+    // Every solid first, as the pieces to keep; one the cut misses stays as it is.
     let mut cut = Vec::new();
     for (h, x) in &xs {
-        if let [Some(plus), Some(minus)] = cadcraft_kernel::slice(placed(x), a, normal).map_err(kernel)? {
-            cut.push((*h, plus, minus));
+        let pieces = match &cut_by {
+            Cutter::Plane(a, normal) => match cadcraft_kernel::slice(placed(x), *a, *normal).map_err(kernel)? {
+                [Some(plus), Some(minus)] => match keep_side {
+                    Some(true) => vec![plus],
+                    Some(false) => vec![minus],
+                    None => vec![plus, minus],
+                },
+                _ => continue,
+            },
+            Cutter::Surface(_, tool) => {
+                let all = cadcraft_kernel::split(placed(x), &[placed(tool)]).map_err(kernel)?;
+                if all.len() < 2 {
+                    continue;
+                }
+                match keep_side {
+                    Some(want) => all.into_iter().filter(|b| surface_side(tool, middle(b)) == Some(want)).collect(),
+                    None => all,
+                }
+            }
+        };
+        if !pieces.is_empty() {
+            cut.push((*h, pieces));
         }
     }
     if cut.is_empty() {
-        return Err(EngineError::Other("The plane does not cut the selected solids.".into()));
+        return Err(EngineError::Other(
+            if matches!(cut_by, Cutter::Plane(..)) {
+                "The plane does not cut the selected solids."
+            } else {
+                "The surface does not cut the selected solids."
+            }
+            .into(),
+        ));
     }
     let n = cut.len();
     let mut made = Vec::new();
-    for (h, plus, minus) in cut {
-        let (keep, other) = match keep_side {
-            Some(true) => (plus, None),
-            Some(false) => (minus, None),
-            None => (plus, Some(minus)),
-        };
-        if let Some(o) = other {
+    for (h, pieces) in cut {
+        let mut pieces = pieces.into_iter();
+        let Some(first) = pieces.next() else { continue };
+        for o in pieces {
             made.push(add_like(s, h, o)?.hex());
         }
-        s.doc_mut()?.modify_entity(h, |e| reshape(e, keep))?;
+        s.doc_mut()?.modify_entity(h, |e| reshape(e, first))?;
         made.push(h.hex());
     }
     Ok(json!({ "sliced": n, "missed": xs.len() - n, "handles": made, "locked": all - xs.len() }))
 }
 
 /// Runs a command's JSON form from its prompts, and clears what was picked for it.
-fn run_json(s: &mut Session, id: &str, p: Value) -> Result<Step> {
+pub(super) fn run_json(s: &mut Session, id: &str, p: Value) -> Result<Step> {
     let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.into()))?;
     let r = (spec.run)(s, &p)?;
     if let Some(m) = r.get("message").and_then(Value::as_str).filter(|m| !m.is_empty()) {
@@ -376,7 +569,7 @@ fn run_json(s: &mut Session, id: &str, p: Value) -> Result<Step> {
 }
 
 /// A selection phase's input; the objects land in `hs` when it finishes.
-fn feed(sel: &mut SelectPhase, hs: &mut Vec<Handle>, s: &mut Session, i: &Input) -> Result<Step> {
+pub(super) fn feed(sel: &mut SelectPhase, hs: &mut Vec<Handle>, s: &mut Session, i: &Input) -> Result<Step> {
     Ok(match sel.feed(s, i)? {
         SelOutcome::More => Step::Continue,
         SelOutcome::Empty => Step::Done,
@@ -388,16 +581,37 @@ fn feed(sel: &mut SelectPhase, hs: &mut Vec<Handle>, s: &mut Session, i: &Input)
 }
 
 /// Typed text that starts `word` (a keyword's shortcut or more of it).
-fn is_kw(t: &str, word: &str) -> bool {
+pub(super) fn is_kw(t: &str, word: &str) -> bool {
     let t = t.trim().to_ascii_lowercase();
     !t.is_empty() && word.starts_with(&t)
 }
 
-/// LOFT: cross sections in lofting order, then smooth or ruled.
+/// What LOFT asks after the cross sections.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LoftNext {
+    Guides,
+    Path,
+    Settings,
+}
+
+/// LOFT: cross sections in lofting order (MOde: closed sections make solids or surfaces), then
+/// Guides, Path, Cross sections only or Settings (Ruled or Smooth fit).
 #[derive(Default)]
 struct LoftM {
     sel: SelectPhase,
     hs: Vec<Handle>,
+    surface: bool,
+    asking_mode: bool,
+    next: Option<LoftNext>,
+    guides: SelectPhase,
+}
+
+impl LoftM {
+    fn run(&self, s: &mut Session, mut p: Value) -> Result<Step> {
+        p["handles"] = json!(hexes(&self.hs));
+        p["mode"] = json!(if self.surface { "surface" } else { "solid" });
+        run_json(s, "loft", p)
+    }
 }
 
 impl Interactive for LoftM {
@@ -405,6 +619,7 @@ impl Interactive for LoftM {
         "LOFT"
     }
     fn begin(&mut self, s: &mut Session) -> Result<Step> {
+        s.echo(if self.surface { "Closed profiles creation mode = Surface" } else { "Closed profiles creation mode = Solid" });
         self.sel = SelectPhase::begin(s);
         if self.sel.done {
             self.hs = self.sel.picked.clone();
@@ -412,30 +627,95 @@ impl Interactive for LoftM {
         Ok(Step::Continue)
     }
     fn prompt(&self, _s: &Session) -> Prompt {
-        match (self.hs.is_empty(), self.sel.removing) {
-            (true, false) => Prompt::new("Select cross sections in lofting order", Accept::SELECT),
-            (true, true) => self.sel.prompt(),
-            (false, _) => Prompt::new("Enter an option", KW).kw(&["Ruled", "Smooth"]).default("Smooth"),
+        if self.asking_mode {
+            return Prompt::new("Closed surfaces or solids mode", KW).kw(&["SOlid", "SUrface"]).default(if self.surface {
+                "Surface"
+            } else {
+                "Solid"
+            });
+        }
+        if self.hs.is_empty() {
+            return if self.sel.removing {
+                self.sel.prompt()
+            } else {
+                Prompt::new("Select cross sections in lofting order", Accept::SELECT).kw(&["MOde"])
+            };
+        }
+        match self.next {
+            None => Prompt::new("Enter an option", KW).kw(&["Guides", "Path", "Cross sections only", "Settings"]).default("Cross sections only"),
+            Some(LoftNext::Guides) if self.guides.removing => self.guides.prompt(),
+            Some(LoftNext::Guides) => Prompt::new("Select guide curves", Accept::SELECT),
+            Some(LoftNext::Path) => Prompt::new("Select path profile", Accept::POINT),
+            Some(LoftNext::Settings) => Prompt::new("Enter an option", KW).kw(&["Ruled", "Smooth"]).default("Smooth"),
         }
     }
     fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
         if matches!(i, Input::Cancel) {
             return Ok(Step::Cancel);
         }
-        if self.hs.is_empty() {
-            return feed(&mut self.sel, &mut self.hs, s, &i);
+        let word = match &i {
+            Input::Text(t) | Input::Keyword(t) => self.prompt(s).match_keyword(t),
+            _ => None,
+        };
+        if self.asking_mode {
+            match (word.as_deref(), &i) {
+                (Some("SOlid"), _) => self.surface = false,
+                (Some("SUrface"), _) => self.surface = true,
+                (_, Input::Enter) => {}
+                _ => return Ok(Step::Continue),
+            }
+            self.asking_mode = false;
+            return Ok(Step::Continue);
         }
-        let ruled = match &i {
-            Input::Enter => false,
-            Input::Text(t) | Input::Keyword(t) if is_kw(t, "ruled") => true,
-            Input::Text(t) | Input::Keyword(t) if is_kw(t, "smooth") => false,
-            Input::Text(_) | Input::Keyword(_) => {
-                s.echo("Requires Ruled or Smooth.");
+        if self.hs.is_empty() {
+            if word.as_deref() == Some("MOde") {
+                self.asking_mode = true;
                 return Ok(Step::Continue);
             }
-            _ => return Ok(Step::Continue),
-        };
-        run_json(s, "loft", json!({ "handles": hexes(&self.hs), "ruled": ruled }))
+            return feed(&mut self.sel, &mut self.hs, s, &i);
+        }
+        match (self.next, word.as_deref(), &i) {
+            (None, Some("Cross sections only"), _) | (None, _, Input::Enter) => self.run(s, json!({})),
+            (None, Some("Guides"), _) => {
+                self.next = Some(LoftNext::Guides);
+                Ok(Step::Continue)
+            }
+            (None, Some("Path"), _) => {
+                self.next = Some(LoftNext::Path);
+                Ok(Step::Continue)
+            }
+            (None, Some("Settings"), _) => {
+                self.next = Some(LoftNext::Settings);
+                Ok(Step::Continue)
+            }
+            (None, ..) => {
+                s.echo("Requires Guides, Path, Cross sections only or Settings.");
+                Ok(Step::Continue)
+            }
+            (Some(LoftNext::Guides), ..) => match self.guides.feed(s, &i)? {
+                SelOutcome::More => Ok(Step::Continue),
+                SelOutcome::Empty => Ok(Step::Done),
+                SelOutcome::Done(gs) => self.run(s, json!({ "guides": hexes(&gs) })),
+            },
+            (Some(LoftNext::Path), ..) => {
+                let path = match &i {
+                    Input::Point(p) => pick_at(s, *p),
+                    Input::Pick(hs) => hs.first().copied(),
+                    _ => return Ok(Step::Continue),
+                };
+                let Some(path) = path else {
+                    s.echo("No object found.");
+                    return Ok(Step::Continue);
+                };
+                self.run(s, json!({ "path": path.hex() }))
+            }
+            (Some(LoftNext::Settings), Some("Ruled"), _) => self.run(s, json!({ "ruled": true })),
+            (Some(LoftNext::Settings), Some("Smooth"), _) | (Some(LoftNext::Settings), _, Input::Enter) => self.run(s, json!({ "ruled": false })),
+            (Some(LoftNext::Settings), ..) => {
+                s.echo("Requires Ruled or Smooth.");
+                Ok(Step::Continue)
+            }
+        }
     }
 }
 
@@ -541,25 +821,56 @@ impl Interactive for PlaneSurfM {
     }
 }
 
-/// SLICE: the solids, two points on a vertical cutting plane, then the side to keep or both.
+/// How SLICE's plane is being given.
+#[derive(Clone, Copy, PartialEq)]
+enum SliceBy {
+    /// A start point picked: a second point, the plane standing square to the construction plane.
+    TwoPoints,
+    ThreePoints,
+    Object,
+    Surface,
+    Zaxis,
+    View,
+    /// The construction plane's XY, YZ or ZX plane through a point: its name and normal.
+    Named(&'static str, Vec3),
+}
+
+/// SLICE: the solids; the cutting plane (two or three points, a planar object, a surface, a point
+/// and the normal's direction, the view plane, or the XY/YZ/ZX plane through a point); then the
+/// side to keep or both. Points are in the construction plane, at the height of the 3D object
+/// they snap to or typed as `x,y,z`.
 #[derive(Default)]
 struct SliceM {
     sel: SelectPhase,
     hs: Vec<Handle>,
-    pts: Vec<Vec2>,
+    by: Option<SliceBy>,
+    pts: Vec<Vec3>,
+    /// The cut, once given, as the JSON form's keys (in the world).
+    cut: Option<Value>,
 }
 
 impl SliceM {
-    /// The points picked are in the construction plane: the cutting plane stands square to it.
     fn run(&self, s: &mut Session, keep: Value) -> Result<Step> {
-        let (Some(a), Some(b)) = (self.pts.first(), self.pts.get(1)) else { return Ok(Step::Continue) };
-        let c = s.cplane();
-        let (a, b, up) = (c.apply(a.to3(0.0)), c.apply(b.to3(0.0)), c.apply_vec(Vec3::Z));
-        let mut p = json!({ "handles": hexes(&self.hs), "point1": json3(a), "point2": json3(b), "up": json3(up), "keep": "both" });
-        if let (Some(o), Some(k)) = (p.as_object_mut(), keep.as_object()) {
-            o.extend(k.clone());
+        let mut p = json!({ "handles": hexes(&self.hs), "keep": "both" });
+        for v in [self.cut.as_ref(), Some(&keep)].into_iter().flatten() {
+            if let (Some(o), Some(k)) = (p.as_object_mut(), v.as_object()) {
+                o.extend(k.clone());
+            }
         }
         run_json(s, "slice", p)
+    }
+    /// The cut from the points given, once there are enough of them.
+    fn cut_from_points(&self, s: &Session) -> Result<Option<Value>> {
+        let c = s.cplane();
+        let w = |p: &Vec3| json3(c.apply(*p));
+        Ok(match (self.by, self.pts.as_slice()) {
+            (Some(SliceBy::TwoPoints), [a, b]) => Some(json!({ "point1": w(a), "point2": w(b), "up": json3(c.apply_vec(Vec3::Z)) })),
+            (Some(SliceBy::ThreePoints), [a, b, d]) => Some(json!({ "points": [w(a), w(b), w(d)] })),
+            (Some(SliceBy::Zaxis), [a, b]) => Some(json!({ "origin": w(a), "normal": json3(c.apply_vec(*b - *a)) })),
+            (Some(SliceBy::View), [a]) => Some(json!({ "origin": w(a), "normal": json3(s.state()?.screen_dir().dir) })),
+            (Some(SliceBy::Named(_, n)), [a]) => Some(json!({ "origin": w(a), "normal": json3(c.apply_vec(n)) })),
+            _ => None,
+        })
     }
 }
 
@@ -576,12 +887,28 @@ impl Interactive for SliceM {
     }
     fn prompt(&self, _s: &Session) -> Prompt {
         if self.hs.is_empty() {
-            return self.sel.prompt();
+            return if self.sel.removing { self.sel.prompt() } else { Prompt::new("Select objects to slice", Accept::SELECT) };
         }
-        match self.pts.as_slice() {
-            [] => Prompt::new("Specify first point on plane", Accept::POINT),
-            [a] => Prompt::new("Specify second point on plane", Accept::POINT).base(*a),
-            _ => Prompt::new("Specify a point on desired side", Accept::POINT).kw(&["keep Both sides"]).default("Both"),
+        if self.cut.is_some() {
+            return Prompt::new("Specify a point on desired side", Accept::POINT).kw(&["keep Both sides"]).default("Both");
+        }
+        let base = self.pts.first().map(|p| p.xy());
+        match (self.by, self.pts.len()) {
+            (None, _) => Prompt::new("Specify start point of slicing plane", Accept::POINT)
+                .kw(&["planar Object", "Surface", "Zaxis", "View", "XY", "YZ", "ZX", "3points"])
+                .default("3points"),
+            (Some(SliceBy::TwoPoints), _) => Prompt::new("Specify second point on plane", Accept::POINT).base_opt(base),
+            (Some(SliceBy::ThreePoints), 0) => Prompt::new("Specify first point on plane", Accept::POINT),
+            (Some(SliceBy::ThreePoints), 1) => Prompt::new("Specify second point on plane", Accept::POINT).base_opt(base),
+            (Some(SliceBy::ThreePoints), _) => Prompt::new("Specify third point on plane", Accept::POINT).base_opt(base),
+            (Some(SliceBy::Object), _) => {
+                Prompt::new("Select a circle, ellipse, arc, 2D-spline, 2D-polyline to define the slicing plane", Accept::POINT)
+            }
+            (Some(SliceBy::Surface), _) => Prompt::new("Select a surface", Accept::POINT),
+            (Some(SliceBy::Zaxis), 0) => Prompt::new("Specify a point on the section plane", Accept::POINT),
+            (Some(SliceBy::Zaxis), _) => Prompt::new("Specify a point on the Z-axis (normal) of the plane", Accept::POINT).base_opt(base),
+            (Some(SliceBy::View), _) => Prompt::new("Specify a point on the current view plane", Accept::POINT).default("0,0,0"),
+            (Some(SliceBy::Named(n, _)), _) => Prompt::new(format!("Specify a point on the {n}-plane"), Accept::POINT).default("0,0,0"),
         }
     }
     fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
@@ -591,22 +918,80 @@ impl Interactive for SliceM {
         if self.hs.is_empty() {
             return feed(&mut self.sel, &mut self.hs, s, &i);
         }
-        match (self.pts.len(), i) {
-            (n, Input::Point(p)) if n < 2 => {
-                if self.pts.first().is_some_and(|a| a.near(p, EPS)) {
+        let word = match &i {
+            Input::Text(t) | Input::Keyword(t) => self.prompt(s).match_keyword(t),
+            _ => None,
+        };
+        let z = s.point_z.filter(|z| z.is_finite()).unwrap_or(0.0);
+        if self.cut.is_some() {
+            return match (&i, word.as_deref()) {
+                (Input::Point(p), _) => {
+                    let side = s.cplane().apply(p.to3(z));
+                    self.run(s, json!({ "keep": "side", "side": json3(side) }))
+                }
+                (Input::Enter, _) | (_, Some("keep Both sides")) => self.run(s, json!({})),
+                _ => Ok(Step::Continue),
+            };
+        }
+        match (self.by, &i, word.as_deref()) {
+            (None, Input::Point(p), _) => {
+                self.by = Some(SliceBy::TwoPoints);
+                self.pts.push(p.to3(z));
+            }
+            (None, Input::Enter, _) | (None, _, Some("3points")) => self.by = Some(SliceBy::ThreePoints),
+            (None, _, Some(k)) => {
+                self.by = Some(match k {
+                    "planar Object" => SliceBy::Object,
+                    "Surface" => SliceBy::Surface,
+                    "Zaxis" => SliceBy::Zaxis,
+                    "View" => SliceBy::View,
+                    "XY" => SliceBy::Named("XY", Vec3::Z),
+                    "YZ" => SliceBy::Named("YZ", Vec3::X),
+                    _ => SliceBy::Named("ZX", Vec3::Y),
+                })
+            }
+            (Some(SliceBy::Object | SliceBy::Surface), Input::Point(_) | Input::Pick(_), _) => {
+                let h = match &i {
+                    Input::Point(p) => pick_at(s, *p),
+                    Input::Pick(hs) => hs.first().copied(),
+                    _ => None,
+                };
+                let Some(h) = h else {
+                    s.echo("No object found.");
+                    return Ok(Step::Continue);
+                };
+                let d = s.doc()?;
+                self.cut = Some(if self.by == Some(SliceBy::Object) {
+                    if d.entity(h).and_then(|e| planar(e)).is_none() {
+                        return Err(EngineError::Other("Select a circle, ellipse, arc, 2D spline or 2D polyline.".into()));
+                    }
+                    json!({ "object": h.hex() })
+                } else {
+                    if self.hs.contains(&h) || !matches!(d.entity(h).map(|e| &e.kind), Some(EntityKind::Solid3d(_))) {
+                        return Err(EngineError::Other("Select a surface that is not being sliced.".into()));
+                    }
+                    json!({ "surface": h.hex() })
+                });
+            }
+            (Some(SliceBy::View | SliceBy::Named(..)), Input::Enter, _) => self.pts.push(Vec3::ZERO),
+            (Some(_), Input::Point(p), _) => {
+                let p = p.to3(z);
+                if self.pts.iter().any(|q| (p - *q).len() <= EPS) {
                     return Err(EngineError::Other("The plane needs two different points.".into()));
                 }
+                if let (Some(SliceBy::ThreePoints), [a, b]) = (self.by, self.pts.as_slice())
+                    && plane_normal(*a, *b, p).is_none()
+                {
+                    return Err(EngineError::Other("The three points are on one line: specify a third point off it.".into()));
+                }
                 self.pts.push(p);
-                Ok(Step::Continue)
             }
-            (_, Input::Point(p)) => {
-                let side = s.cplane().apply(p.to3(0.0));
-                self.run(s, json!({ "keep": "side", "side": json3(side) }))
-            }
-            (2, Input::Enter) => self.run(s, json!({})),
-            (2, Input::Text(t) | Input::Keyword(t)) if is_kw(&t, "both") || is_kw(&t, "keep both sides") => self.run(s, json!({})),
-            _ => Ok(Step::Continue),
+            _ => {}
         }
+        if self.cut.is_none() {
+            self.cut = self.cut_from_points(s)?;
+        }
+        Ok(Step::Continue)
     }
 }
 
@@ -617,7 +1002,7 @@ impl Interactive for SliceM {
 /// polylines and points move their points, planar objects get the moved plane. Objects on locked
 /// layers are left alone; one that can't take the transform (a dimension turned out of the
 /// horizontal …) refuses the whole command.
-fn transform3(s: &mut Session, cmd: &str, hs: &[Handle], m: &Mat4, copy: bool) -> Result<Value> {
+pub(super) fn transform3(s: &mut Session, cmd: &str, hs: &[Handle], m: &Mat4, copy: bool) -> Result<Value> {
     if !m.m.iter().flatten().all(|v| v.is_finite()) {
         return Err(bad(cmd, "the transform is out of range"));
     }
@@ -665,7 +1050,7 @@ fn run_3dmove(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Two 3D points from `[[x,y,z],[x,y,z]]`.
-fn axis_param(cmd: &str, p: &Value) -> Result<(Vec3, Vec3)> {
+pub(super) fn axis_param(cmd: &str, p: &Value) -> Result<(Vec3, Vec3)> {
     let pts: Option<Vec<Vec3>> = p.get("axis").and_then(Value::as_array).filter(|a| a.len() == 2).and_then(|a| a.iter().map(p3_value).collect());
     match pts.as_deref() {
         Some([a, b]) if (*b - *a).len() > EPS * (1.0 + a.len()) => Ok((*a, *b)),
@@ -709,7 +1094,7 @@ fn run_mirror3d(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// The unit normal of the plane through three points; `None` when they are on one line.
-fn plane_normal(a: Vec3, b: Vec3, c: Vec3) -> Option<Vec3> {
+pub(super) fn plane_normal(a: Vec3, b: Vec3, c: Vec3) -> Option<Vec3> {
     let n = (b - a).cross(c - a);
     let reach = (b - a).len().max((c - a).len());
     (n.len() > 1e-12 * reach * reach).then(|| n.normalized())
@@ -774,7 +1159,7 @@ impl Xform3M {
     }
 }
 
-fn json3(p: Vec3) -> Value {
+pub(super) fn json3(p: Vec3) -> Value {
     json!([p.x, p.y, p.z])
 }
 
@@ -950,7 +1335,7 @@ impl Interactive for Xform3M {
 #[cfg(test)]
 mod plain_tests {
     use cadcraft_doc::Solid3d;
-    use cadcraft_geom::PolyVertex;
+    use cadcraft_geom::{PolyVertex, Vec2};
 
     use super::*;
 
@@ -1092,14 +1477,14 @@ mod plain_tests {
         s.start("pyramid").unwrap();
         assert!(msg(&s).contains("center point of base"));
         s.cancel();
-        // LOFT: cross sections, then Ruled or Smooth.
+        // LOFT: cross sections, then Guides, Path, Cross sections only or Settings.
         let (a, b) = (circle(&mut s, 0.0), circle(&mut s, 5.0));
         s.start("loft").unwrap();
         assert!(msg(&s).contains("lofting order"));
         s.input(Input::Pick(vec![a, b])).unwrap();
         s.input(Input::Enter).unwrap();
         let p = s.current_prompt().unwrap();
-        assert_eq!(p.keywords, vec!["Ruled", "Smooth"]);
+        assert_eq!(p.keywords, vec!["Guides", "Path", "Cross sections only", "Settings"]);
         s.cancel();
         // SWEEP: objects, then the path (nothing picked first: no pickfirst selection).
         s.set_selection(Vec::new());
@@ -1113,7 +1498,7 @@ mod plain_tests {
         s.start("slice").unwrap();
         s.input(Input::Pick(vec![a])).unwrap();
         s.input(Input::Enter).unwrap();
-        assert!(msg(&s).contains("first point on plane"));
+        assert!(msg(&s).contains("start point of slicing plane"));
         s.input(Input::Point(Vec2::ZERO)).unwrap();
         let _ = s.input(Input::Point(Vec2::ZERO));
         assert!(msg(&s).contains("second point on plane"), "the same point twice is asked again");
@@ -1149,8 +1534,7 @@ mod plain_tests {
 #[cfg(test)]
 #[cfg(feature = "occt")]
 mod tests {
-    use cadcraft_doc::Solid3d;
-    use cadcraft_geom::{Bounds2, PolyVertex};
+    use cadcraft_geom::{Bounds2, PolyVertex, Vec2};
 
     use super::*;
 

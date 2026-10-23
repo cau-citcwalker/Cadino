@@ -48,6 +48,7 @@ pub mod quick;
 pub mod shortcut_menus;
 pub mod theme;
 pub mod viewcube;
+pub mod visualstyles;
 pub mod vpscale;
 
 pub mod exchange;
@@ -66,6 +67,35 @@ pub const PREFS_KEY: &str = "cadcraft.prefs";
 /// How many recently opened drawings are kept (AutoCAD's default for its file history).
 pub const RECENT_FILES: usize = 9;
 
+/// What the gumball's axes follow: the view's construction plane (Rhino's default), the world, or
+/// the selected object's own axes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GumballAlign {
+    #[default]
+    Cplane,
+    World,
+    Object,
+}
+
+impl GumballAlign {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "cplane" | "c" => Some(GumballAlign::Cplane),
+            "world" | "w" => Some(GumballAlign::World),
+            "object" | "o" => Some(GumballAlign::Object),
+            _ => None,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GumballAlign::Cplane => "cplane",
+            GumballAlign::World => "world",
+            GumballAlign::Object => "object",
+        }
+    }
+}
+
 /// Persisted UI state (serde, so automation can read and set it).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -82,6 +112,10 @@ pub struct UiState {
     pub show_viewcube: bool,
     /// Rhino's gumball on objects selected in 3D views (`ui.gumball`).
     pub gumball: bool,
+    /// What the gumball's axes follow (`ui.gumball` `align`).
+    pub gumball_align: GumballAlign,
+    /// Gumball drags snap to object snaps and steps (`ui.gumball` `snap`).
+    pub gumball_snap: bool,
     pub show_layer_list: bool,
     /// Keep the system cursor visible over the drawing area (a small crosshair at the centre of the
     /// drawn one) instead of hiding it. Screen magnifiers (Windows Magnifier "follow the mouse
@@ -168,6 +202,8 @@ impl Default for UiState {
             show_command_line: true,
             show_viewcube: true,
             gumball: true,
+            gumball_align: GumballAlign::default(),
+            gumball_snap: true,
             show_layer_list: false,
             system_cursor: std::env::var("CADCRAFT_SYSTEM_CURSOR").is_ok_and(|v| !matches!(v.trim(), "" | "0" | "false" | "off")),
             toolset_tab: "Drafting".into(),
@@ -335,6 +371,9 @@ impl CadApp {
             return r;
         }
         let r = self.session.execute(id, &params).map_err(|e| e.to_string());
+        if let Some(on) = self.session.navvcube.take() {
+            self.ui.show_viewcube = on;
+        }
         if let Ok(v) = &r
             && let Some(m) = v.get("message").and_then(Value::as_str)
         {
@@ -589,6 +628,10 @@ impl CadApp {
 
     /// Per-frame logic before layout.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        // NAVVCUBE typed: the engine hands over the ViewCube choice.
+        if let Some(on) = self.session.navvcube.take() {
+            self.ui.show_viewcube = on;
+        }
         // A long LISP routine runs a slice per frame, so the window stays live (and Esc stops it).
         self.session.lisp_tick();
         if self.session.lisp_busy() {

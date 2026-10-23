@@ -8,7 +8,7 @@ license.workspace = true
 [features]
 # The OpenCASCADE kernel (LGPL-2.1, C++; native builds only). Without it every operation
 # returns `KernelError::Unavailable`.
-occt = ["dep:opencascade", "dep:glam"]
+occt = ["dep:opencascade", "dep:glam", "dep:cadcraft-kernel-occt"]
 
 [dependencies]
 cadcraft-geom = { workspace = true }
@@ -18,6 +18,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 opencascade = { version = "0.3", optional = true }
 glam = { version = "0.24", optional = true }
+# The operations the opencascade crate doesn't bind: our own C++ behind a cxx bridge.
+cadcraft-kernel-occt = { path = "occt", optional = true }
 
 [lints]
 workspace = true

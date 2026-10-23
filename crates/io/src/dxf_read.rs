@@ -1194,8 +1194,6 @@ fn parse_entities(recs: &[(String, Vec<Tag>)], d: &mut Drawing, rx: &mut Rx, ski
         {
             c.plot_style = n;
         }
-        // More entities from this record (the faces of a polyface or polygon mesh).
-        let mut extra: Vec<EntityKind> = Vec::new();
         i += 1;
         match kind.as_str() {
             "POLYLINE" => {
@@ -1222,18 +1220,14 @@ fn parse_entities(recs: &[(String, Vec<Tag>)], d: &mut Drawing, rx: &mut Rx, ski
                 }
                 let c = common(&t);
                 let k = if flags & (16 | 64) != 0 {
-                    // Polyface (64) and polygon (16) meshes become 3D faces; the first takes the
-                    // polyline's place.
+                    // Polyface (64) and polygon (16) meshes.
                     let verts: Vec<Vec3> = pts.iter().map(|p| p.0).collect();
-                    let mut fs = if flags & 64 != 0 { polyface_faces(&verts, &faces) } else { mesh_faces(&verts, &t, flags) }
-                        .into_iter()
-                        .map(EntityKind::Face3d);
-                    let Some(first) = fs.next() else {
+                    let mesh = if flags & 64 != 0 { polyface(verts, &faces) } else { polygon_mesh(verts, &t, flags) };
+                    let Some(mesh) = mesh else {
                         *skipped = skipped.saturating_add(1);
                         continue;
                     };
-                    extra.extend(fs);
-                    first
+                    EntityKind::PolyMesh(mesh)
                 } else if flags & 8 != 0 {
                     EntityKind::Polyline3d(Polyline3d { points: pts.iter().map(|p| p.0).collect(), closed: flags & 1 != 0 })
                 } else {
@@ -1309,10 +1303,7 @@ fn parse_entities(recs: &[(String, Vec<Tag>)], d: &mut Drawing, rx: &mut Rx, ski
                 None => d.new_handle(),
             };
             entity_extras(kind, tags, h, &mut k, rx);
-            let more: Vec<_> =
-                extra.into_iter().map(|f| (owner.clone(), paper, Entity { handle: d.new_handle(), common: c.clone(), kind: f })).collect();
             out.push((owner, paper, Entity { handle: h, common: c, kind: k }));
-            out.extend(more);
         } else if kind == "HATCH" {
             // Without boundary data. The other records `entity` returns nothing for are read
             // elsewhere (the writer's paper viewport, the loops of a region).
@@ -1330,57 +1321,30 @@ fn parse_entities(recs: &[(String, Vec<Tag>)], d: &mut Drawing, rx: &mut Rx, ski
     out
 }
 
-/// Faces of a polyface mesh: each face record names three or four vertices by 1-based index;
-/// a negative index hides the edge that starts at that vertex. Faces with fewer vertices or
-/// an index outside the vertex list are skipped.
-fn polyface_faces(verts: &[Vec3], faces: &[[i64; 4]]) -> Vec<Face3d> {
-    let mut out = Vec::new();
-    for f in faces {
-        let mut corners: Vec<Vec3> = Vec::with_capacity(4);
-        let mut hidden = 0u8;
-        let mut ok = true;
-        for &ix in f.iter().filter(|&&ix| ix != 0) {
-            let at = usize::try_from(ix.unsigned_abs()).ok().and_then(|n| n.checked_sub(1));
-            let Some(p) = at.and_then(|n| verts.get(n)) else {
-                ok = false;
-                break;
-            };
-            if ix < 0 {
-                hidden |= 1 << corners.len();
-            }
-            corners.push(*p);
-        }
-        match (ok, corners.as_slice()) {
-            // A triangle's closing edge is the 3DFACE's fourth (the third is degenerate).
-            (true, [a, b, c]) => out.push(Face3d { corners: [*a, *b, *c, *c], hidden_edges: hidden | if hidden & 4 != 0 { 8 } else { 0 } }),
-            (true, [a, b, c, d]) => out.push(Face3d { corners: [*a, *b, *c, *d], hidden_edges: hidden }),
-            _ => {}
-        }
-    }
-    out
+/// A polyface mesh: each face record names three or four vertices by 1-based index (a negative
+/// one hides the edge that starts there). `None` when no face names vertices that exist.
+fn polyface(vertices: Vec<Vec3>, faces: &[[i64; 4]]) -> Option<PolyMesh> {
+    let faces = faces.iter().map(|f| f.map(|i| i32::try_from(i).unwrap_or(i32::MAX))).collect();
+    let m = PolyMesh { vertices, faces, ..Default::default() };
+    (!m.faces4().is_empty()).then_some(m)
 }
 
-/// Quads of an M×N polygon mesh (71/72, or the smoothed 73/74 when the vertex count matches
-/// those), closed in M by bit 1 and in N by bit 32. Vertices run row by row.
-fn mesh_faces(verts: &[Vec3], t: &T, flags: i64) -> Vec<Face3d> {
+/// An M×N polygon mesh (71/72, or the smoothed 73/74 when the vertex count matches those),
+/// closed in M by bit 1 and in N by bit 32. Vertices run row by row; extra ones are dropped.
+fn polygon_mesh(mut verts: Vec<Vec3>, t: &T, flags: i64) -> Option<PolyMesh> {
     let dims = |a: i32, b: i32| Some((usize::try_from(t.i(a)?).ok()?, usize::try_from(t.i(b)?).ok()?));
     let fits = |(m, n): (usize, usize)| m >= 2 && n >= 2 && m.checked_mul(n).is_some_and(|mn| mn <= verts.len());
     let exact = |(m, n): (usize, usize)| fits((m, n)) && m * n == verts.len();
-    let Some((m, n)) = [dims(71, 72), dims(73, 74)].into_iter().flatten().find(|d| exact(*d)).or_else(|| dims(71, 72).filter(|d| fits(*d))) else {
-        return Vec::new();
-    };
-    let at = |i: usize, j: usize| verts.get((i % m) * n + j % n).copied();
-    let rows = if flags & 1 != 0 { m } else { m - 1 };
-    let cols = if flags & 32 != 0 { n } else { n - 1 };
-    let mut out = Vec::new();
-    for i in 0..rows {
-        for j in 0..cols {
-            if let (Some(a), Some(b), Some(c), Some(d)) = (at(i, j), at(i, j + 1), at(i + 1, j + 1), at(i + 1, j)) {
-                out.push(Face3d { corners: [a, b, c, d], hidden_edges: 0 });
-            }
-        }
-    }
-    out
+    let (m, n) = [dims(71, 72), dims(73, 74)].into_iter().flatten().find(|d| exact(*d)).or_else(|| dims(71, 72).filter(|d| fits(*d)))?;
+    verts.truncate(m * n);
+    Some(PolyMesh {
+        vertices: verts,
+        m: u32::try_from(m).ok()?,
+        n: u32::try_from(n).ok()?,
+        closed_m: flags & 1 != 0,
+        closed_n: flags & 32 != 0,
+        faces: Vec::new(),
+    })
 }
 
 fn header(tags: &[Tag], d: &mut Drawing) {
@@ -1668,7 +1632,7 @@ fn tables(tags: &[Tag], d: &mut Drawing, rx: &mut Rx) {
     }
     // One *Active viewport is no tiling: the view is the editor's (it zooms to the extents),
     // unless it looks along a direction or in a style of its own (kept for the editor to show).
-    let own_look = |t: &VportTile| t.shaded || !matches!(t.view_dir, [x, y, z] if x == 0.0 && y == 0.0 && z > 0.0);
+    let own_look = |t: &VportTile| t.shaded || t.edges || !matches!(t.view_dir, [x, y, z] if x == 0.0 && y == 0.0 && z > 0.0);
     d.vports.retain(|c| c.tiles.len() > usize::from(c.is_active()) || c.tiles.first().is_some_and(own_look));
 }
 
@@ -1718,7 +1682,8 @@ fn vport_record(d: &mut Drawing, t: &T) {
     let target = t.p(17);
     let center = Some(center + ViewDir::new(v).project(target)).filter(|c| c.is_finite()).unwrap_or(center);
     let mode = t.i(281).unwrap_or(0);
-    let (shaded, edges) = (matches!(mode, 3..=6), matches!(mode, 5 | 6));
+    // 2 is hidden line: unshaded with edges here (the Hidden style).
+    let (shaded, edges) = (matches!(mode, 3..=6), matches!(mode, 2 | 5 | 6));
     let (ucs, cplane) = if cplane_marked(t) { (Mat4::IDENTITY, vport_ucs(t)) } else { (vport_ucs(t), Mat4::IDENTITY) };
     let tile = VportTile { min: clamp(min), max: clamp(max), center, height, aspect, view_dir, shaded, edges, cplane, ucs };
     let name = if name.eq_ignore_ascii_case(VportConfig::ACTIVE) { VportConfig::ACTIVE.to_string() } else { name };

@@ -204,18 +204,15 @@ fn face(idx: [&'static str; 4]) -> Vec<(i32, &'static str)> {
     vec![(0, "VERTEX"), (8, "0"), (10, "0"), (20, "0"), (30, "0"), (70, "128"), (71, idx[0]), (72, idx[1]), (73, idx[2]), (74, idx[3])]
 }
 
-fn faces(d: &Drawing) -> Vec<Face3d> {
-    d.model
-        .iter()
-        .map(|e| match &e.kind {
-            EntityKind::Face3d(f) => f.clone(),
-            k => panic!("expected only 3D faces, got {k:?}"),
-        })
-        .collect()
+fn mesh(d: &Drawing) -> PolyMesh {
+    match d.model.iter().map(|e| &e.kind).collect::<Vec<_>>().as_slice() {
+        [EntityKind::PolyMesh(m)] => m.clone(),
+        k => panic!("expected one mesh, got {k:?}"),
+    }
 }
 
 #[test]
-fn polyface_and_polygon_mesh_polylines_become_faces_not_bogus_vertices() {
+fn polyface_and_polygon_mesh_polylines_become_meshes_not_bogus_vertices() {
     let p = |x: f64, y: f64, z: f64| Vec3::new(x, y, z);
     // Polyface: four vertices, a quad, a triangle whose third edge is hidden, and faces with an
     // out-of-range index or only two vertices (skipped).
@@ -231,27 +228,44 @@ fn polyface_and_polygon_mesh_polylines_become_faces_not_bogus_vertices() {
     recs.push(vec![(0, "SEQEND"), (8, "0")]);
     let refs: Vec<&[(i32, &str)]> = recs.iter().map(Vec::as_slice).collect();
     let d = read_dxf(dxf(&refs).as_bytes()).expect("read polyface");
-    let fs = faces(&d);
-    assert_eq!(fs.len(), 2, "{fs:?}");
-    assert_eq!(fs[0].corners, [p(0.0, 0.0, 2.0), p(1.0, 0.0, 2.0), p(1.0, 1.0, 2.0), p(0.0, 1.0, 2.0)]);
-    assert_eq!(fs[0].hidden_edges, 0);
-    assert_eq!(fs[1].corners, [p(0.0, 0.0, 2.0), p(1.0, 1.0, 2.0), p(0.0, 1.0, 2.0), p(0.0, 1.0, 2.0)]);
-    assert_eq!(fs[1].hidden_edges, 4 | 8, "the triangle's closing edge is hidden");
-    // The faces survive a save and reopen as 3DFACEs.
-    assert_eq!(faces(&roundtrip(&d)), fs);
+    let m = mesh(&d);
+    assert_eq!(m.vertices, [p(0.0, 0.0, 2.0), p(1.0, 0.0, 2.0), p(1.0, 1.0, 2.0), p(0.0, 1.0, 2.0)]);
+    let fs = m.faces4();
+    assert_eq!(fs, vec![([0, 1, 2, 3], 0), ([0, 2, 3, 3], 4 | 8)], "the triangle's closing edge is hidden; bad faces are skipped");
+    assert_eq!(d.model.iter().next().unwrap().kind.type_name(), "Polyface Mesh");
+    // The mesh survives a save and reopen.
+    assert_eq!(mesh(&roundtrip(&d)).faces4(), fs);
 
-    // 3×2 polygon mesh: two quads.
+    // 3×2 polygon mesh, closed in N: two quads a row, each row back round.
     let mut recs: Vec<Vec<(i32, &str)>> =
-        vec![vec![(0, "POLYLINE"), (8, "0"), (66, "1"), (10, "0"), (20, "0"), (30, "0"), (70, "16"), (71, "3"), (72, "2")]];
+        vec![vec![(0, "POLYLINE"), (8, "0"), (66, "1"), (10, "0"), (20, "0"), (30, "0"), (70, "48"), (71, "3"), (72, "2")]];
     for (x, y) in [("0", "0"), ("0", "1"), ("1", "0"), ("1", "1"), ("2", "0"), ("2", "1")] {
         recs.push(vertex(x, y, "0", "64"));
     }
     recs.push(vec![(0, "SEQEND"), (8, "0")]);
     let refs: Vec<&[(i32, &str)]> = recs.iter().map(Vec::as_slice).collect();
     let d = read_dxf(dxf(&refs).as_bytes()).expect("read mesh");
-    let fs = faces(&d);
-    assert_eq!(fs.len(), 2);
-    assert_eq!(fs[1].corners, [p(1.0, 0.0, 0.0), p(1.0, 1.0, 0.0), p(2.0, 1.0, 0.0), p(2.0, 0.0, 0.0)]);
+    let m = mesh(&d);
+    assert_eq!((m.m, m.n, m.closed_m, m.closed_n), (3, 2, false, true));
+    assert_eq!(m.faces4().len(), 4);
+    assert_eq!(m.vertices[3], p(1.0, 1.0, 0.0));
+    assert_eq!(mesh(&roundtrip(&d)), m, "written back as the same polygon mesh");
+    // Through a DWG it goes as a polyface mesh (the DWG bridge reads a polygon mesh as a polyface
+    // with no faces, and the mesh was lost): the same faces at the same points.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let back = cadcraft_io::read(&cadcraft_io::write(&d, "m.dwg").unwrap(), "m.dwg").unwrap();
+        let b = mesh(&back);
+        let corners = |m: &PolyMesh| -> Vec<[Vec3; 4]> { m.faces4().iter().map(|(f, _)| f.map(|i| m.vertices[i])).collect() };
+        assert_eq!(corners(&b), corners(&m), "{b:?}");
+    }
+
+    // A mesh too big for DXF's 16-bit counts is written as 3D faces, not a wrong count.
+    let big = PolyMesh::grid(2, 40_000, (0..80_000).map(|i| p((i % 40_000) as f64, (i / 40_000) as f64, 0.0)).collect(), false, false).unwrap();
+    let mut d = Drawing::new_imperial();
+    add(&mut d, 0.0, EntityKind::PolyMesh(big));
+    let back = roundtrip(&d);
+    assert_eq!(back.model.iter().filter(|e| matches!(e.kind, EntityKind::Face3d(_))).count(), 39_999);
 
     // Hostile counts: a mesh claiming more vertices than it has yields nothing, without panicking.
     let recs: Vec<Vec<(i32, &str)>> = vec![

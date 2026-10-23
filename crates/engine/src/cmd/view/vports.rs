@@ -354,7 +354,8 @@ fn apply(s: &mut Session, mut tiles: Vec<Tile>, current: usize) -> Result<()> {
 /// A look's visual style as VSCURRENT names it.
 fn style_name(l: &TileLook) -> &'static str {
     match (l.shaded, l.edges) {
-        (false, _) => "2dWireframe",
+        (false, false) => "2dWireframe",
+        (false, true) => "Hidden",
         (true, false) => "Shaded",
         (true, true) => "ShadedWithEdges",
     }

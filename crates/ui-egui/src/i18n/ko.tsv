@@ -3050,3 +3050,220 @@ menu	Modify	수정
 	UCS	UCS
 	Working Set	작업 세트
 	Xref and Block In-place Editing	외부 참조 및 블록 제자리 편집
+# 3D modelling round: edges, faces, sections, flat views, interference, meshes, visual styles.
+	3D Align	3D 정렬
+	3D Array	3D 배열
+	3D Print	3D 인쇄
+	Align to CPlane	작업 평면에 맞춤
+	Align to Object	객체에 맞춤
+	Align to World	월드에 맞춤
+	Convert to Solid	솔리드로 변환
+	Convert to Surface	곡면으로 변환
+	Drawing	도면
+	Edge Mesh	모서리 메쉬
+	Extract Edges	모서리 추출
+	Flatshot	평면 투영
+	Generate Section	단면 생성
+	Hidden	숨김
+	Hide	숨기기
+	Imprint	각인
+	Imprint Edges	모서리 각인
+	Interference Checking	간섭 검사
+	Interference Checking (command line)	간섭 검사 (명령행)
+	Live Section	라이브 단면
+	Polysolid	폴리솔리드
+	Presspull	눌러 당기기
+	Revolved Mesh	회전 메쉬
+	Ruled Mesh	직선 보간 메쉬
+	Section	단면
+	Section Plane	단면 평면
+	Sections	단면
+	Setup	설정
+	Show Gumball	검볼 표시
+	Snappy Dragging	스냅 끌기
+	Solid Drawing	솔리드 도면
+	Solid Edit	솔리드 편집
+	Solid View	솔리드 뷰
+	Tabulated Mesh	방향 벡터 메쉬
+	Thicken	두껍게 하기
+	Visual Styles Manager...	비주얼 스타일 관리자...
+	Visual Styles Manager	비주얼 스타일 관리자
+	Available Visual Styles in Drawing	도면에서 사용 가능한 비주얼 스타일
+	Apply to Current Viewport	현재 뷰포트에 적용
+	Realistic	사실적
+	Conceptual	개념적
+	Objects drawn with their lines and curves only.	객체를 선과 곡선으로만 그립니다.
+	Objects drawn with their lines and curves only, in 3D.	객체를 3D에서 선과 곡선으로만 그립니다.
+	Lines and curves; those behind faces are hidden.	선과 곡선을 그리며, 면 뒤에 있는 것은 숨깁니다.
+	Faces shaded, without edges.	면을 음영처리하며 모서리는 그리지 않습니다.
+	Faces shaded smoothly.	면을 부드럽게 음영처리합니다.
+	Faces shaded, with their visible edges.	면을 음영처리하고 보이는 모서리를 그립니다.
+	Polygon Mesh	다각형 메쉬
+	Polyface Mesh	다면 메쉬
+	1 edge found.	모서리 1개를 찾았습니다.
+	1 edge removed.	모서리 1개를 제거했습니다.
+	1 face found.	면 1개를 찾았습니다.
+	1 face removed.	면 1개를 제거했습니다.
+	An axis by object isn't available yet: pick two points.	객체로 축 지정은 아직 사용할 수 없습니다: 두 점을 선택하십시오.
+	An edge could not be divided.	모서리를 분할할 수 없습니다.
+	Checking {a} solids against each other.	솔리드 {a}개를 서로 검사합니다.
+	Closed profiles creation mode = Solid	닫힌 프로파일 작성 모드 = 솔리드
+	Closed profiles creation mode = Surface	닫힌 프로파일 작성 모드 = 곡면
+	Closed surfaces or solids mode	닫힌 곡면 또는 솔리드 모드
+	Comparing {a} solids against {b} solids.	솔리드 {a}개를 솔리드 {b}개와 비교합니다.
+	Create interference solids?	간섭 솔리드를 작성하시겠습니까?
+	Current wire frame density:  SURFTAB1={t1}	현재 와이어프레임 밀도:  SURFTAB1={t1}
+	Current wire frame density:  SURFTAB1={t1}  SURFTAB2={t2}	현재 와이어프레임 밀도:  SURFTAB1={t1}  SURFTAB2={t2}
+	Delete interference objects created?	작성된 간섭 객체를 삭제하시겠습니까?
+	Delete the source object?	원본 객체를 삭제하시겠습니까?
+	Distance1 = {0}, Distance2 = {1}	거리1 = {0}, 거리2 = {1}
+	EDGESURF needs four edges.	EDGESURF에는 모서리 4개가 필요합니다.
+	Edge 1 has no length.	모서리 1의 길이가 0입니다.
+	Edge {k} does not touch another edge.	모서리 {k}이(가) 다른 모서리와 닿지 않습니다.
+	Enter a body editing option	본체 편집 옵션 입력
+	Enter a face editing option	면 편집 옵션 입력
+	Enter a solids editing option	솔리드 편집 옵션 입력
+	Enter an edge editing option	모서리 편집 옵션 입력
+	Enter fillet radius	모깎기 반지름 입력
+	Enter name of block to replace	대치할 블록 이름 입력
+	Enter name of file to write	기록할 파일 이름 입력
+	Enter the type of array	배열 유형 입력
+	Extruding faces along a path isn't available yet.	경로를 따라 면을 돌출하는 기능은 아직 사용할 수 없습니다.
+	Face and edge colors and materials aren't available yet: a solid has one color and material.	면과 모서리의 색상 및 재료는 아직 사용할 수 없습니다: 솔리드에는 색상과 재료가 하나뿐입니다.
+	HIDE works on the Model tab only.	HIDE는 모형 탭에서만 작동합니다.
+	Height = {h}, Width = {w}, Justification = {0}	높이 = {h}, 폭 = {w}, 자리맞추기 = {0}
+	Interfering pairs: {0}	간섭하는 쌍: {0}
+	Live section off for {0}.	{0}의 라이브 단면을 껐습니다.
+	Live section on for {0}.	{0}의 라이브 단면을 켰습니다.
+	No edge found there.	그곳에서 모서리를 찾을 수 없습니다.
+	No face found there.	그곳에서 면을 찾을 수 없습니다.
+	No face or closed boundary found there.	그곳에서 면이나 닫힌 경계를 찾을 수 없습니다.
+	No object with handle {0}.	핸들이 {0}인 객체가 없습니다.
+	No solid is picked yet.	아직 선택한 솔리드가 없습니다.
+	Object not usable to define a curve of revolution.	회전 곡선을 정의하는 데 사용할 수 없는 객체입니다.
+	Object not usable to define a path curve.	경로 곡선을 정의하는 데 사용할 수 없는 객체입니다.
+	Object not usable to define a surface edge.	곡면 모서리를 정의하는 데 사용할 수 없는 객체입니다.
+	Object not usable to define a ruled surface.	직선 보간 곡면을 정의하는 데 사용할 수 없는 객체입니다.
+	Object not usable as a direction vector.	방향 벡터로 사용할 수 없는 객체입니다.
+	Object not usable as a rotation axis.	회전축으로 사용할 수 없는 객체입니다.
+	One curve is open and the other closed: both must be open or both closed.	한 곡선은 열려 있고 다른 곡선은 닫혀 있습니다: 둘 다 열려 있거나 둘 다 닫혀 있어야 합니다.
+	Press Enter to accept the chamfer	Enter 키를 눌러 모따기 승인
+	Press Enter to accept the fillet	Enter 키를 눌러 모깎기 승인
+	Radius = {0}	반지름 = {0}
+	Requires Front, bAck, Top, Bottom, Left or Right.	Front, bAck, Top, Bottom, Left 또는 Right가 필요합니다.
+	Requires Guides, Path, Cross sections only or Settings.	Guides, Path, Cross sections only 또는 Settings가 필요합니다.
+	Requires Insert, Replace or Export.	Insert, Replace 또는 Export가 필요합니다.
+	Requires Rectangular or Polar.	Rectangular 또는 Polar가 필요합니다.
+	Requires a height other than zero.	0이 아닌 높이가 필요합니다.
+	Requires a height.	높이가 필요합니다.
+	Requires an angle from -360 to 360, not zero.	-360에서 360 사이의 0이 아닌 각도가 필요합니다.
+	Requires an integer between {min} and {max}.	{min}에서 {max} 사이의 정수가 필요합니다.
+	Rotate arrayed objects?	배열된 객체를 회전하시겠습니까?
+	SOLVIEW and SOLDRAW are one step here: VIEWBASE makes the drawing views and their hidden lines.	여기서 SOLVIEW와 SOLDRAW는 한 단계입니다: VIEWBASE가 도면 뷰와 숨은선을 작성합니다.
+	Select 3D solids to print (surfaces can't be printed).	인쇄할 3D 솔리드를 선택하십시오(곡면은 인쇄할 수 없습니다).
+	Select a 3D solid or surface	3D 솔리드 또는 곡면 선택
+	Select a 3D solid.	3D 솔리드를 선택하십시오.
+	Select a circle, ellipse, arc, 2D spline or 2D polyline.	원, 타원, 호, 2D 스플라인 또는 2D 폴리선을 선택하십시오.
+	Select a circle, ellipse, arc, 2D-spline, 2D-polyline to define the slicing plane	슬라이스 평면을 정의할 원, 타원, 호, 2D 스플라인, 2D 폴리선 선택
+	Select a circle, ellipse, arc, 2D-spline, or 2D-polyline	원, 타원, 호, 2D 스플라인 또는 2D 폴리선 선택
+	Select a section object.	단면 객체를 선택하십시오.
+	Select a surface	곡면 선택
+	Select a surface that is not being sliced.	슬라이스되지 않는 곡면을 선택하십시오.
+	Select an edge	모서리 선택
+	Select an object to imprint	각인할 객체 선택
+	Select another edge on the same face	같은 면의 다른 모서리 선택
+	Select edge chain	모서리 체인 선택
+	Select edge loop	모서리 루프 선택
+	Select first set of objects	첫 번째 객체 세트 선택
+	Select guide curves	안내 곡선 선택
+	Select object or bounded area	객체 또는 경계 영역 선택
+	Select objects to slice	슬라이스할 객체 선택
+	Select path profile	경로 프로파일 선택
+	Select second set of objects	두 번째 객체 세트 선택
+	Select section object	단면 객체 선택
+	Select surfaces to thicken	두껍게 할 곡면 선택
+	Separated into {n} solids.	솔리드 {n}개로 분리했습니다.
+	Show obscured lines?	가려진 선을 표시하시겠습니까?
+	Solid validation completed.	솔리드 검증이 완료되었습니다.
+	Solid validation started.	솔리드 검증을 시작했습니다.
+	Solids do not interfere.	솔리드가 간섭하지 않습니다.
+	Solids editing automatic checking:  SOLIDCHECK=1	솔리드 편집 자동 검사:  SOLIDCHECK=1
+	Specify Distance1	거리1 지정
+	Specify Distance2	거리2 지정
+	Specify a base point or displacement	기준점 또는 변위 지정
+	Specify a point on the XY-plane	XY 평면 위의 점 지정
+	Specify a point on the YZ-plane	YZ 평면 위의 점 지정
+	Specify a point on the Z-axis (normal) of the plane	평면의 Z축(법선) 위의 점 지정
+	Specify a point on the ZX-plane	ZX 평면 위의 점 지정
+	Specify a point on the current view plane	현재 뷰 평면 위의 점 지정
+	Specify a point on the section plane	단면 평면 위의 점 지정
+	Specify a point on the {n}-plane	{n} 평면 위의 점 지정
+	Specify a rotation angle	회전 각도 지정
+	Specify a second point of displacement	변위의 두 번째 점 지정
+	Specify an axis point	축 점 지정
+	Specify angle of taper for extrusion	돌출 테이퍼 각도 지정
+	Specify another point along the axis of tapering	테이퍼 축을 따라 다른 점 지정
+	Specify any point to locate section line	단면선 위치를 지정할 임의의 점 지정
+	Specify destination plane and orientation ...	대상 평면 및 방향 지정 ...
+	Specify extrusion height	돌출 높이 지정
+	Specify first point on Section plane	단면 평면 위의 첫 번째 점 지정
+	Specify included angle (+=ccw, -=cw)	사이각 지정 (+=시계 반대 방향, -=시계 방향)
+	Specify second point on axis of rotation	회전축 위의 두 번째 점 지정
+	Specify source plane and orientation ...	원본 평면 및 방향 지정 ...
+	Specify start point of slicing plane	슬라이스 평면의 시작점 지정
+	Specify the base point	기준점 지정
+	Specify the offset distance	간격띄우기 거리 지정
+	Specify the origin of the rotation	회전 원점 지정
+	Specify the second point on the rotation axis	회전축 위의 두 번째 점 지정
+	Specify the taper angle	테이퍼 각도 지정
+	Specify third destination point	세 번째 대상점 지정
+	Specify third point	세 번째 점 지정
+	Specify third point on plane	평면 위의 세 번째 점 지정
+	The direction has no length.	방향의 길이가 0입니다.
+	The face isn't on the solid.	면이 솔리드에 없습니다.
+	The mesh has too few vertices.	메쉬의 정점이 너무 적습니다.
+	The mesh would have more than {MAX_MESH_SIDE} vertices along one side: use a curve with fewer vertices.	메쉬의 한 변을 따라 정점이 {MAX_MESH_SIDE}개를 넘습니다: 정점이 더 적은 곡선을 사용하십시오.
+	The mesh would have more than {MAX_MESH_VERTICES} vertices: lower SURFTAB1 or SURFTAB2.	메쉬의 정점이 {MAX_MESH_VERTICES}개를 넘습니다: SURFTAB1 또는 SURFTAB2를 낮추십시오.
+	The plane does not cut the selected objects.	평면이 선택한 객체를 자르지 않습니다.
+	The section plane does not cut the solids or see any beyond it.	단면 평면이 솔리드를 자르지 않고 그 너머에도 보이는 솔리드가 없습니다.
+	The solid has no volume to separate.	솔리드에 분리할 부피가 없습니다.
+	The solid is one piece: there is nothing to separate.	솔리드가 한 덩어리입니다: 분리할 것이 없습니다.
+	The solids have no edges to draw.	솔리드에 그릴 모서리가 없습니다.
+	The surface does not cut the selected solids.	곡면이 선택한 솔리드를 자르지 않습니다.
+	The three points of the arc are on one line.	호의 세 점이 한 직선 위에 있습니다.
+	The visual styles are built in: saving, renaming and deleting them is not available yet.	비주얼 스타일은 기본 제공됩니다: 저장, 이름 바꾸기, 삭제는 아직 사용할 수 없습니다.
+	There is no face or closed boundary there.	그곳에 면이나 닫힌 경계가 없습니다.
+	ViewCube settings are not available yet.	ViewCube 설정은 아직 사용할 수 없습니다.
+	Wrote the flat view to {path}.	평면 투영을 {path}에 기록했습니다.
+	give a source and a destination point	원본 점과 대상점을 지정하십시오
+	the first and second points must be different	첫 번째 점과 두 번째 점은 달라야 합니다
+	{name} must be between 2 and 32766.	{name}은(는) 2에서 32766 사이여야 합니다.
+	{n} edge(s) selected for chamfer.	모따기할 모서리 {n}개를 선택했습니다.
+	{n} edge(s) selected for fillet.	모깎기할 모서리 {n}개를 선택했습니다.
+	{x} and {y} interfere: volume {v}.	{x}와(과) {y}이(가) 간섭합니다: 부피 {v}.
+	This object is a valid 3D solid.	이 객체는 유효한 3D 솔리드입니다.
+	This object is not a valid 3D solid: {0}	이 객체는 유효한 3D 솔리드가 아닙니다: {0}
+	Enter the number of items in the array	배열의 항목 수 입력
+	Enter the number of rows (---)	행 수 입력 (---)
+	Enter the number of columns (|||)	열 수 입력 (|||)
+	Enter the number of levels (...)	레벨 수 입력 (...)
+	Specify the distance between rows (---)	행 사이의 거리 지정 (---)
+	Specify the distance between columns (|||)	열 사이의 거리 지정 (|||)
+	Specify the distance between levels (...)	레벨 사이의 거리 지정 (...)
+	{n} object(s) could not be converted: {e}	객체 {n}개를 변환할 수 없습니다: {e}
+	{n} object(s) could not be converted.	객체 {n}개를 변환할 수 없습니다.
+	Wrote {n} solid(s) to {path} for 3D printing: {0} x {1} x {2} drawing units.	3D 인쇄용 솔리드 {n}개를 {path}에 기록했습니다: {0} x {1} x {2} 도면 단위.
+	Set the units and scale in the printer's slicing software.	프린터의 슬라이싱 소프트웨어에서 단위와 축척을 설정하십시오.
+	{0} surface(s) left out: only closed solids can be printed.	곡면 {0}개를 제외했습니다: 닫힌 솔리드만 인쇄할 수 있습니다.
+	Select object {0} for surface edge	곡면 모서리 {0}에 대한 객체 선택
+	Select first defining curve	첫 번째 정의 곡선 선택
+	Select second defining curve	두 번째 정의 곡선 선택
+	Select object for path curve	경로 곡선 객체 선택
+	Select object for direction vector	방향 벡터 객체 선택
+	Select object to revolve	회전할 객체 선택
+	Select object that defines the axis of revolution	회전축을 정의하는 객체 선택
+	Select faces	면 선택
+	Select edges	모서리 선택
+	Remove faces	면 제거
+	Remove edges	모서리 제거
+	Specify base radius	밑면 반지름 지정

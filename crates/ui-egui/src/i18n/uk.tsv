@@ -3043,3 +3043,220 @@
 	Size:	Розмір:
 	Created:	Створено:
 	Modified:	Змінено:
+# 3D modelling round: edges, faces, sections, flat views, interference, meshes, visual styles.
+	3D Align	3D-вирівнювання
+	3D Array	3D-масив
+	3D Print	3D-друк
+	Align to CPlane	Вирівняти за робочою площиною
+	Align to Object	Вирівняти за об'єктом
+	Align to World	Вирівняти за світовою системою
+	Convert to Solid	Перетворити на тіло
+	Convert to Surface	Перетворити на поверхню
+	Drawing	Креслення
+	Edge Mesh	Сітка за ребрами
+	Extract Edges	Видобути ребра
+	Flatshot	Пласка проєкція
+	Generate Section	Створити переріз
+	Hidden	Приховані лінії
+	Hide	Приховати лінії
+	Imprint	Відбиток
+	Imprint Edges	Відбити ребра
+	Interference Checking	Перевірка перетинів
+	Interference Checking (command line)	Перевірка перетинів (командний рядок)
+	Live Section	Живий переріз
+	Polysolid	Політіло
+	Presspull	Натиснути-витягнути
+	Revolved Mesh	Сітка обертання
+	Ruled Mesh	Лінійчата сітка
+	Section	Переріз
+	Section Plane	Площина перерізу
+	Sections	Перерізи
+	Setup	Підготовка
+	Show Gumball	Показувати гумбол
+	Snappy Dragging	Прив'язування під час перетягування
+	Solid Drawing	Креслення тіла
+	Solid Edit	Редагування тіла
+	Solid View	Вид тіла
+	Tabulated Mesh	Сітка за напрямною
+	Thicken	Потовщити
+	Visual Styles Manager...	Диспетчер візуальних стилів...
+	Visual Styles Manager	Диспетчер візуальних стилів
+	Available Visual Styles in Drawing	Візуальні стилі креслення
+	Apply to Current Viewport	Застосувати до поточного видового екрана
+	Realistic	Реалістичний
+	Conceptual	Концептуальний
+	Objects drawn with their lines and curves only.	Об'єкти показано лише лініями та кривими.
+	Objects drawn with their lines and curves only, in 3D.	Об'єкти показано лише лініями та кривими, у 3D.
+	Lines and curves; those behind faces are hidden.	Лінії та криві; ті, що за гранями, приховано.
+	Faces shaded, without edges.	Грані тоновано, без ребер.
+	Faces shaded smoothly.	Грані тоновано плавно.
+	Faces shaded, with their visible edges.	Грані тоновано, з видимими ребрами.
+	Polygon Mesh	Багатокутникова сітка
+	Polyface Mesh	Багатогранна сітка
+	1 edge found.	Знайдено 1 ребро.
+	1 edge removed.	Вилучено 1 ребро.
+	1 face found.	Знайдено 1 грань.
+	1 face removed.	Вилучено 1 грань.
+	An axis by object isn't available yet: pick two points.	Вісь за об'єктом поки недоступна: укажіть дві точки.
+	An edge could not be divided.	Не вдалося поділити ребро.
+	Checking {a} solids against each other.	Перевірка {a} тіл одне з одним.
+	Closed profiles creation mode = Solid	Режим створення із замкнених профілів = тіло
+	Closed profiles creation mode = Surface	Режим створення із замкнених профілів = поверхня
+	Closed surfaces or solids mode	Режим замкнених поверхонь або тіл
+	Comparing {a} solids against {b} solids.	Порівняння {a} тіл із {b} тілами.
+	Create interference solids?	Створити тіла перетину?
+	Current wire frame density:  SURFTAB1={t1}	Поточна щільність каркаса:  SURFTAB1={t1}
+	Current wire frame density:  SURFTAB1={t1}  SURFTAB2={t2}	Поточна щільність каркаса:  SURFTAB1={t1}  SURFTAB2={t2}
+	Delete interference objects created?	Видалити створені об'єкти перетину?
+	Delete the source object?	Видалити вихідний об'єкт?
+	Distance1 = {0}, Distance2 = {1}	Відстань1 = {0}, Відстань2 = {1}
+	EDGESURF needs four edges.	EDGESURF потребує чотирьох ребер.
+	Edge 1 has no length.	Ребро 1 не має довжини.
+	Edge {k} does not touch another edge.	Ребро {k} не торкається іншого ребра.
+	Enter a body editing option	Введіть параметр редагування тіла
+	Enter a face editing option	Введіть параметр редагування граней
+	Enter a solids editing option	Введіть параметр редагування тіл
+	Enter an edge editing option	Введіть параметр редагування ребер
+	Enter fillet radius	Введіть радіус скруглення
+	Enter name of block to replace	Введіть ім'я блока для заміни
+	Enter name of file to write	Введіть ім'я файлу для запису
+	Enter the type of array	Введіть тип масиву
+	Extruding faces along a path isn't available yet.	Видавлювання граней уздовж траєкторії поки недоступне.
+	Face and edge colors and materials aren't available yet: a solid has one color and material.	Кольори й матеріали граней і ребер поки недоступні: тіло має один колір і матеріал.
+	HIDE works on the Model tab only.	HIDE працює лише на вкладці «Модель».
+	Height = {h}, Width = {w}, Justification = {0}	Висота = {h}, ширина = {w}, вирівнювання = {0}
+	Interfering pairs: {0}	Пари з перетином: {0}
+	Live section off for {0}.	Живий переріз для {0} вимкнено.
+	Live section on for {0}.	Живий переріз для {0} увімкнено.
+	No edge found there.	Там не знайдено ребра.
+	No face found there.	Там не знайдено грані.
+	No face or closed boundary found there.	Там не знайдено грані чи замкненої межі.
+	No object with handle {0}.	Немає об'єкта з дескриптором {0}.
+	No solid is picked yet.	Тіло ще не вибрано.
+	Object not usable to define a curve of revolution.	Об'єкт не придатний як крива обертання.
+	Object not usable to define a path curve.	Об'єкт не придатний як крива-траєкторія.
+	Object not usable to define a surface edge.	Об'єкт не придатний як ребро поверхні.
+	Object not usable to define a ruled surface.	Об'єкт не придатний для лінійчатої поверхні.
+	Object not usable as a direction vector.	Об'єкт не придатний як вектор напрямку.
+	Object not usable as a rotation axis.	Об'єкт не придатний як вісь обертання.
+	One curve is open and the other closed: both must be open or both closed.	Одна крива розімкнена, а інша замкнена: обидві мають бути розімкнені або обидві замкнені.
+	Press Enter to accept the chamfer	Натисніть Enter, щоб прийняти фаску
+	Press Enter to accept the fillet	Натисніть Enter, щоб прийняти скруглення
+	Radius = {0}	Радіус = {0}
+	Requires Front, bAck, Top, Bottom, Left or Right.	Потрібно Front, bAck, Top, Bottom, Left або Right.
+	Requires Guides, Path, Cross sections only or Settings.	Потрібно Guides, Path, Cross sections only або Settings.
+	Requires Insert, Replace or Export.	Потрібно Insert, Replace або Export.
+	Requires Rectangular or Polar.	Потрібно Rectangular або Polar.
+	Requires a height other than zero.	Потрібна висота, відмінна від нуля.
+	Requires a height.	Потрібна висота.
+	Requires an angle from -360 to 360, not zero.	Потрібен кут від -360 до 360, не нуль.
+	Requires an integer between {min} and {max}.	Потрібне ціле число від {min} до {max}.
+	Rotate arrayed objects?	Повертати об'єкти масиву?
+	SOLVIEW and SOLDRAW are one step here: VIEWBASE makes the drawing views and their hidden lines.	Тут SOLVIEW і SOLDRAW — один крок: VIEWBASE створює види креслення та їхні приховані лінії.
+	Select 3D solids to print (surfaces can't be printed).	Виберіть 3D-тіла для друку (поверхні друкувати не можна).
+	Select a 3D solid or surface	Виберіть 3D-тіло або поверхню
+	Select a 3D solid.	Виберіть 3D-тіло.
+	Select a circle, ellipse, arc, 2D spline or 2D polyline.	Виберіть коло, еліпс, дугу, 2D-сплайн або 2D-полілінію.
+	Select a circle, ellipse, arc, 2D-spline, 2D-polyline to define the slicing plane	Виберіть коло, еліпс, дугу, 2D-сплайн чи 2D-полілінію, що задає площину розрізу
+	Select a circle, ellipse, arc, 2D-spline, or 2D-polyline	Виберіть коло, еліпс, дугу, 2D-сплайн або 2D-полілінію
+	Select a section object.	Виберіть об'єкт перерізу.
+	Select a surface	Виберіть поверхню
+	Select a surface that is not being sliced.	Виберіть поверхню, яку не розрізають.
+	Select an edge	Виберіть ребро
+	Select an object to imprint	Виберіть об'єкт для відбитка
+	Select another edge on the same face	Виберіть інше ребро тієї самої грані
+	Select edge chain	Виберіть ланцюжок ребер
+	Select edge loop	Виберіть контур ребер
+	Select first set of objects	Виберіть перший набір об'єктів
+	Select guide curves	Виберіть напрямні криві
+	Select object or bounded area	Виберіть об'єкт або обмежену область
+	Select objects to slice	Виберіть об'єкти для розрізання
+	Select path profile	Виберіть профіль траєкторії
+	Select second set of objects	Виберіть другий набір об'єктів
+	Select section object	Виберіть об'єкт перерізу
+	Select surfaces to thicken	Виберіть поверхні для потовщення
+	Separated into {n} solids.	Розділено на тіла: {n}.
+	Show obscured lines?	Показувати приховані лінії?
+	Solid validation completed.	Перевірку тіла завершено.
+	Solid validation started.	Перевірку тіла розпочато.
+	Solids do not interfere.	Тіла не перетинаються.
+	Solids editing automatic checking:  SOLIDCHECK=1	Автоматична перевірка під час редагування тіл:  SOLIDCHECK=1
+	Specify Distance1	Укажіть відстань1
+	Specify Distance2	Укажіть відстань2
+	Specify a base point or displacement	Укажіть базову точку або зміщення
+	Specify a point on the XY-plane	Укажіть точку на площині XY
+	Specify a point on the YZ-plane	Укажіть точку на площині YZ
+	Specify a point on the Z-axis (normal) of the plane	Укажіть точку на осі Z (нормалі) площини
+	Specify a point on the ZX-plane	Укажіть точку на площині ZX
+	Specify a point on the current view plane	Укажіть точку на площині поточного виду
+	Specify a point on the section plane	Укажіть точку на площині перерізу
+	Specify a point on the {n}-plane	Укажіть точку на площині {n}
+	Specify a rotation angle	Укажіть кут повороту
+	Specify a second point of displacement	Укажіть другу точку зміщення
+	Specify an axis point	Укажіть точку осі
+	Specify angle of taper for extrusion	Укажіть кут нахилу видавлювання
+	Specify another point along the axis of tapering	Укажіть іншу точку вздовж осі нахилу
+	Specify any point to locate section line	Укажіть будь-яку точку для розташування лінії перерізу
+	Specify destination plane and orientation ...	Укажіть цільову площину та орієнтацію ...
+	Specify extrusion height	Укажіть висоту видавлювання
+	Specify first point on Section plane	Укажіть першу точку на площині перерізу
+	Specify included angle (+=ccw, -=cw)	Укажіть центральний кут (+ = проти годинникової, - = за годинниковою)
+	Specify second point on axis of rotation	Укажіть другу точку на осі обертання
+	Specify source plane and orientation ...	Укажіть вихідну площину та орієнтацію ...
+	Specify start point of slicing plane	Укажіть початкову точку площини розрізу
+	Specify the base point	Укажіть базову точку
+	Specify the offset distance	Укажіть відстань зміщення
+	Specify the origin of the rotation	Укажіть центр повороту
+	Specify the second point on the rotation axis	Укажіть другу точку на осі повороту
+	Specify the taper angle	Укажіть кут нахилу
+	Specify third destination point	Укажіть третю цільову точку
+	Specify third point	Укажіть третю точку
+	Specify third point on plane	Укажіть третю точку на площині
+	The direction has no length.	Напрямок не має довжини.
+	The face isn't on the solid.	Грань не належить тілу.
+	The mesh has too few vertices.	У сітці замало вершин.
+	The mesh would have more than {MAX_MESH_SIDE} vertices along one side: use a curve with fewer vertices.	Сітка мала б понад {MAX_MESH_SIDE} вершин уздовж однієї сторони: візьміть криву з меншою кількістю вершин.
+	The mesh would have more than {MAX_MESH_VERTICES} vertices: lower SURFTAB1 or SURFTAB2.	Сітка мала б понад {MAX_MESH_VERTICES} вершин: зменште SURFTAB1 або SURFTAB2.
+	The plane does not cut the selected objects.	Площина не перетинає вибрані об'єкти.
+	The section plane does not cut the solids or see any beyond it.	Площина перерізу не перетинає тіл і не бачить жодного за собою.
+	The solid has no volume to separate.	Тіло не має об'єму для розділення.
+	The solid is one piece: there is nothing to separate.	Тіло суцільне: нема чого розділяти.
+	The solids have no edges to draw.	Тіла не мають ребер для креслення.
+	The surface does not cut the selected solids.	Поверхня не перетинає вибрані тіла.
+	The three points of the arc are on one line.	Три точки дуги лежать на одній прямій.
+	The visual styles are built in: saving, renaming and deleting them is not available yet.	Візуальні стилі вбудовані: збереження, перейменування й видалення поки недоступні.
+	There is no face or closed boundary there.	Там немає грані чи замкненої межі.
+	ViewCube settings are not available yet.	Параметри ViewCube поки недоступні.
+	Wrote the flat view to {path}.	Пласку проєкцію записано в {path}.
+	give a source and a destination point	укажіть вихідну та цільову точки
+	the first and second points must be different	перша й друга точки мають відрізнятися
+	{name} must be between 2 and 32766.	{name} має бути від 2 до 32766.
+	{n} edge(s) selected for chamfer.	Для фаски вибрано ребер: {n}.
+	{n} edge(s) selected for fillet.	Для скруглення вибрано ребер: {n}.
+	{x} and {y} interfere: volume {v}.	{x} і {y} перетинаються: об'єм {v}.
+	This object is a valid 3D solid.	Цей об'єкт — правильне 3D-тіло.
+	This object is not a valid 3D solid: {0}	Цей об'єкт не є правильним 3D-тілом: {0}
+	Enter the number of items in the array	Введіть кількість елементів масиву
+	Enter the number of rows (---)	Введіть кількість рядів (---)
+	Enter the number of columns (|||)	Введіть кількість стовпців (|||)
+	Enter the number of levels (...)	Введіть кількість рівнів (...)
+	Specify the distance between rows (---)	Укажіть відстань між рядами (---)
+	Specify the distance between columns (|||)	Укажіть відстань між стовпцями (|||)
+	Specify the distance between levels (...)	Укажіть відстань між рівнями (...)
+	{n} object(s) could not be converted: {e}	Не вдалося перетворити об'єктів: {n}. {e}
+	{n} object(s) could not be converted.	Не вдалося перетворити об'єктів: {n}.
+	Wrote {n} solid(s) to {path} for 3D printing: {0} x {1} x {2} drawing units.	Для 3D-друку в {path} записано тіл: {n}; розмір {0} x {1} x {2} одиниць креслення.
+	Set the units and scale in the printer's slicing software.	Задайте одиниці та масштаб у програмі-слайсері принтера.
+	{0} surface(s) left out: only closed solids can be printed.	Пропущено поверхонь: {0}; друкувати можна лише замкнені тіла.
+	Select object {0} for surface edge	Виберіть об'єкт {0} для ребра поверхні
+	Select first defining curve	Виберіть першу визначальну криву
+	Select second defining curve	Виберіть другу визначальну криву
+	Select object for path curve	Виберіть об'єкт для кривої траєкторії
+	Select object for direction vector	Виберіть об'єкт для вектора напрямку
+	Select object to revolve	Виберіть об'єкт для обертання
+	Select object that defines the axis of revolution	Виберіть об'єкт, що задає вісь обертання
+	Select faces	Виберіть грані
+	Select edges	Виберіть ребра
+	Remove faces	Вилучіть грані
+	Remove edges	Вилучіть ребра
+	Specify base radius	Укажіть радіус основи

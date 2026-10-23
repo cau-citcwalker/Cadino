@@ -1443,6 +1443,16 @@ pub(crate) fn explode_kind(d: &cadcraft_doc::Drawing, e: &Entity) -> Option<Vec<
                 })
                 .collect()
         }
+        // A polygon or polyface mesh explodes into its 3D faces.
+        EntityKind::PolyMesh(m) => Some(
+            m.faces4()
+                .into_iter()
+                .map(|(f, hidden_edges)| {
+                    let corners = f.map(|i| m.vertices.get(i).copied().unwrap_or_default());
+                    Entity { handle: Handle(0), common: e.common.clone(), kind: EntityKind::Face3d(cadcraft_doc::Face3d { corners, hidden_edges }) }
+                })
+                .collect(),
+        ),
         // A helix explodes into its spline (seen from above).
         EntityKind::Helix(h) => Some(vec![Entity { handle: Handle(0), common: e.common.clone(), kind: EntityKind::Spline(h.spline()) }]),
         EntityKind::Polyline3d(p) => Some(

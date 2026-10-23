@@ -500,9 +500,11 @@ pub fn handle(app: &mut CadApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
                 view: window,
                 transparency: app.session.settings.transparency_display,
                 view_dir,
-                shaded: named.is_some() || st.shaded,
-                edges: named.is_some() || st.shaded_edges,
-                ..Default::default()
+                ..if named.is_some() {
+                    cadcraft_render::Options::look(true, true, false)
+                } else {
+                    cadcraft_render::Options::look(st.shaded, st.shaded_edges, st.hide)
+                }
             };
             let list = cadcraft_render::build(&st.doc, &space, &opts);
             let v = st.view();

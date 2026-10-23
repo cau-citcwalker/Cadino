@@ -79,6 +79,9 @@ const HEADER: &[(&str, Kind, Def)] = &[
     ("REVCLOUDARCLEN", Kind::Real { min: 0.0, strict: true }, Def::Units(0.5, 15.0)),
     ("SPLINESEGS", Kind::Int(-32768, 32767), Def::Int(8)),
     ("SPLKNOTS", Kind::Choice(&[0, 1, 2]), Def::Int(0)),
+    // EDGESURF, RULESURF, REVSURF and TABSURF: intervals in the mesh's M and N directions.
+    ("SURFTAB1", Kind::Int(2, 32766), Def::Int(6)),
+    ("SURFTAB2", Kind::Int(2, 32766), Def::Int(6)),
     ("TEXTFILL", Kind::Choice(&[0, 1]), Def::Int(1)),
     ("TRIMEXTENDMODE", Kind::Choice(&[0, 1]), Def::Int(1)),
     ("TRIMMODE", Kind::Choice(&[0, 1]), Def::Int(1)),

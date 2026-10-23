@@ -104,6 +104,7 @@ pub(crate) fn free(b: &mut Builder, ctx: &Ctx, e: &Entity, rgb: Ink, lw: f32, lt
             }
         }
         EntityKind::Solid3d(s) => crate::solid::draw(b, ctx, s, rgb, lw),
+        EntityKind::PolyMesh(m) => crate::solid::draw_mesh(b, ctx, &m.mesh3(), &Mat4::IDENTITY, rgb, lw, false),
         _ => {}
     }
 }

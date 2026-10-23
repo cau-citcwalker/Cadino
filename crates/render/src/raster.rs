@@ -113,11 +113,12 @@ pub fn render(list: &DisplayList, view: &View, o: &RasterOptions) -> Option<Pixm
         let face = faces.peek().is_some_and(|r| r.start as usize <= i);
         paint.anti_alias = o.antialias && !face;
         if face
-            && p.kind == Kind::Tris
+            && matches!(p.kind, Kind::Tris | Kind::Mask)
             && p.alpha() == u8::MAX
             && let Some(z) = zbuf.as_mut()
         {
-            fill_face(&mut pm, z, list, p, view, zref, c);
+            // Hidden faces (a mask) hide in the background colour.
+            fill_face(Some(pm.pixels_mut()), z, list, p, view, zref, if p.kind == Kind::Mask { o.background } else { c });
             continue;
         }
         let pts = list.points(p);
@@ -194,10 +195,13 @@ pub fn render(list: &DisplayList, view: &View, o: &RasterOptions) -> Option<Pixm
     Some(pm)
 }
 
-/// Stroke the solids' edges ([`DisplayList::edges`]) where no shaded face hides them: each edge
-/// is walked a pixel at a time against the faces' depths `zbuf` ([`fill_face`]) and its visible
-/// runs are stroked `width` pixels wide.
-fn draw_edges(pm: &mut Pixmap, zbuf: &[f32], list: &DisplayList, view: &View, o: &RasterOptions, zref: f64, width: f32) {
+/// One visible run of an edge: its points on the image (pixels) and in the view plane.
+type Run = Vec<((f32, f32), Vec2)>;
+
+/// The solids' edges ([`DisplayList::edges`]) where no shaded face hides them: each edge is
+/// walked a pixel at a time against the faces' depths `zbuf` ([`fill_face`]); its visible runs,
+/// edge by edge (the index in `edges`).
+fn edge_runs(zbuf: &[f32], list: &DisplayList, view: &View, zref: f64) -> Vec<(usize, Run)> {
     let (w, h) = (view.width as usize, view.height as usize);
     let face_at = |x: f64, y: f64| {
         let inside = x >= 0.0 && y >= 0.0 && (x as usize) < w && (y as usize) < h;
@@ -208,29 +212,69 @@ fn draw_edges(pm: &mut Pixmap, zbuf: &[f32], list: &DisplayList, view: &View, o:
         let (x, y) = view.to_screen(q);
         (f64::from(x), f64::from(y))
     };
-    for e in &list.edges {
+    let mut out = Vec::new();
+    for (i, e) in list.edges.iter().enumerate() {
         let pts = list.points(e);
         let Some(z) = list.vert_depth.get(e.start as usize..e.start as usize + e.len as usize) else { continue };
-        let mut pb = PathBuilder::new();
+        let mut run: Run = Vec::new();
         for (s, d) in pts.windows(2).zip(z.windows(2)) {
-            let ([a, b], [za, zb]) = (s, d) else { continue };
-            let (a, b) = (px(*a), px(*b));
+            let ([qa, qb], [za, zb]) = (s, d) else { continue };
+            let (a, b) = (px(*qa), px(*qb));
             let Some((t0, t1)) = clip(a, b, f64::from(view.width), f64::from(view.height)) else { continue };
             let n = ((t1 - t0) * (b.0 - a.0).hypot(b.1 - a.1)).ceil().clamp(1.0, 65536.0) as u32;
-            let mut down = false;
             for k in 0..=n {
                 let t = t0 + (t1 - t0) * f64::from(k) / f64::from(n);
                 let (x, y) = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
-                let seen = za + (zb - za) * t - zref >= face_at(x, y);
-                match (seen, down) {
-                    (true, true) => pb.line_to(x as f32, y as f32),
-                    (true, false) => pb.move_to(x as f32, y as f32),
-                    _ => {}
+                if za + (zb - za) * t - zref >= face_at(x, y) {
+                    run.push(((x as f32, y as f32), *qa + (*qb - *qa) * t));
+                } else if !run.is_empty() {
+                    out.push((i, std::mem::take(&mut run)));
                 }
-                down = seen;
             }
         }
-        if let Some(path) = pb.finish() {
+        if !run.is_empty() {
+            out.push((i, run));
+        }
+    }
+    out
+}
+
+/// The solids' edges seen at `view`'s resolution where no shaded face hides them, as [`render`]
+/// strokes them: each visible run's edge (an index into [`DisplayList::edges`]) and its points in
+/// the view plane. A canvas without a depth buffer draws these for Shaded with Edges and Hidden.
+pub fn visible_edges(list: &DisplayList, view: &View) -> Vec<(usize, Vec<Vec2>)> {
+    if list.faces.is_empty() || list.edges.is_empty() || view.width == 0 || view.height == 0 || view.width > 16384 || view.height > 16384 {
+        return Vec::new();
+    }
+    let Some(mut zbuf) = depth_buffer(view) else { return Vec::new() };
+    let zref = list.tri_depth.first().copied().unwrap_or(0.0);
+    for r in &list.faces {
+        for p in list.prims.get(r.start as usize..r.end as usize).unwrap_or_default() {
+            if matches!(p.kind, Kind::Tris | Kind::Mask) && p.alpha() == u8::MAX {
+                fill_face(None, &mut zbuf, list, p, view, zref, Rgb(0, 0, 0));
+            }
+        }
+    }
+    edge_runs(&zbuf, list, view, zref).into_iter().map(|(i, run)| (i, run.into_iter().map(|(_, q)| q).collect())).collect()
+}
+
+/// Stroke the solids' edges ([`DisplayList::edges`]) where no shaded face hides them
+/// ([`edge_runs`]), `width` pixels wide.
+fn draw_edges(pm: &mut Pixmap, zbuf: &[f32], list: &DisplayList, view: &View, o: &RasterOptions, zref: f64, width: f32) {
+    // The runs come edge by edge: each edge's stroked as one path.
+    let mut runs = edge_runs(zbuf, list, view, zref).into_iter().peekable();
+    while let Some(i) = runs.peek().map(|(i, _)| *i) {
+        let mut pb = PathBuilder::new();
+        while let Some((_, run)) = runs.next_if(|(j, _)| *j == i) {
+            for (k, ((x, y), _)) in run.iter().enumerate() {
+                if k == 0 {
+                    pb.move_to(*x, *y);
+                } else {
+                    pb.line_to(*x, *y);
+                }
+            }
+        }
+        if let (Some(e), Some(path)) = (list.edges.get(i), pb.finish()) {
             let c = e.display_rgb(o.background);
             let mut paint = Paint::default();
             paint.set_color_rgba8(c.0, c.1, c.2, e.alpha());
@@ -250,16 +294,23 @@ fn depth_buffer(view: &View) -> Option<Vec<f32>> {
     Some(buf)
 }
 
-/// Fill the triangles of shaded face `p` in `color` where they are nearer than what `zbuf`
-/// holds (depths less `zref`, row by row), aliased, sampling pixel centres. Like the GPU canvas,
+/// Fill the triangles of shaded face `p` in `color` (into `pixels`; without, only the depths)
+/// where they are nearer than what `zbuf` holds (depths less `zref`, row by row), aliased, sampling pixel centres. Like the GPU canvas,
 /// a face's depth is written pushed back by two pixels of its depth slope plus a pixel's worth
 /// of depth, so an edge lying on it passes [`draw_edges`]' test.
 // ponytail: each triangle scans its bounding box, so long diagonal slivers (fans) test many
 // pixels outside themselves; scan row spans if that ever shows in render times.
-fn fill_face(pm: &mut Pixmap, zbuf: &mut [f32], list: &DisplayList, p: &crate::DPrim, view: &View, zref: f64, color: Rgb) {
+fn fill_face(
+    mut pixels: Option<&mut [tiny_skia::PremultipliedColorU8]>,
+    zbuf: &mut [f32],
+    list: &DisplayList,
+    p: &crate::DPrim,
+    view: &View,
+    zref: f64,
+    color: Rgb,
+) {
     let (w, h) = (view.width as usize, view.height as usize);
     let Some(ink) = tiny_skia::PremultipliedColorU8::from_rgba(color.0, color.1, color.2, 255) else { return };
-    let pixels = pm.pixels_mut();
     let px = 1.0 / view.scale;
     let zs = list.tri_depth.get(p.start as usize..p.start as usize + p.len as usize).unwrap_or(&[]);
     for (t, z) in list.points(p).chunks_exact(3).zip(zs.chunks_exact(3)) {
@@ -292,11 +343,13 @@ fn fill_face(pm: &mut Pixmap, zbuf: &mut [f32], list: &DisplayList, p: &crate::D
                 if u >= 0.0
                     && v >= 0.0
                     && u + v <= 1.0
-                    && let (Some(d), Some(c)) = (zbuf.get_mut(y * w + x), pixels.get_mut(y * w + x))
+                    && let Some(d) = zbuf.get_mut(y * w + x)
                     && z >= *d
                 {
                     *d = z;
-                    *c = ink;
+                    if let Some(c) = pixels.as_deref_mut().and_then(|px| px.get_mut(y * w + x)) {
+                        *c = ink;
+                    }
                 }
             }
         }

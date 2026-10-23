@@ -37,16 +37,25 @@ pub(crate) mod oops;
 mod overkill;
 mod pline_opts;
 pub mod plotters;
+mod presspull;
 mod props;
 pub use props::MatchProps;
+mod edgeblend;
 mod exchange3d;
+mod flatshot;
 mod furniture;
+mod interfere;
 mod qselect;
+mod section;
 mod selecttools;
 mod settings;
+mod solidedit;
 mod solids;
 mod solids2;
+mod solids3;
 mod spline_opts;
+mod subobj;
+mod surfmesh;
 mod table;
 mod text_tools;
 mod tolerance;
@@ -54,6 +63,7 @@ mod trimextend;
 mod utility;
 mod view;
 mod view3d;
+mod visual;
 pub use view3d::orbit;
 
 pub mod curves;
@@ -198,6 +208,13 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(exchange3d::specs());
         v.extend(furniture::specs());
         v.extend(solids2::specs());
+        v.extend(solids3::specs());
+        v.extend(edgeblend::specs());
+        v.extend(solidedit::specs());
+        v.extend(presspull::specs());
+        v.extend(section::specs());
+        v.extend(flatshot::specs());
+        v.extend(interfere::specs());
         v.extend(draw::specs());
         v.extend(draw2::specs());
         v.extend(annotate::specs());
@@ -227,6 +244,8 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(lisp::specs());
         v.extend(oops::specs());
         v.extend(draw_legacy::specs());
+        v.extend(surfmesh::specs());
+        v.extend(visual::specs());
         v.extend(text_tools::specs());
         v.extend(change::specs());
         v.extend(copytolayer::specs());
@@ -335,6 +354,7 @@ const RHINO_NAMES: &[(&str, &str)] = &[
     ("booleansplit", "slice"),
     ("sweep1", "sweep"),
     ("planarsrf", "planesurf"),
+    ("orient3pt", "3dalign"),
     ("polyline", "pline"),
     ("curve", "spline"),
     ("interpcrv", "spline"),
@@ -344,6 +364,13 @@ const RHINO_NAMES: &[(&str, &str)] = &[
     ("selall", "selectall"),
     ("filletedges", "filletedge"),
     ("chamferedges", "chamferedge"),
+    ("pushpull", "presspull"),
+    ("dupedge", "xedges"),
+    ("extractsrf", "solidedit"),
+    ("moveface", "solidedit"),
+    // Slab makes a wall-like solid by offsetting a curve and extruding it, as POLYSOLID's Object
+    // option. (Make2D is VIEWBASE's alias.)
+    ("slab", "polysolid"),
     ("4view", "viewports.rhino"),
     ("maxviewport", "viewports.maximize"),
 ];
@@ -453,6 +480,24 @@ mod rhino_name_tests {
         // A Rhino name whose command doesn't exist yet stays as typed.
         assert!(super::find_command(&resolve_alias("Rotate3D")).is_none() || resolve_alias("Rotate3D") == "3drotate");
         assert_eq!(resolve_alias("SelAll"), "selectall");
+        // Rhino's names for the edge, face and body edits.
+        for (name, id) in [
+            ("FilletEdge", "filletedge"),
+            ("ChamferEdge", "chamferedge"),
+            ("PushPull", "presspull"),
+            ("DupEdge", "xedges"),
+            ("MoveFace", "solidedit"),
+            ("ExtractSrf", "solidedit"),
+            ("Shell", "shell"),
+            ("Make2D", "viewbase"),
+            ("Slab", "polysolid"),
+            ("Orient3Pt", "3dalign"),
+            ("Section", "section"),
+            ("Loft", "loft"),
+            ("BooleanSplit", "slice"),
+        ] {
+            assert_eq!(resolve_alias(name), id, "{name}");
+        }
     }
 
     #[test]

@@ -10,7 +10,7 @@
 
 use cadcraft_color::Rgb;
 use cadcraft_doc::Solid3d;
-use cadcraft_geom::{Mat3, Mat4, Vec2, Vec3};
+use cadcraft_geom::{Mat3, Mat4, Mesh3, Vec2, Vec3};
 
 use crate::{Builder, Ctx, DPrim, Ink, Kind};
 
@@ -26,15 +26,22 @@ const FRONT: f64 = 1e-9;
 const EDGE_LEVEL: f64 = 0.25;
 
 pub(crate) fn draw(b: &mut Builder, ctx: &Ctx, s: &Solid3d, color: Ink, lw: f32) {
+    draw_mesh(b, ctx, &s.mesh, &s.xform, color, lw, true);
+}
+
+/// Draw `mesh` placed by `xform` as a solid is drawn ([`draw`]); `silhouettes`: its triangles are
+/// a smooth surface's, whose outline against the view is drawn too (a polygon mesh's faces are
+/// its own: its lines are all it shows).
+pub(crate) fn draw_mesh(b: &mut Builder, ctx: &Ctx, mesh: &Mesh3, xform: &Mat4, color: Ink, lw: f32, silhouettes: bool) {
     // Everything happens in view space (`ctx.xf3`: x right, y up, z toward the viewer), where the
     // view direction is +Z. Block references place solids with their plane, elevation, z scale
     // and base point (`Insert::lift`).
     let (right, up, toward) = (Vec3::X, Vec3::Y, Vec3::Z);
     let proj = |w: Vec3| Vec2::new(w.x, w.y);
-    let xf = ctx.xf3.mul(&s.xform);
+    let xf = ctx.xf3.mul(xform);
     // A mirroring transform turns the outward winding inward.
     let out = if det3(&xf) < 0.0 { -1.0 } else { 1.0 };
-    let world: Vec<Vec3> = s.mesh.verts.iter().map(|p| xf.apply(*p)).collect();
+    let world: Vec<Vec3> = mesh.verts.iter().map(|p| xf.apply(*p)).collect();
     // The whole mesh counts toward the list's bounds, whatever is drawn of it.
     for p in &world {
         b.list.bounds.add(proj(*p));
@@ -47,17 +54,12 @@ pub(crate) fn draw(b: &mut Builder, ctx: &Ctx, s: &Solid3d, color: Ink, lw: f32)
         let l = n.len();
         (l > 0.0 && l.is_finite()).then(|| ([p, q, r], n * (1.0 / l)))
     };
-    if !b.opts.shaded {
-        for e in &s.mesh.edges {
-            let w: Vec<Vec3> = e.iter().map(|p| xf.apply(*p)).collect();
-            let (pts, z): (Vec<Vec2>, Vec<f64>) = w.iter().map(|p| (proj(*p), toward.dot(*p))).unzip();
-            b.polyline_at(ctx, color, lw, &pts, Mat3::IDENTITY, &z);
-        }
-        // Silhouettes: triangle edges between a triangle facing the viewer and one facing away.
-        // Only edges inside a face's triangulation (shared vertex indices) are looked at: face
-        // boundaries and seams are edges already drawn above.
+    // Silhouettes: triangle edges between a triangle facing the viewer and one facing away.
+    // Only edges inside a face's triangulation (shared vertex indices) are looked at: face
+    // boundaries and seams are edges drawn anyway.
+    let outline = || {
         let mut sides: Vec<(u32, u32, bool)> = Vec::new();
-        for t in &s.mesh.tris {
+        for t in mesh.tris.iter().filter(|_| silhouettes) {
             let Some((_, n)) = face(t) else { continue };
             let front = n.dot(toward) > FRONT;
             for (i, j) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
@@ -65,35 +67,50 @@ pub(crate) fn draw(b: &mut Builder, ctx: &Ctx, s: &Solid3d, color: Ink, lw: f32)
             }
         }
         sides.sort_unstable();
+        let mut lines = Vec::new();
         for run in sides.chunk_by(|x, y| (x.0, x.1) == (y.0, y.1)) {
             // Sorted, so an edge with both sides starts facing away and ends facing the viewer.
             if let (Some(&(i, j, false)), Some((_, _, true))) = (run.first(), run.last())
                 && let (Some(p), Some(q)) = (world.get(i as usize), world.get(j as usize))
             {
-                b.polyline_at(ctx, color, lw, &[proj(*p), proj(*q)], Mat3::IDENTITY, &[toward.dot(*p), toward.dot(*q)]);
+                lines.push([*p, *q]);
             }
+        }
+        lines
+    };
+    if !b.opts.shaded {
+        for e in &mesh.edges {
+            let w: Vec<Vec3> = e.iter().map(|p| xf.apply(*p)).collect();
+            let (pts, z): (Vec<Vec2>, Vec<f64>) = w.iter().map(|p| (proj(*p), toward.dot(*p))).unzip();
+            b.polyline_at(ctx, color, lw, &pts, Mat3::IDENTITY, &z);
+        }
+        for [p, q] in outline() {
+            b.polyline_at(ctx, color, lw, &[proj(p), proj(q)], Mat3::IDENTITY, &[toward.dot(p), toward.dot(q)]);
         }
         return;
     }
+    // Hidden (VSCURRENT Hidden, HIDE): faces in the background colour hide what is behind them,
+    // and the edges and outline draw in the object's colour.
+    let hidden = b.opts.hidden && b.opts.edges && b.depth.is_some();
     // Light from above and to the left of the viewer, so faces at the same angle to the view
     // (the three faces of a box in an isometric view) shade apart.
     let light = (toward + up * 0.5 - right * 0.3).normalized();
     // Painter's sort per solid, for what draws without a depth buffer (transparent faces). The
     // GPU canvas and the CPU raster depth-test opaque faces with the depths recorded here.
-    let mut faces: Vec<(f64, f64, [Vec3; 3])> = Vec::with_capacity(s.mesh.tris.len());
-    for t in &s.mesh.tris {
+    let mut faces: Vec<(f64, f64, [Vec3; 3])> = Vec::with_capacity(mesh.tris.len());
+    for t in &mesh.tris {
         let Some(([p, q, r], n)) = face(t) else { continue };
         // Back faces are culled; a surface shows both sides of its faces, the back lit as the front.
         let facing = n.dot(toward);
         let n = if facing > FRONT {
             n
-        } else if s.mesh.open && facing < -FRONT {
+        } else if mesh.open && facing < -FRONT {
             -n
         } else {
             continue;
         };
         let depth = toward.dot(p) + toward.dot(q) + toward.dot(r);
-        let level = ((0.3 + 0.7 * n.dot(light).max(0.0)) * LEVELS).round() / LEVELS;
+        let level = if hidden { 1.0 } else { ((0.3 + 0.7 * n.dot(light).max(0.0)) * LEVELS).round() / LEVELS };
         faces.push((depth, level, [p, q, r]));
     }
     faces.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -114,6 +131,11 @@ pub(crate) fn draw(b: &mut Builder, ctx: &Ctx, s: &Solid3d, color: Ink, lw: f32)
     if !run.is_empty() {
         b.tris_at(ctx, shade(base, color, level), &run, Mat3::IDENTITY, &z);
     }
+    if hidden {
+        for p in b.list.prims.get_mut(first..).into_iter().flatten() {
+            p.kind = Kind::Mask;
+        }
+    }
     if b.depth.is_none() {
         return;
     }
@@ -126,10 +148,13 @@ pub(crate) fn draw(b: &mut Builder, ctx: &Ctx, s: &Solid3d, color: Ink, lw: f32)
     if !b.opts.edges {
         return;
     }
-    let ink = shade(base, color, EDGE_LEVEL);
-    for e in &s.mesh.edges {
+    let ink = if hidden { color } else { shade(base, color, EDGE_LEVEL) };
+    for e in &mesh.edges {
         let (pts, z): (Vec<Vec2>, Vec<f64>) = e.iter().map(|p| xf.apply(*p)).map(|w| (proj(w), toward.dot(w))).unzip();
         edge(b, ctx, ink, &pts, &z);
+    }
+    for [p, q] in if hidden { outline() } else { Vec::new() } {
+        edge(b, ctx, ink, &[proj(p), proj(q)], &[toward.dot(p), toward.dot(q)]);
     }
 }
 
@@ -458,6 +483,36 @@ mod tests {
         }
     }
 
+    /// Hidden through the raster (`ui.render`, plots of the view): the faces are the background
+    /// colour, the visible edges are drawn and the back ones stay hidden.
+    #[test]
+    fn raster_draws_hidden_faces_in_the_background_colour() {
+        let dir = Vec3::new(-1.0, -1.0, 1.0);
+        let list = build(&drawing(), &Space::Model, &Options { hidden: true, ..with_edges(dir) });
+        let view = crate::raster::View::fit(&list.bounds, 200, 200, 0.1);
+        let o = crate::raster::RasterOptions { antialias: false, ..Default::default() };
+        let pm = crate::raster::render(&list, &view, &o).unwrap();
+        let px = |p: Vec3| {
+            let (x, y) = view.to_screen(ViewDir::new(dir).project(p));
+            let c = pm.pixel(x as u32, y as u32).unwrap();
+            Rgb(c.red(), c.green(), c.blue())
+        };
+        assert_eq!(px(Vec3::new(0.5, 0.5, 1.0)), o.background, "the top face");
+        assert_ne!(px(Vec3::new(0.0, 0.0, 0.5)), o.background, "the front edge");
+        assert_eq!(px(Vec3::new(1.0, 1.0, 0.5)), o.background, "the back edge, hidden");
+        // The same edges for a canvas without a depth buffer (inactive viewport tiles): the
+        // front edge shows, the back one doesn't.
+        let runs = crate::raster::visible_edges(&list, &view);
+        let near = |p: Vec3| {
+            let q = ViewDir::new(dir).project(p);
+            runs.iter().flat_map(|(_, r)| r).any(|r| r.dist(q) < 2.0 / view.scale)
+        };
+        assert!(near(Vec3::new(0.0, 0.0, 0.5)), "the front edge");
+        assert!(!near(Vec3::new(1.0, 1.0, 0.5)), "the back edge, hidden");
+        let wire = build(&drawing(), &Space::Model, &Options { view_dir: ViewDir::new(dir), ..Default::default() });
+        assert!(crate::raster::visible_edges(&wire, &view).is_empty(), "wireframe has none");
+    }
+
     #[test]
     fn raster_keeps_the_nearer_solid_in_front_whatever_the_order() {
         // A red cube straight behind the grey one in the south-west isometric, drawn after it.
@@ -486,5 +541,54 @@ mod tests {
         let list = build(&d, &Space::Model, &opts);
         // The circle is tessellated finely (it spans its diameter) and the cross stays inside it.
         assert!((list.bounds.width() - 2.0).abs() < 0.01, "{:?}", list.bounds);
+    }
+
+    /// Hidden: the faces are masks in the background colour (still faces, depth-tested), the edges
+    /// keep the solid's colour, and a sphere's outline is an edge too.
+    #[test]
+    fn hidden_faces_are_masks_under_the_edges() {
+        let hidden = Options { hidden: true, ..with_edges(Vec3::new(-1.0, -1.0, 1.0)) };
+        let list = build(&drawing(), &Space::Model, &hidden);
+        assert_eq!(list.faces.len(), 1);
+        let r = &list.faces[0];
+        assert!(list.prims[r.start as usize..r.end as usize].iter().all(|p| p.kind == Kind::Mask));
+        assert_eq!(list.edges.len(), 12);
+        assert!(list.edges.iter().all(|e| e.aci7), "the edges are drawn in the solid's colour (7), not a shade");
+        let shaded = build(&drawing_of(sphere()), &Space::Model, &with_edges(Vec3::new(-1.0, -1.0, 1.0)));
+        let outlined = build(&drawing_of(sphere()), &Space::Model, &Options { hidden: true, ..with_edges(Vec3::new(-1.0, -1.0, 1.0)) });
+        assert!(outlined.edges.len() > shaded.edges.len(), "{} {}", outlined.edges.len(), shaded.edges.len());
+    }
+
+    /// The visual styles as the canvas, the control channel and MCP render them: unshaded with
+    /// edges is Hidden, HIDE hides whatever the style.
+    #[test]
+    fn styles_map_to_options() {
+        let o = |s, e, h| {
+            let o = Options::look(s, e, h);
+            (o.shaded, o.edges, o.hidden)
+        };
+        assert_eq!(o(false, false, false), (false, false, false), "wireframe");
+        assert_eq!(o(true, false, false), (true, false, false), "shaded");
+        assert_eq!(o(true, true, false), (true, true, false), "shaded with edges");
+        assert_eq!(o(false, true, false), (true, true, true), "Hidden");
+        assert_eq!(o(false, false, true), (true, true, true), "HIDE");
+    }
+
+    /// A polygon mesh draws its M and N lines in wireframe and its faces (both sides) shaded,
+    /// without the diagonals its quads are split along.
+    #[test]
+    fn a_polygon_mesh_draws_its_lines_and_faces() {
+        let v = (0..3).flat_map(|i| (0..3).map(move |j| Vec3::new(f64::from(j), f64::from(i), f64::from(i * j)))).collect();
+        let mut d = Drawing::default();
+        d.add(&Space::Model, Default::default(), EntityKind::PolyMesh(cadcraft_doc::PolyMesh::grid(3, 3, v, false, false).unwrap())).unwrap();
+        let wire = build(&d, &Space::Model, &view(Vec3::new(-1.0, -1.0, 1.0), false));
+        assert_eq!(wire.prims.iter().filter(|p| p.kind == Kind::Polyline).count(), 6);
+        assert!(wire.tris.is_empty());
+        let plan = build(&d, &Space::Model, &Options::default());
+        assert_eq!(plan.prims.len(), 6);
+        // Seen from below, a surface still shows its 8 triangles.
+        let under = build(&d, &Space::Model, &with_edges(Vec3::new(0.3, 0.2, -1.0)));
+        assert_eq!(under.tris.len(), 8 * 3);
+        assert_eq!(under.edges.len(), 6);
     }
 }

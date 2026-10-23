@@ -36,6 +36,8 @@ pub const TABLE: &[(&str, Class)] = &[
     ("geom", Class::Layer(0)),
     // The 3D modelling kernel (OpenCASCADE behind a data-only API); uses geom.
     ("kernel", Class::Layer(0)),
+    // The kernel's own C++ over OpenCASCADE behind a cxx bridge (empty on wasm); only the kernel uses it.
+    ("kernel-occt", Class::Standalone),
     ("dxf", Class::Standalone),
     ("dwg", Class::Standalone),
     ("color", Class::Layer(0)),
@@ -61,7 +63,7 @@ pub const TABLE: &[(&str, Class)] = &[
 /// The L0 foundation is a small chain: `raster` builds on `color` and
 /// `geom`, which the §3 diagram draws on one line. The GPU backend (`gpu`)
 /// reuses the CPU reference (`compose`) for LUTs and parity tests.
-pub const INTRA_LAYER_ORDER: &[&[&str]] = &[&["geom", "color"], &["geom", "kernel"], &["fonts", "render"]];
+pub const INTRA_LAYER_ORDER: &[&[&str]] = &[&["geom", "color"], &["geom", "kernel"], &["kernel-occt", "kernel"], &["fonts", "render"]];
 
 fn intra_layer_allowed(from: &str, to: &str) -> bool {
     let (from, to) = (short_name(from), short_name(to));

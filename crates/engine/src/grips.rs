@@ -286,6 +286,7 @@ pub fn stretch_grip(kind: &EntityKind, index: usize, to: Vec2) -> Option<EntityK
         }
         EntityKind::Solid(s) | EntityKind::Trace(s) => set_xy(s.corners.get_mut(index)?, to),
         EntityKind::Face3d(f) => set_xy(f.corners.get_mut(index)?, to),
+        EntityKind::PolyMesh(m) => set_xy(m.vertices.get_mut(index)?, to),
         EntityKind::Region(_) | EntityKind::Solid3d(_) => return Some(translated(kind, delta)),
         EntityKind::Viewport(v) => {
             let opposite = *grips.get((index + 2) % 4)?;
@@ -517,6 +518,7 @@ pub fn grips3(e: &Entity) -> Vec<Vec3> {
         EntityKind::Point(p) => vec![p.p],
         EntityKind::Polyline3d(p) => p.points.clone(),
         EntityKind::Face3d(f) => f.corners.to_vec(),
+        EntityKind::PolyMesh(m) => m.vertices.clone(),
         EntityKind::Ray(r) | EntityKind::XLine(r) => vec![r.base, r.base + r.dir],
         EntityKind::Helix(h) => vec![h.center, h.start_point(), h.end_point()],
         EntityKind::Solid3d(s) => s.corners(),
@@ -571,6 +573,7 @@ pub fn stretch_grip_3d(e: &Entity, kind: &EntityKind, index: usize, to: Vec2, dz
         }
         EntityKind::Polyline3d(p) => p.points.get_mut(index)?.z = z,
         EntityKind::Face3d(f) => f.corners.get_mut(index)?.z = z,
+        EntityKind::PolyMesh(m) => m.vertices.get_mut(index)?.z = z,
         _ if moves_whole(kind, index) => {
             let mut moved = Entity { handle: e.handle, common: e.common.clone(), kind: k };
             return moved.transform3(&Mat4::translate(Vec3::Z * dz)).then_some(moved.kind);

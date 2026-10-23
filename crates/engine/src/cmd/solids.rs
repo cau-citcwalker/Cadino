@@ -1,6 +1,6 @@
-//! 3D solids (CAD-rhino): BOX, CYLINDER, CONE, SPHERE, TORUS, EXTRUDE, REVOLVE, FILLETEDGE,
-//! the solid side of UNION, SUBTRACT and INTERSECT, and STEP/STL exchange. The later modelling
-//! commands are in `solids2`.
+//! 3D solids (CAD-rhino): BOX, CYLINDER, CONE, SPHERE, TORUS, EXTRUDE, REVOLVE, the solid side
+//! of UNION, SUBTRACT and INTERSECT, and STEP/STL exchange. The later modelling commands are in
+//! `solids2`; FILLETEDGE and CHAMFEREDGE in `edgeblend`, SOLIDEDIT and SHELL in `solidedit`.
 //!
 //! Shapes come from [`cadcraft_kernel`]; the document keeps each as a [`Solid3d`] (a surface is
 //! one whose mesh is open). A boolean's result replaces the first solid (keeping its properties)
@@ -72,10 +72,6 @@ pub fn specs() -> Vec<CommandSpec> {
             .alias(&["rev"])
             .params("{handles?, axis: [[x,y],[x,y]] (in each profile's plane) | [[x,y,z],[x,y,z]] (world points), angle? (degrees, default 360)}")
             .interactive(|_| Ok(Box::new(ProfileM::new(ProfileOp::Revolve)))),
-        CommandSpec::new("filletedge", "Fillet Edge", run_filletedge)
-            .menu(&["Modify", "Solid Editing", "Fillet Edges"])
-            .params("{handle | handles?, radius}: rounds every edge of each solid")
-            .interactive(|_| Ok(Box::new(ProfileM::new(ProfileOp::Fillet)))),
         CommandSpec::new("stepout", "Export STEP", run_stepout)
             .menu(&["File", "Export", "STEP"])
             .params("{path, handles?} (3D solids: those given or selected, else all of them)")
@@ -589,13 +585,6 @@ pub(super) fn per_solid(s: &mut Session, cmd: &str, hs: &[Handle], op: impl Fn(P
     Ok((n, all - n))
 }
 
-fn run_filletedge(s: &mut Session, p: &Value) -> Result<Value> {
-    let hs = targets(s, p)?;
-    let r = f64_req("filletedge", p, "radius")?;
-    let (n, locked) = per_solid(s, "filletedge", &hs, |x| cadcraft_kernel::fillet(x, r))?;
-    Ok(json!({ "filleted": n, "locked": locked }))
-}
-
 /// UNION and INTERSECT of the solids among `hs`; `None` when there are none (regions then).
 pub(crate) fn fold(s: &mut Session, hs: &[Handle], op: BoolOp) -> Result<Option<Value>> {
     let xs = solids(s, hs)?;
@@ -836,13 +825,10 @@ impl Interactive for Ask {
 pub(super) enum ProfileOp {
     Extrude,
     Revolve,
-    Fillet,
-    Chamfer,
-    Shell,
 }
 
-/// EXTRUDE, REVOLVE, FILLETEDGE, CHAMFEREDGE and SHELL at the command line: select objects, then
-/// the height, the axis and angle, the radius, the distance or the wall thickness.
+/// EXTRUDE and REVOLVE at the command line: select objects, then the height, or the axis and
+/// angle.
 pub(super) struct ProfileM {
     op: ProfileOp,
     sel: SelectPhase,
@@ -864,9 +850,6 @@ impl ProfileM {
         let id = match self.op {
             ProfileOp::Extrude => "extrude",
             ProfileOp::Revolve => "revolve",
-            ProfileOp::Fillet => "filletedge",
-            ProfileOp::Chamfer => "chamferedge",
-            ProfileOp::Shell => "shell",
         };
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.into()))?;
         (spec.run)(s, &p)?;
@@ -880,9 +863,6 @@ impl Interactive for ProfileM {
         match self.op {
             ProfileOp::Extrude => "EXTRUDE",
             ProfileOp::Revolve => "REVOLVE",
-            ProfileOp::Fillet => "FILLETEDGE",
-            ProfileOp::Chamfer => "CHAMFEREDGE",
-            ProfileOp::Shell => "SHELL",
         }
     }
     fn begin(&mut self, s: &mut Session) -> Result<Step> {
@@ -901,9 +881,6 @@ impl Interactive for ProfileM {
             (ProfileOp::Revolve, 0) => Prompt::new("Specify axis start point", Accept::POINT),
             (ProfileOp::Revolve, 1) => Prompt::new("Specify axis endpoint", Accept::POINT).base_opt(self.axis.first().map(|a| a.0)),
             (ProfileOp::Revolve, _) => Prompt::new("Specify angle of revolution", Accept::NUMBER).default("360"),
-            (ProfileOp::Fillet, _) => Prompt::new("Specify fillet radius", Accept::NUMBER),
-            (ProfileOp::Chamfer, _) => Prompt::new("Specify distance", Accept::NUMBER),
-            (ProfileOp::Shell, _) => Prompt::new("Enter the shell offset distance", Accept::NUMBER),
         }
     }
     fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
@@ -935,9 +912,6 @@ impl Interactive for ProfileM {
                 self.run(s, json!({ "axis": axis_json(s, &self.axis), "angle": a }))
             }
             (ProfileOp::Extrude, Input::Text(t)) => self.run(s, json!({ "height": distance(&t)? })),
-            (ProfileOp::Fillet, Input::Text(t)) => self.run(s, json!({ "radius": distance(&t)? })),
-            (ProfileOp::Chamfer, Input::Text(t)) => self.run(s, json!({ "distance": distance(&t)? })),
-            (ProfileOp::Shell, Input::Text(t)) => self.run(s, json!({ "thickness": distance(&t)? })),
             _ => Ok(Step::Continue),
         }
     }

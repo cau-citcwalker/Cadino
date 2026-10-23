@@ -222,11 +222,14 @@ fn in_tri(v: Vec2, a: Vec2, b: Vec2, c: Vec2) -> bool {
 /// ponytail: scans the whole list per pick; a spatial index over the list if 3D views get large.
 fn list_pick(list: &DisplayList, v: Vec2, ap: f64) -> Option<Handle> {
     let near = |a: Vec2, b: Vec2| cadcraft_geom::Line::new(a, b).closest(v).dist(v) <= ap;
-    list.prims.iter().rev().filter(|p| p.handle != cadcraft_render::VIEWPORT_CONTENT).find_map(|prim| {
+    // A solid's faces in the Hidden style are masks: picked like shaded faces (a wipeout isn't).
+    let face = |i: usize| list.faces.iter().any(|r| (r.start as usize..r.end as usize).contains(&i));
+    list.prims.iter().enumerate().rev().filter(|(_, p)| p.handle != cadcraft_render::VIEWPORT_CONTENT).find_map(|(i, prim)| {
         let pts = list.points(prim);
         let hit = match prim.kind {
             Kind::Polyline => pts.windows(2).any(|w| matches!(w, [a, b] if near(*a, *b))),
             Kind::Tris => pts.chunks_exact(3).any(|t| matches!(t, [a, b, c] if in_tri(v, *a, *b, *c))),
+            Kind::Mask if face(i) => pts.chunks_exact(3).any(|t| matches!(t, [a, b, c] if in_tri(v, *a, *b, *c))),
             Kind::Point => pts.first().is_some_and(|q| q.dist(v) <= ap),
             Kind::Mask | Kind::Infinite { .. } => false,
         };
@@ -646,9 +649,7 @@ fn ensure_list(app: &mut CadApp, xf: &Xf, views: &[(Bounds2, f64)], ctx: &egui::
         transparency: app.session.settings.transparency_display,
         skip_viewport: split,
         view_dir,
-        shaded: st.shaded,
-        edges: st.shaded_edges,
-        ..Default::default()
+        ..cadcraft_render::Options::look(st.shaded, st.shaded_edges, st.hide)
     };
     if view_only {
         let t = Tokens::get();
@@ -688,7 +689,7 @@ fn list_style(st: &cadcraft_engine::DocState, split: Option<Handle>) -> u64 {
     {
         (h, vp.view_center.x.to_bits(), vp.view_center.y.to_bits(), vp.view_height.to_bits()).hash(&mut s);
     }
-    (st.shaded, st.shaded_edges).hash(&mut s);
+    (st.shaded, st.shaded_edges, st.hide).hash(&mut s);
     s.finish()
 }
 
@@ -790,7 +791,8 @@ fn ensure_vp_content(app: &mut CadApp, xf_paper: &Xf, ctx: &egui::Context) -> Op
     };
     let px = 1.0 / xf_paper.scale.max(1e-300);
     let band = px.max(1e-300).log2().floor() as i32;
-    let key = (st.uid, st.revision, std::sync::Arc::as_ptr(&st.doc) as usize, h, band, lwdisplay, transparency, st.shaded, st.shaded_edges);
+    let key =
+        (st.uid, st.revision, std::sync::Arc::as_ptr(&st.doc) as usize, h, band, lwdisplay, transparency, st.shaded, st.shaded_edges || st.hide);
     let now = crate::now_ms();
     let view = (vp.view_center, vp.view_height);
     if view != c.last_view {
@@ -827,9 +829,7 @@ fn ensure_vp_content(app: &mut CadApp, xf_paper: &Xf, ctx: &egui::Context) -> Op
             skip_viewport: None,
             transparency,
             view_dir: cadcraft_geom::ViewDir::PLAN,
-            shaded: st.shaded,
-            edges: st.shaded_edges,
-            ..Default::default()
+            ..cadcraft_render::Options::look(st.shaded, st.shaded_edges, st.hide)
         };
         c.list = cadcraft_render::viewport_content(&st.doc, &st.space, h, area, &opts);
         c.key = Some(key);
@@ -1205,6 +1205,16 @@ pub(crate) fn draw_list(p: &egui::Painter, xf: &Xf, list: &DisplayList, bg: Rgb,
                 }
             }
         }
+    }
+    // The solids' edges (Shaded with Edges, Hidden) where no face hides them: with no depth
+    // buffer here (the tiles other than the current one, or no GPU), tested against the faces'
+    // depths at this view's resolution, as the raster does.
+    let w = |x: f32| x.round().clamp(0.0, 16384.0) as u32;
+    let view = cadcraft_render::raster::View { center: xf.center, scale: xf.scale, width: w(xf.rect.width()), height: w(xf.rect.height()) };
+    for (i, run) in cadcraft_render::raster::visible_edges(list, &view) {
+        let Some(e) = list.edges.get(i) else { continue };
+        let screen: Vec<Pos2> = run.iter().map(|q| xf.view_to_screen(*q)).collect();
+        shapes.push(Shape::line(screen, Stroke::new(1.0, prim_color32(e, bg))));
     }
     p.extend(shapes);
 }
@@ -3985,6 +3995,37 @@ pub(crate) mod tests {
         assert_eq!(app.session.selection(), vec![h]);
     }
 
+    /// A gumball arrow dragged onto another object's end snaps to it, taken along its axis: the
+    /// line moves 9 along X to bring its middle (5, 0, 0) level with the end at (14, 0, 3); with
+    /// the snaps off (`ui.gumball` `snap`) the same drag moves by the distance dragged.
+    #[test]
+    fn a_gumball_drag_snaps_to_an_object_snap() {
+        let g = cadcraft_geom::Vec3::new;
+        let mut f = Frames::default();
+        let (mut app, h, o) = gumball_on_a_line(&mut f, [0.0, -1.0, 0.0]);
+        let other = cadcraft_doc::Line { a: g(14.0, 0.0, 3.0), b: g(14.0, 0.0, 9.0) };
+        app.session
+            .doc_mut()
+            .unwrap()
+            .add(&cadcraft_doc::Space::Model, cadcraft_doc::Common::default(), cadcraft_doc::EntityKind::Line(other))
+            .unwrap();
+        app.session.set_selection(vec![h]);
+        rebuild_now(&mut f, &mut app);
+        let xf = app.canvas.xf.unwrap();
+        let end = xf.world_to_screen(g(14.0, 0.0, 3.0));
+        f.drag(&mut app, o + vec2(60.0, 0.0), end + vec2(2.0, 1.0));
+        let (a, _) = line_ends(&app, h);
+        assert!((a - g(9.0, 0.0, 0.0)).len() < 1e-9, "{a:?}");
+        app.session.execute("u", &serde_json::json!({})).unwrap();
+        app.run("ui.gumball", serde_json::json!({ "snap": false })).unwrap();
+        app.session.set_selection(vec![h]);
+        f.run(&mut app, Vec::new());
+        f.drag(&mut app, o + vec2(60.0, 0.0), end + vec2(2.0, 1.0));
+        let (a, _) = line_ends(&app, h);
+        let dragged = f64::from(end.x + 2.0 - o.x - 60.0) / xf.scale;
+        assert!((a.x - dragged).abs() < 1e-4 && (a.x - 9.0).abs() > 1e-3, "{a:?} {dragged}");
+    }
+
     /// Dragging a gumball arc turns the selection about that world axis through the gumball's
     /// centre (3DROTATE): 90° typed about Y from the front stands the line up, once.
     #[test]
@@ -4018,7 +4059,7 @@ pub(crate) mod tests {
         f.drag(&mut app, o + vec2(60.0, 0.0), o + vec2(110.0, 20.0));
         assert_eq!(line_ends(&app, h).0, cadcraft_geom::Vec3::ZERO);
         let (mut app, h, o) = gumball_on_a_line(&mut f, [0.0, -1.0, 0.0]);
-        assert_eq!(app.run("ui.gumball", serde_json::json!({ "on": false })).unwrap(), serde_json::json!({ "on": false }));
+        assert_eq!(app.run("ui.gumball", serde_json::json!({ "on": false })).unwrap()["on"], false);
         f.drag(&mut app, o + vec2(60.0, 0.0), o + vec2(110.0, 20.0));
         assert_eq!(line_ends(&app, h).0, cadcraft_geom::Vec3::ZERO);
     }

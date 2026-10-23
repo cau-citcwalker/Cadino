@@ -263,6 +263,7 @@ fn bounds_own<'a>(d: &'a Drawing, e: &Entity, depth: usize, blocks: &mut HashMap
         EntityKind::LwPolyline(p) => lwpolyline_bounds(p),
         // Its corners, also where its edges are invisible (they are only not drawn).
         EntityKind::Face3d(f) => Bounds2::from_points(f.corners.map(|c| c.xy())),
+        EntityKind::PolyMesh(m) => m.bounds(),
         kind => prims_bounds(kind.prims()),
     }
 }

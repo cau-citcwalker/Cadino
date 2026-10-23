@@ -428,6 +428,7 @@ pub const FILE_COMMANDS: &[&str] = &[
     "igesin",
     "igesout",
     "rhinoout",
+    "3dprint",
     "xattach",
     "-xref",
     "xopen",
@@ -440,8 +441,8 @@ pub const FILE_COMMANDS: &[&str] = &[
     "reinit",
 ];
 
-/// Parameters that name a file or folder (except `path` of SWEEP and the path arrays: a curve's
-/// handle).
+/// Parameters that name a file or folder (except `path` of SWEEP, LOFT and the path arrays: a
+/// curve's handle).
 pub const FILE_KEYS: &[&str] = &["path", "file", "csv", "template", "patternFile", "savefilepath"];
 
 /// File ▸ Open Recent's items, `ui.recent.<n>`: they open a file without asking.
@@ -523,7 +524,7 @@ impl Guard {
                 if self.closing.contains(&id) {
                     return Some(CLOSE_OFF);
                 }
-                let curve_path = matches!(id.as_str(), "sweep" | "arraypath" | "array");
+                let curve_path = matches!(id.as_str(), "sweep" | "arraypath" | "array" | "loft");
                 let files = self.files.as_ref()?;
                 (files.contains(&id) || id.starts_with(RECENT_FILE) || names_file(input, curve_path)).then_some(FILES_OFF)
             }

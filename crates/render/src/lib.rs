@@ -257,9 +257,22 @@ pub struct Options {
     /// With [`Options::shaded`]: the solids' edges too, drawn over the faces by a depth-buffered
     /// canvas ([`DisplayList::edges`]; VSCURRENT Shaded with Edges). Off: plain Shaded.
     pub edges: bool,
+    /// With [`Options::shaded`] and [`Options::edges`]: the faces are drawn in the background
+    /// colour ([`Kind::Mask`], still in [`DisplayList::faces`]) and the edges and outlines in the
+    /// objects' colours, so a depth-buffered canvas shows the visible lines only (VSCURRENT
+    /// Hidden, HIDE).
+    pub hidden: bool,
 }
 
 impl Options {
+    /// The options for a visual style: shaded or not, with edges or not (unshaded with edges is
+    /// Hidden), or with HIDE's hidden lines removed (`hide`). The canvas, the control channel's
+    /// and MCP's renders all look the same through this.
+    pub fn look(shaded: bool, edges: bool, hide: bool) -> Options {
+        let hidden = hide || (!shaded && edges);
+        Options { shaded: shaded || hidden, edges: edges || hidden, hidden, ..Default::default() }
+    }
+
     /// Whether [`Options::cancel`] has been set.
     pub fn cancelled(&self) -> bool {
         self.cancel.as_ref().is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
@@ -283,6 +296,7 @@ impl Default for Options {
             view_dir: ViewDir::PLAN,
             shaded: false,
             edges: false,
+            hidden: false,
         }
     }
 }
@@ -1322,6 +1336,7 @@ fn entity_parts(b: &mut Builder, ctx: &Ctx, e: &Entity) {
             }
         }
         EntityKind::Solid3d(s) => solid::draw(b, ctx, s, rgb, lw),
+        EntityKind::PolyMesh(m) => solid::draw_mesh(b, ctx, &m.mesh3(), &cadcraft_geom::Mat4::IDENTITY, rgb, lw, false),
         EntityKind::Solid(s) | EntityKind::Trace(s) => {
             let c = &s.corners;
             let q = [c[0].xy(), c[1].xy(), c[3].xy(), c[2].xy()];

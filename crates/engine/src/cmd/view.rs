@@ -74,6 +74,8 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("regen", "Regen", |s, _| {
             // Table formulas are recalculated (as on UPDATEFIELD).
             super::table::recalc(s, None)?;
+            // The view HIDE left goes back to the visual style.
+            s.state_mut()?.hide = false;
             s.touch();
             Ok(json!({"message": "Regenerating model."}))
         })
@@ -81,6 +83,7 @@ pub fn specs() -> Vec<CommandSpec> {
         .alias(&["re"])
         .noundo(),
         CommandSpec::new("regenall", "Regen All", |s, _| {
+            s.state_mut()?.hide = false;
             s.touch();
             Ok(json!({"message": "Regenerating all viewports."}))
         })

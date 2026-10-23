@@ -1,6 +1,6 @@
-//! Another program's file can name a $HANDSEED below handles it uses. Entities CADCraft makes
-//! while reading (the faces a polyface mesh becomes) must not take handles that records further
-//! on still have: a DWG keeps one object per handle, so the duplicates were lost on save.
+//! Another program's file can name a $HANDSEED below handles it uses. Handles CADCraft gives
+//! while reading must not be ones that records further on still have: a DWG keeps one object per
+//! handle, so the duplicates were lost on save.
 #![cfg(not(target_arch = "wasm32"))]
 
 use std::collections::HashSet;
@@ -35,7 +35,7 @@ fn dxf() -> String {
 }
 
 fn counts(d: &Drawing) -> (usize, usize) {
-    let faces = d.block("MESH").map_or(0, |b| b.entities.iter().filter(|e| matches!(e.kind, EntityKind::Face3d(_))).count());
+    let faces = d.block("MESH").map_or(0, |b| b.entities.iter().filter(|e| matches!(e.kind, EntityKind::PolyMesh(_))).count());
     let lines = d.model.iter().filter(|e| matches!(e.kind, EntityKind::Line(_))).count();
     (faces, lines)
 }
@@ -43,7 +43,7 @@ fn counts(d: &Drawing) -> (usize, usize) {
 #[test]
 fn faces_made_while_reading_do_not_take_the_files_handles() {
     let d = cadcraft_io::read_dxf(dxf().as_bytes()).unwrap();
-    assert_eq!(counts(&d), (3, 3));
+    assert_eq!(counts(&d), (1, 3));
     let handles: Vec<Handle> = d.model.iter().chain(d.block("MESH").unwrap().entities.iter()).map(|e| e.handle).collect();
     let unique: HashSet<Handle> = handles.iter().copied().collect();
     assert_eq!(unique.len(), handles.len(), "duplicate handles: {handles:?}");
@@ -54,5 +54,5 @@ fn faces_made_while_reading_do_not_take_the_files_handles() {
     }
     // Nothing is lost through a DWG.
     let back = cadcraft_io::read(&cadcraft_io::write(&d, "a.dwg").unwrap(), "a.dwg").unwrap();
-    assert_eq!(counts(&back), (3, 3));
+    assert_eq!(counts(&back), (1, 3));
 }

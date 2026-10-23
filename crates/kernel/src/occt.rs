@@ -16,10 +16,13 @@ use glam::{DVec3, dvec3};
 use opencascade::angle::Angle;
 use opencascade::bounding_box;
 use opencascade::mesh::Mesher;
-use opencascade::primitives::{Compound, Edge, Face, Shape, ShapeType, Shell, Solid, Wire};
+use opencascade::primitives::{Compound, Edge, Face, Shape, Shell, Solid, Wire};
 
 use crate::curve::{Cut, Run, closed, unit};
 use crate::{BoolOp, Built, Curve, Imported, KernelError, Outline, Placed, Primitive, Result, Seg, similarity};
+
+mod ops;
+pub use ops::op;
 
 fn dv(p: Vec3) -> DVec3 {
     dvec3(p.x, p.y, p.z)
@@ -112,14 +115,26 @@ fn turned(b: Shape, n: Vec3) -> Shape {
     }
 }
 
+/// `b` turned so its Z axis runs along the unit `n` and its X axis along the unit `x` (square to
+/// `n`).
+fn framed(b: Shape, n: Vec3, x: Vec3) -> Shape {
+    let b = turned(b, n);
+    // Where `turned` took X: about Z × n by the angle from Z to n (X stays put otherwise).
+    let x0 = unit(Vec3::Z.cross(n))
+        .map_or(Vec3::new(1.0, 0.0, 0.0), |k| crate::curve::Rot::about(k, n.z.clamp(-1.0, 1.0).acos()).apply(Vec3::new(1.0, 0.0, 0.0)));
+    let a = x0.cross(x).dot(n).atan2(x0.dot(x));
+    if a.abs() > 1e-12 { b.rotated(dv(n), a) } else { b }
+}
+
 /// What a sweep stretch loses at a corner: past the mitre plane, only where the stretch
 /// overshoots the corner. That is a box along the stretch from just before the corner (its inner
 /// side pokes past the plane there, at most reach × tan(turn / 2) back) to the end of its
-/// extension, and two profile reaches either side of the path.
+/// extension, two profile reaches either side of the path across the turn and the profile's
+/// reach (and one more) along the turn's axis.
 fn cutter(c: &Cut) -> Shape {
-    let (w, back, on) = (2.0 * c.reach, c.past, c.past + c.reach);
-    let b = turned(Shape::box_from_corners(dvec3(-w, -w, -back), dvec3(w, w, on)), c.along).translated(dv(c.at));
-    b.intersect(&half_space(c.at, c.normal, 2.0 * (w + back + on))).into()
+    let (w, h, back, on) = (2.0 * c.reach, c.rise + c.reach, c.past, c.past + c.reach);
+    let b = framed(Shape::box_from_corners(dvec3(-w, -h, -back), dvec3(w, h, on)), c.along, c.side).translated(dv(c.at));
+    b.intersect(&half_space(c.at, c.normal, 2.0 * (w + h + back + on))).into()
 }
 
 fn edge(s: &Seg) -> Edge {
@@ -184,6 +199,11 @@ pub fn loft(sections: &[Curve], ruled: bool) -> Result<Built> {
 }
 
 pub fn sweep(runs: &[Run], solid: bool) -> Result<Built> {
+    built(swept(runs, solid))
+}
+
+/// [`sweep`]'s shape.
+fn swept(runs: &[Run], solid: bool) -> Shape {
     let mut pieces = Vec::with_capacity(runs.len());
     for r in runs {
         let path = wire(&r.path);
@@ -194,7 +214,7 @@ pub fn sweep(runs: &[Run], solid: bool) -> Result<Built> {
         }
         pieces.push(s);
     }
-    built(join(pieces, solid))
+    join(pieces, solid)
 }
 
 pub fn boolean(op: BoolOp, a: Placed, b: Placed) -> Result<Built> {
@@ -266,7 +286,7 @@ pub fn shell(s: Placed, thickness: f64, remove_top: bool) -> Result<Built> {
 }
 
 pub fn tessellate(brep: &str) -> Result<Mesh3> {
-    mesh(&read_brep(brep)?)
+    mesh(&read_brep(brep)?, brep)
 }
 
 pub fn export_step(solids: &[Placed], path: &Path) -> Result<()> {
@@ -644,7 +664,7 @@ fn built(shape: Shape) -> Result<Built> {
         return Err(KernelError::Failed("the shape has no faces".into()));
     }
     let brep = write_brep(&shape)?;
-    Ok(Built { brep, mesh: mesh(&shape)? })
+    Ok(Built { mesh: mesh(&shape, &brep)?, brep })
 }
 
 /// A stored solid in world coordinates.
@@ -764,7 +784,7 @@ fn deflection(s: &Shape) -> f64 {
 
 /// [`crate::Outline`] of stored B-rep text.
 pub fn outline(brep: &str) -> Result<Outline> {
-    let (mesh, smooth) = meshed(&read_brep(brep)?, true)?;
+    let (mesh, smooth) = meshed(&read_brep(brep)?, brep, true)?;
     Ok(Outline { mesh, smooth })
 }
 
@@ -861,18 +881,27 @@ const TANGENT_COS: f64 = 0.999_96;
 
 /// Triangles face by face, and the edges as the boundaries of each face's triangles (shared
 /// edges once). The whole shape is triangulated first so neighbouring faces agree on edges.
-/// It is open (a surface) unless it is a solid or every face boundary is shared: a closed
-/// shell's boundaries pair up (a seam with itself), a surface's own edges don't.
-fn mesh(shape: &Shape) -> Result<Mesh3> {
-    meshed(shape, false).map(|(m, _)| m)
+/// It is closed (a solid) when `brep`, the shape's B-rep text, holds a solid; open (a surface)
+/// when it holds shells but no solid, however closed (CONVTOSURFACE of a solid: the drawing tells
+/// surfaces from solids by this); else, faces only (an IGES file's), closed when every face
+/// boundary is shared: a closed group's boundaries pair up (a seam with itself), a surface's own
+/// edges don't.
+fn mesh(shape: &Shape, brep: &str) -> Result<Mesh3> {
+    meshed(shape, brep, false).map(|(m, _)| m)
+}
+
+/// Whether OpenCASCADE B-rep text holds a shape of one of the `kinds`: its table of shapes names
+/// each by kind on a line of its own (`So` a solid, `CS` a compound solid, `Sh` a shell).
+fn holds(brep: &str, kinds: &[&str]) -> bool {
+    brep.lines().skip_while(|l| !l.starts_with("TShapes")).any(|l| kinds.contains(&l.trim_end()))
 }
 
 /// [`mesh`], and with `smooth` which of its edges are smooth (parallel to them, see
 /// [`crate::Outline`]): a seam (one face on both sides), or faces whose surface normals agree at
 /// a point inside the edge.
-fn meshed(shape: &Shape, smooth: bool) -> Result<(Mesh3, Vec<bool>)> {
+fn meshed(shape: &Shape, brep: &str, smooth: bool) -> Result<(Mesh3, Vec<bool>)> {
     let tol = deflection(shape);
-    Mesher::try_new(shape, tol).map_err(failed("meshing"))?;
+    let whole = Mesher::try_new(shape, tol).map_err(failed("meshing"))?;
     let q = tol * 1e-3;
     let key = |p: Vec3| ((p.x / q).round() as i64, (p.y / q).round() as i64, (p.z / q).round() as i64);
     let mut out = Mesh3::default();
@@ -881,8 +910,10 @@ fn meshed(shape: &Shape, smooth: bool) -> Result<(Mesh3, Vec<bool>)> {
     let mut sides: HashMap<_, Vec<usize>> = HashMap::new();
     let faces: Vec<Face> = shape.faces().collect();
     let mut segs = Vec::new();
-    for (fi, f) in faces.iter().enumerate() {
-        let m = Mesher::try_new(&Shape::from(f), tol).map_err(failed("meshing"))?.mesh().map_err(failed("meshing"))?;
+    // Triangles with their face's boundary (sides only one of its triangles has): face by face
+    // when judging smoothness, else the whole shape's at once (each face has vertices of its own
+    // there, so the counts come out the same; meshing face by face takes seconds on thousands).
+    let mut add = |m: &opencascade::mesh::Mesh, fi: usize| -> Result<()> {
         let base = out.verts.len();
         out.verts.extend(m.vertices.iter().map(|p| v3(*p)));
         let mut uses: HashMap<(usize, usize), u32> = HashMap::new();
@@ -909,11 +940,19 @@ fn meshed(shape: &Shape, smooth: bool) -> Result<(Mesh3, Vec<bool>)> {
                 }
             }
         }
+        Ok(())
+    };
+    if smooth {
+        for (fi, f) in faces.iter().enumerate() {
+            add(&Mesher::try_new(&Shape::from(f), tol).map_err(failed("meshing"))?.mesh().map_err(failed("meshing"))?, fi)?;
+        }
+    } else {
+        add(&whole.mesh().map_err(failed("meshing"))?, 0)?;
     }
     // Each polyline is one B-rep edge: chains stop at the shape's vertices.
     let corners: HashSet<_> = shape.edges().flat_map(|e| [key(v3(e.start_point())), key(v3(e.end_point()))]).collect();
     out.edges = chain(&segs, key, &corners);
-    out.open = !matches!(shape.shape_type(), ShapeType::Solid | ShapeType::CompoundSolid) && shared.values().any(|n| n % 2 == 1);
+    out.open = !holds(brep, &["So", "CS"]) && (holds(brep, &["Sh"]) || shared.values().any(|n| n % 2 == 1));
     if !smooth {
         return Ok((out, Vec::new()));
     }
@@ -1508,7 +1547,7 @@ mod exchange_tests {
 
     /// The box placed by the kernel has the corners of its mesh transformed in Rust.
     fn check_placed(b: &Built, x: &Mat4) {
-        let m = super::mesh(&super::placed(Placed { brep: &b.brep, xform: x }).unwrap()).unwrap();
+        let m = super::mesh(&super::placed(Placed { brep: &b.brep, xform: x }).unwrap(), &b.brep).unwrap();
         let want: Vec<Vec3> = b.mesh.verts.iter().map(|p| x.apply(*p)).collect();
         let ((lo, hi), (wlo, whi)) = (bounds(&m.verts), bounds(&want));
         assert!((lo - wlo).len() < 1e-6 && (hi - whi).len() < 1e-6, "{lo:?} {hi:?} vs {wlo:?} {whi:?}");
@@ -1528,8 +1567,11 @@ mod exchange_tests {
         check_placed(&b, &xform(v(0.0, 1.0, 1.0), PI, 2.5, false, off));
         check_placed(&b, &xform(v(0.3, 0.2, -1.0), 0.0, 0.5, true, Vec3::ZERO));
         // A box turned a quarter about X stands its 20-long side up the Z axis.
-        let m = super::mesh(&super::placed(Placed { brep: &b.brep, xform: &xform(v(1.0, 0.0, 0.0), FRAC_PI_2, 1.0, false, Vec3::ZERO) }).unwrap())
-            .unwrap();
+        let m = super::mesh(
+            &super::placed(Placed { brep: &b.brep, xform: &xform(v(1.0, 0.0, 0.0), FRAC_PI_2, 1.0, false, Vec3::ZERO) }).unwrap(),
+            &b.brep,
+        )
+        .unwrap();
         let (lo, hi) = bounds(&m.verts);
         assert!((hi - lo - v(10.0, 30.0, 20.0)).len() < 1e-6, "{lo:?} {hi:?}");
         // Shear is still refused.

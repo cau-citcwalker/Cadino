@@ -64,3 +64,6 @@ pub fn outline(_: &str) -> Result<Outline> {
 pub fn boxes(_: &str, xforms: &[Mat4]) -> Vec<Option<(Vec3, Vec3)>> {
     vec![None; xforms.len()]
 }
+pub fn op(_: &crate::ops::Op) -> Result<crate::ops::Out> {
+    Err(KernelError::Unavailable)
+}

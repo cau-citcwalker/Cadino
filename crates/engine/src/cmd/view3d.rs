@@ -174,13 +174,17 @@ fn run_vscurrent(s: &mut Session, p: &Value) -> Result<Value> {
     let (shaded, edges) = match style.as_str() {
         "2dwireframe" | "2" | "wireframe" | "w" => (false, false),
         "shaded" | "s" | "realistic" | "r" | "shades of gray" | "g" => (true, false),
-        "shadedwithedges" | "shaded with edges" | "e" | "conceptual" | "c" | "hidden" | "h" => (true, true),
+        "shadedwithedges" | "shaded with edges" | "e" | "conceptual" | "c" => (true, true),
+        "hidden" | "h" => (false, true),
         other => return Err(bad("vscurrent", format!("unknown visual style `{other}`"))),
     };
     let st = s.state_mut()?;
     st.shaded = shaded;
     st.shaded_edges = edges;
-    Ok(json!({ "style": match (shaded, edges) { (false, _) => "2dWireframe", (true, false) => "Shaded", (true, true) => "ShadedWithEdges" } }))
+    st.hide = false;
+    Ok(
+        json!({ "style": match (shaded, edges) { (false, false) => "2dWireframe", (false, true) => "Hidden", (true, false) => "Shaded", (true, true) => "ShadedWithEdges" } }),
+    )
 }
 
 /// VPOINT at the command line: a direction as `x,y,z`, or a preset view.
@@ -222,7 +226,15 @@ impl Interactive for VscurrentM {
         "VSCURRENT"
     }
     fn prompt(&self, _s: &Session) -> Prompt {
-        Prompt::new("Enter an option", Accept::TEXT).kw(&["2dwireframe", "Wireframe", "Shaded", "shaded with Edges", "Realistic", "Conceptual"])
+        Prompt::new("Enter an option", Accept::TEXT).kw(&[
+            "2dwireframe",
+            "Wireframe",
+            "Hidden",
+            "Shaded",
+            "shaded with Edges",
+            "Realistic",
+            "Conceptual",
+        ])
     }
     fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
         match i {

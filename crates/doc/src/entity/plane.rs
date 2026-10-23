@@ -65,6 +65,7 @@ fn place(k: &EntityKind) -> Place {
         | EntityKind::Point(_)
         | EntityKind::Polyline3d(_)
         | EntityKind::Face3d(_)
+        | EntityKind::PolyMesh(_)
         | EntityKind::Ray(_)
         | EntityKind::XLine(_)
         | EntityKind::Solid3d(_)
@@ -333,6 +334,10 @@ impl Entity {
             }
             EntityKind::Face3d(f) => {
                 f.corners.iter_mut().for_each(p);
+                return true;
+            }
+            EntityKind::PolyMesh(pm) => {
+                pm.vertices.iter_mut().for_each(p);
                 return true;
             }
             EntityKind::Ray(r) | EntityKind::XLine(r) => {

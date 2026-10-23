@@ -1,7 +1,7 @@
 //! Inquiry: DIST, ID, LIST, AREA, drawing inspection for agents.
 
 use cadcraft_doc::{EntityKind, Handle};
-use cadcraft_geom::{Polyline, Vec2};
+use cadcraft_geom::{Polyline, Vec2, Vec3};
 use serde_json::{Value, json};
 
 use super::*;
@@ -168,14 +168,39 @@ fn list_text(s: &Session, h: Handle) -> String {
                 fmt_a(s, tx.rotation)
             ));
         }
+        // A solid's B-rep text and a mesh's vertices run to megabytes: what they are and where.
+        EntityKind::Solid3d(x) => {
+            t.push_str(&format!("\n            {}", if x.mesh.open { "Surface" } else { "Solid" }));
+            if !x.part.is_empty() {
+                t.push_str(&format!("\n            Part = \"{}\"  Material = \"{}\"", x.part.name, x.part.material));
+            }
+            let mut pts = x.mesh.points().map(|q| x.world(q));
+            if let Some(first) = pts.next() {
+                let (lo, hi) = pts.fold((first, first), |(lo, hi), q| {
+                    (Vec3::new(lo.x.min(q.x), lo.y.min(q.y), lo.z.min(q.z)), Vec3::new(hi.x.max(q.x), hi.y.max(q.y), hi.z.max(q.z)))
+                });
+                for (name, q) in [("Lower bound", lo), ("Upper bound", hi)] {
+                    t.push_str(&format!("\n       {name} X={}  Y={}  Z={}", fmt_d(s, q.x), fmt_d(s, q.y), fmt_d(s, q.z)));
+                }
+            }
+        }
+        EntityKind::PolyMesh(m) if m.is_polyface() => {
+            t.push_str(&format!("\n            Vertices = {}  Faces = {}", m.vertices.len(), m.faces.len()))
+        }
+        EntityKind::PolyMesh(m) => t.push_str(&format!("\n            M = {}  N = {}", m.m, m.n)),
         other => {
             if let Ok(js) = serde_json::to_string(other) {
-                t.push_str(&format!("\n          {js}"));
+                // ponytail: the object's data as JSON, cut short; a description per kind as above.
+                let cut: String = js.chars().take(MAX_LIST_JSON).collect();
+                t.push_str(&format!("\n          {cut}{}", if cut.len() < js.len() { " …" } else { "" }));
             }
         }
     }
     t
 }
+
+/// Most characters of an object's data LIST shows as JSON.
+const MAX_LIST_JSON: usize = 2000;
 
 fn run_list(s: &mut Session, p: &Value) -> Result<Value> {
     let hs = targets(s, p)?;
@@ -792,5 +817,29 @@ impl Interactive for AreaM {
         let mut v: Vec<cadcraft_geom::PolyVertex> = self.pts.iter().map(|p| cadcraft_geom::PolyVertex::new(*p)).collect();
         v.push(cadcraft_geom::PolyVertex::new(c));
         vec![super::helpers::lwpoly(v, true)]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use cadcraft_doc::{Part, Solid3d};
+
+    use super::*;
+
+    /// LIST names a solid (or surface), its part and its box, not its B-rep text, which runs to
+    /// megabytes in the command history.
+    #[test]
+    fn list_describes_a_solid_without_its_data() {
+        let mut s = Session::new();
+        let mesh = cadcraft_geom::Mesh3 { verts: vec![Vec3::ZERO, Vec3::new(600.0, 400.0, 18.0)], ..Default::default() };
+        let part = Part { name: "Top".into(), material: "Oak 18".into() };
+        let x = Solid3d { brep: Arc::from("CASCADE Topology ".repeat(10_000)), mesh: Arc::new(mesh), part, ..Default::default() };
+        let h = s.add_entity(EntityKind::Solid3d(x)).unwrap();
+        let r = run_list(&mut s, &json!({ "handles": [h.hex()] })).unwrap();
+        let m = r["message"].as_str().unwrap();
+        assert!(m.contains("Solid") && m.contains("\"Top\"") && m.contains("Upper bound") && m.contains("600"), "{m}");
+        assert!(!m.contains("CASCADE") && m.len() < 1000, "{} chars", m.len());
     }
 }

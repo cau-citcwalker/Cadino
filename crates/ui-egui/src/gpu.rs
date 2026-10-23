@@ -308,11 +308,13 @@ pub fn build_mesh(list: &DisplayList, origin: Vec2, bg: Rgb, lwdisplay: bool) ->
             },
             Kind::Tris | Kind::Mask => {
                 let mask = prim.kind == Kind::Mask;
-                if mask {
-                    m.breaks.push([m.tri_vertices(), m.line_vertices(), m.quad_instances()]);
-                }
                 while faces.next_if(|r| r.end as usize <= i).is_some() {}
                 let face = faces.peek().is_some_and(|r| r.start as usize <= i) && prim.alpha() == u8::MAX;
+                // A wipeout starts a draw-order group; hidden faces (masks among the faces, the
+                // Hidden style) hide by depth instead.
+                if mask && !(face && depth.any()) {
+                    m.breaks.push([m.tri_vertices(), m.line_vertices(), m.quad_instances()]);
+                }
                 let col = if mask { [bg.0, bg.1, bg.2, 255] } else { col };
                 let from = m.tri_vertices();
                 for (k, t) in pts.as_chunks::<3>().0.iter().enumerate() {

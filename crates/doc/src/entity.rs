@@ -985,6 +985,8 @@ mod region;
 pub use region::*;
 mod solid3d;
 pub use solid3d::{Part, Solid3d};
+mod polymesh;
+pub use polymesh::{MAX_MESH_VERTICES, PolyMesh};
 mod plane;
 
 /// A raw DXF group: kept for round-tripping entities we do not model.
@@ -1025,6 +1027,8 @@ pub enum EntityKind {
     Solid(Solid),
     Trace(Solid),
     Face3d(Face3d),
+    /// A polygon or polyface mesh (POLYLINE with mesh flags).
+    PolyMesh(PolyMesh),
     Region(Region),
     Solid3d(Solid3d),
     Viewport(Viewport),
@@ -1080,6 +1084,8 @@ impl EntityKind {
             EntityKind::Solid(_) => "2D Solid",
             EntityKind::Trace(_) => "Trace",
             EntityKind::Face3d(_) => "3D Face",
+            EntityKind::PolyMesh(m) if m.is_polyface() => "Polyface Mesh",
+            EntityKind::PolyMesh(_) => "Polygon Mesh",
             EntityKind::Region(_) => "Region",
             EntityKind::Solid3d(_) => "3D Solid",
             EntityKind::Viewport(_) => "Viewport",
@@ -1116,6 +1122,7 @@ impl EntityKind {
             EntityKind::Solid(_) => "SOLID",
             EntityKind::Trace(_) => "TRACE",
             EntityKind::Face3d(_) => "3DFACE",
+            EntityKind::PolyMesh(_) => "POLYLINE",
             EntityKind::Region(_) => "REGION",
             EntityKind::Solid3d(_) => "3DSOLID",
             EntityKind::Viewport(_) => "VIEWPORT",
@@ -1167,6 +1174,11 @@ impl EntityKind {
                 let shown = pts.windows(2).enumerate().filter(|(i, _)| f.hidden_edges & (1 << i) == 0);
                 shown.filter_map(|(_, w)| Some(Prim::Seg(Segment::Line(GLine::new(*w.first()?, *w.get(1)?))))).collect()
             }
+            EntityKind::PolyMesh(m) => m
+                .lines()
+                .iter()
+                .flat_map(|l| l.windows(2).filter_map(|w| Some(Prim::Seg(Segment::Line(GLine::new(w.first()?.xy(), w.get(1)?.xy()))))))
+                .collect(),
             EntityKind::Region(r) => r.segments().into_iter().map(Prim::Seg).collect(),
             EntityKind::Solid3d(s) => s.segments().into_iter().map(Prim::Seg).collect(),
             EntityKind::Hatch(h) => {
@@ -1376,6 +1388,7 @@ impl EntityKind {
             }
             EntityKind::Solid(so) | EntityKind::Trace(so) => so.corners.iter_mut().for_each(t3),
             EntityKind::Face3d(f) => f.corners.iter_mut().for_each(t3),
+            EntityKind::PolyMesh(pm) => pm.vertices.iter_mut().for_each(t3),
             EntityKind::Solid3d(s) => s.transform(m),
             EntityKind::Region(r) => {
                 for v in r.loops.iter_mut().flat_map(|l| l.vertices.iter_mut()) {
@@ -1476,6 +1489,7 @@ impl EntityKind {
             }
             EntityKind::Solid(s) | EntityKind::Trace(s) => s.corners.iter().map(|c| c.xy()).collect(),
             EntityKind::Face3d(f) => f.corners.iter().map(|c| c.xy()).collect(),
+            EntityKind::PolyMesh(m) => m.vertices.iter().map(|c| c.xy()).collect(),
             EntityKind::Region(r) => vec![r.bounds().center()],
             EntityKind::Solid3d(s) => s.corners().into_iter().map(|p| p.xy()).collect(),
             EntityKind::Viewport(v) => {

@@ -102,6 +102,8 @@ fn tile_view_directions_and_visual_styles_round_trip() {
                 look(tile((0.5, 0.0), (1.0, 0.5), (4.0, 4.0), 4.0), [1.0, 0.0, 0.0], false, false),
             ],
         },
+        // Hidden (unshaded with edges, render mode 2), in plan: kept as a look of its own.
+        VportConfig { name: "Plan hidden".into(), tiles: vec![look(tile((0.0, 0.0), (1.0, 1.0), (0.0, 0.0), 1.0), [0.0, 0.0, 1.0], false, true)] },
         VportConfig { name: "Saved".into(), tiles: vec![look(tile((0.0, 0.0), (1.0, 1.0), (0.0, 0.0), 1.0), [0.3, -0.4, 1e-3], true, true)] },
     ];
     let r = round_trip(&d);
@@ -146,6 +148,7 @@ VPORT
         (vec![], ([0.0, 0.0, 1.0], false, false)),
         (vec![(16, "nan"), (26, "nan"), (36, "inf"), (281, "6")], ([0.0, 0.0, 1.0], true, true)),
         (vec![(16, "0"), (26, "0"), (36, "0"), (281, "3")], ([0.0, 0.0, 1.0], true, false)),
+        (vec![(281, "2")], ([0.0, 0.0, 1.0], false, true)),
         (vec![(16, "1"), (26, "-2"), (36, "0.5"), (281, "99")], ([1.0, -2.0, 0.5], false, false)),
     ] {
         let dxf = format!(

@@ -164,6 +164,7 @@ pub(super) fn grips3(e: &Entity) -> Vec<Vec3> {
         EntityKind::Point(p) => vec![p.p],
         EntityKind::Polyline3d(p) => p.points.clone(),
         EntityKind::Face3d(f) => f.corners.to_vec(),
+        EntityKind::PolyMesh(m) => m.vertices.clone(),
         EntityKind::Ray(r) | EntityKind::XLine(r) => vec![r.base, r.base + r.dir],
         EntityKind::Helix(h) => vec![h.center, h.start_point(), h.end_point()],
         EntityKind::Solid3d(s) => s.corners(),
@@ -205,6 +206,13 @@ pub(super) fn snaps_of(e: &Entity, modes: u32, out: &mut Vec<(Vec3, u32)>) {
                 if let Some(r) = next {
                     add(*q + (*r - *q) * 0.5, mode::MID);
                 }
+            }
+            return;
+        }
+        // A mesh's vertices are its ends.
+        EntityKind::PolyMesh(m) => {
+            for q in &m.vertices {
+                add(*q, mode::END);
             }
             return;
         }
@@ -266,6 +274,11 @@ fn curves_of(e: &Entity, xf: &Xf, cur: Vec2, ap: f64, tol: f64, f: &mut dyn FnMu
             }
         }
         EntityKind::Line(l) => f(&[l.a, l.b], None, false),
+        EntityKind::PolyMesh(m) => {
+            for w in m.lines().iter().flat_map(|l| l.windows(2)) {
+                f(w, None, false);
+            }
+        }
         EntityKind::Polyline3d(p) => {
             let n = p.points.len();
             for (i, q) in p.points.iter().enumerate() {
@@ -546,7 +559,7 @@ pub(super) fn nearest(doc: &Drawing, space: &Space, xf: &Xf, at: Pos2, aperture:
 
 /// The modes snapped to in 3D now: the override (END …), else the running snaps unless they are
 /// off (F3).
-fn running(app: &CadApp) -> u32 {
+pub(super) fn running(app: &CadApp) -> u32 {
     let osmode = app.session.snap_override().unwrap_or(app.session.settings.osmode);
     if osmode & mode::OFF != 0 { 0 } else { osmode & MODES }
 }

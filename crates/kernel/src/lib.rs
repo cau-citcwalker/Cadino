@@ -7,6 +7,11 @@
 //!
 //! The apps call [`worker_main`] first: from then on every operation runs in a child process (the
 //! app's own executable), so an OpenCASCADE crash fails that operation instead of ending the app.
+//!
+//! Faces and edges of a solid are named by index, valid for that exact B-rep text only (see
+//! [`topology`]); the face, edge and body edits, sections, hidden-line views, interference, and
+//! the surfaces from curves take them (see `ops.rs`). The operations the `opencascade` crate
+//! doesn't bind are our own C++ in the `cadcraft-kernel-occt` crate.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
@@ -22,6 +27,15 @@ use serde::{Deserialize, Serialize};
 mod curve;
 pub use curve::Curve;
 use curve::{JOIN, Run, closed, newell, unit};
+
+mod ops;
+pub use ops::{
+    Bevel, Check, Clash, EdgeCurve, EdgeInfo, FaceInfo, Flat, Hit, Justify, MAX_MESH_TRIS, MAX_PICKS, MAX_SHAPES, Picked, Probe, Region, Section,
+    SectionRegion, SurfaceKind, Topology, Wire3, chamfer_edges, check, clean, copy_faces, delete_faces, edge_surface, extrude_faces, fillet_edges,
+    flatshot, imprint, interference, loft_along, loft_guided, mesh_shape, move_faces, offset_faces, pick, picks, planar_surface, polysolid,
+    press_pull, revolved_surface, rotate_faces, ruled_surface, section, sections, separate, sew, shell_faces, split, tabulated_surface, taper_faces,
+    thicken, to_surface, topology,
+};
 
 #[cfg(feature = "occt")]
 mod occt;
@@ -845,6 +859,8 @@ enum Request {
     Outlines(Vec<Option<String>>),
     /// Each B-rep with the transforms to box it under; the reply has one box per transform.
     Boxes(Vec<(String, Vec<Mat4>)>),
+    /// The topology queries and editing operations of [`ops`].
+    Op(ops::Op),
 }
 
 /// [`Placed`], owning its data.
@@ -874,6 +890,7 @@ enum Reply {
     Imported(Imported),
     Outlines(Vec<Option<Outline>>),
     Boxes(Vec<Option<(Vec3, Vec3)>>),
+    Op(ops::Out),
     Done,
 }
 
@@ -902,6 +919,7 @@ impl Request {
             Request::ImportIges(_) => "reading IGES",
             Request::Outlines(_) => "outlining solids",
             Request::Boxes(_) => "measuring solids",
+            Request::Op(o) => o.what(),
         }
     }
 
@@ -931,6 +949,7 @@ impl Request {
             Request::ImportIges(path) => backend::import_iges(path).map(Reply::Imported),
             Request::Outlines(breps) => Ok(Reply::Outlines(breps.iter().map(|b| b.as_deref().and_then(|b| backend::outline(b).ok())).collect())),
             Request::Boxes(gs) => Ok(Reply::Boxes(gs.iter().flat_map(|(b, xs)| backend::boxes(b, xs)).collect())),
+            Request::Op(o) => backend::op(o).map(Reply::Op),
         }
     }
 }
@@ -956,6 +975,9 @@ impl Reply {
     }
     fn boxes(self) -> Result<Vec<Option<(Vec3, Vec3)>>> {
         if let Reply::Boxes(b) = self { Ok(b) } else { Err(mismatch()) }
+    }
+    fn op(self) -> Result<ops::Out> {
+        if let Reply::Op(o) = self { Ok(o) } else { Err(mismatch()) }
     }
     fn done(self) -> Result<()> {
         if let Reply::Done = self { Ok(()) } else { Err(mismatch()) }

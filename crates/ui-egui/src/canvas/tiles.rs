@@ -188,9 +188,7 @@ pub(super) fn ensure_lists(app: &mut CadApp, tiles: &[(Rect, ModelTile)], ctx: &
             view: build_window(&views),
             transparency,
             view_dir: look.dir,
-            shaded: look.shaded,
-            edges: look.edges,
-            ..Default::default()
+            ..cadcraft_render::Options::look(look.shaded, look.edges, false)
         };
         // Dropping a job for an older key cancels it.
         tl.job = if lost {
@@ -297,7 +295,8 @@ fn style_label(l: &TileLook) -> &'static str {
     match (l.shaded, l.edges) {
         (true, true) => crate::tl!("Shaded with Edges"),
         (true, false) => crate::tl!("Shaded"),
-        _ => crate::tl!("2D Wireframe"),
+        (false, true) => crate::tl!("Hidden"),
+        (false, false) => crate::tl!("2D Wireframe"),
     }
 }
 
@@ -357,7 +356,8 @@ pub(super) fn title(app: &mut CadApp, ui: &egui::Ui, r: Rect, tile: Option<(usiz
         }
         ui.separator();
         let styles = [
-            (crate::tl!("Wireframe"), "2dwireframe", !look.shaded),
+            (crate::tl!("Wireframe"), "2dwireframe", !look.shaded && !look.edges),
+            (crate::tl!("Hidden"), "hidden", !look.shaded && look.edges),
             (crate::tl!("Shaded"), "shaded", look.shaded && !look.edges),
             (crate::tl!("Shaded with Edges"), "shadedwithedges", look.shaded && look.edges),
         ];

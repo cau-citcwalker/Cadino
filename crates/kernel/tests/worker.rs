@@ -191,3 +191,27 @@ fn boxes_are_measured_in_parallel_workers_once() {
     assert!(near(&again), "{again:?}");
     assert_eq!(cadcraft_kernel::boxes_measured(), measured, "measured again");
 }
+
+/// The face and edge operations through the worker: indices named in one call, used in the next.
+#[test]
+fn topology_and_face_edits_round_trip_through_the_worker() {
+    use cadcraft_kernel::{EdgeCurve, Placed, Probe};
+    use_worker();
+    let v = Vec3::new;
+    let b = cadcraft_kernel::primitive(&Primitive::Box { a: Vec3::ZERO, b: v(10.0, 20.0, 30.0) }).unwrap();
+    let id = cadcraft_geom::Mat4::IDENTITY;
+    let s = Placed { brep: &b.brep, xform: &id };
+    let t = cadcraft_kernel::topology(s).unwrap();
+    assert_eq!((t.faces.len(), t.edges.len()), (6, 12));
+    let hit = cadcraft_kernel::pick(s, Probe::Ray { origin: v(5.0, 10.0, 100.0), dir: v(0.0, 0.0, -1.0) }, 0.1).unwrap();
+    let top = hit.faces[0].index;
+    assert!((t.faces[top as usize].normal - Vec3::Z).len() < 1e-9);
+    let taller = cadcraft_kernel::extrude_faces(s, &[top], 5.0, 0.0).unwrap();
+    assert!(taller.mesh.verts.iter().any(|p| (p.z - 35.0).abs() < 1e-9));
+    let e = t.faces[top as usize].edges[0];
+    assert!(cadcraft_kernel::fillet_edges(s, &[(e, 1.0)]).is_ok());
+    let cut = cadcraft_kernel::section(s, v(0.0, 0.0, 10.0), Vec3::Z).unwrap();
+    assert!(cut.regions.len() == 1 && cut.regions[0].outer.curves.iter().all(|c| matches!(c, EdgeCurve::Line { .. })));
+    // OpenCASCADE's refusal comes back as an error.
+    assert!(matches!(cadcraft_kernel::fillet_edges(s, &[(e, 50.0)]), Err(KernelError::Failed(_))));
+}

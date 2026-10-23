@@ -40,3 +40,28 @@ fn ping_answers_and_unknown_method_points_to_control_methods() {
     let e = b.call("help", json!({})).unwrap_err();
     assert!(e.starts_with("unknown method `help`") && e.contains("control.methods"), "{e}");
 }
+
+/// `ui.render` draws the visual style the canvas shows: Hidden hides a line behind a mesh wall,
+/// so its image differs from wireframe's (it rendered wireframe, ignoring Hidden and HIDE).
+#[test]
+fn render_follows_the_hidden_style() {
+    let mut b = Headless::default();
+    let run =
+        |b: &mut Headless, command: &str, params: serde_json::Value| b.call("engine.execute", json!({"command": command, "params": params})).unwrap();
+    let line = |b: &mut Headless, a: [f64; 2], z: f64| {
+        let h = run(b, "line", json!({"points": [a, [a[0] + 10.0, a[1]]]}))["handles"][0].clone();
+        if z != 0.0 {
+            run(b, "3dmove", json!({"handles": [h], "delta": [0, 0, z]}));
+        }
+        h
+    };
+    // A wall standing on the X axis, and a line 5 behind it, halfway up.
+    let (a, c) = (line(&mut b, [0.0, 0.0], 0.0), line(&mut b, [0.0, 0.0], 10.0));
+    run(&mut b, "rulesurf", json!({"curves": [a, c]}));
+    line(&mut b, [0.0, 5.0], 5.0);
+    run(&mut b, "vpoint", json!({"direction": [0, -1, 0]}));
+    let shot = |b: &mut Headless| b.call("ui.render", json!({"width": 200, "height": 200})).unwrap()["pngBase64"].as_str().unwrap().to_string();
+    let wire = shot(&mut b);
+    run(&mut b, "vscurrent", json!({"style": "hidden"}));
+    assert_ne!(shot(&mut b), wire, "Hidden draws as wireframe");
+}

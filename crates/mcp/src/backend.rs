@@ -309,13 +309,17 @@ impl Backend for Headless {
                     None => None,
                 };
                 let space = if named.is_some() { cadcraft_engine::doc::Space::Model } else { st.space.clone() };
+                // The look as the canvas has it (Hidden and HIDE too); a named view shaded with edges.
+                let style = if named.is_some() {
+                    cadcraft_render::Options::look(true, true, false)
+                } else {
+                    cadcraft_render::Options::look(st.shaded, st.shaded_edges, st.hide)
+                };
                 let opts = cadcraft_render::Options {
                     view: window,
                     transparency: s.settings.transparency_display,
                     view_dir: named.unwrap_or(if st.space.is_paper() { Default::default() } else { st.view_dir }),
-                    shaded: named.is_some() || st.shaded,
-                    edges: named.is_some() || st.shaded_edges,
-                    ..Default::default()
+                    ..style
                 };
                 let list = cadcraft_render::build(&st.doc, &space, &opts);
                 let fit = p.get("fit").and_then(Value::as_bool).unwrap_or(true);

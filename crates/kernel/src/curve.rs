@@ -217,6 +217,11 @@ impl Rot {
         let row = |r: Vec3| self.x * r.x + self.y * r.y + self.z * r.z;
         Rot { x: row(o.x), y: row(o.y), z: row(o.z) }
     }
+
+    /// The inverse rotation applied to `v`.
+    fn undo(&self, v: Vec3) -> Vec3 {
+        self.x * v.x + self.y * v.y + self.z * v.z
+    }
 }
 
 /// The centre of the points' bounding box.
@@ -286,6 +291,25 @@ fn reach(c: &Curve, centre: Vec3) -> f64 {
     }
 }
 
+/// How far the curve reaches from `centre` along the unit `dir`, either way, at most (an arc
+/// taken as its whole circle; a spline, as in [`reach`], as twice its furthest point).
+fn extent(c: &Curve, centre: Vec3, dir: Vec3) -> f64 {
+    let d = |p: Vec3| (p - centre).dot(dir).abs();
+    match c {
+        Curve::Segs(segs) => segs
+            .iter()
+            .map(|s| match *s {
+                Seg::Line { a, b } => d(a).max(d(b)),
+                Seg::Arc { a, mid, b } => circumcentre(a, mid, b).map_or(d(a).max(d(mid)).max(d(b)), |(c, _)| d(c) + (a - c).len()),
+                Seg::Circle { center, radius, normal } => {
+                    d(center) + radius * unit(normal).map_or(1.0, |n| (1.0 - n.dot(dir).powi(2)).max(0.0).sqrt())
+                }
+            })
+            .fold(0.0, f64::max),
+        Curve::Spline { points, .. } => points.iter().map(|p| 2.0 * d(*p)).fold(0.0, f64::max),
+    }
+}
+
 /// One stretch of a sweep path without corners: the profile where it starts, its path, and where
 /// it is trimmed to meet its neighbours at corners.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -306,8 +330,12 @@ pub(crate) struct Cut {
     pub normal: Vec3,
     /// The unit direction the stretch runs on in past the corner.
     pub along: Vec3,
-    /// How far the profile reaches from the path.
+    /// The unit direction across the stretch in the plane of the turn.
+    pub side: Vec3,
+    /// How far the profile reaches from the path along `side` (the turn's plane).
     pub reach: f64,
+    /// How far it reaches along the turn's axis (a wall's height).
+    pub rise: f64,
     /// How far the stretch runs on past the corner.
     pub past: f64,
 }
@@ -337,12 +365,20 @@ fn corner(a: Vec3, b: Vec3) -> Result<Option<(Vec3, f64)>> {
 /// along lines, a turn about the axis along arcs).
 /// ponytail: mitred corners only (AutoCAD's default); a closed 3D path that twists can leave its
 /// closing mitre slightly mismatched. A trim takes in a box round the overshoot (two profile
-/// reaches across), so a stretch that comes back inside that box past the mitre loses that part;
+/// reaches across the turn, the profile's reach along the turn's axis), so a stretch that comes back inside that box past the mitre loses that part;
 /// a cutter swept from the overshoot itself if paths that tight matter.
 pub(crate) fn sweep_runs(profile: &Curve, path: &Curve) -> Result<Vec<Run>> {
     let bad = |m: &str| KernelError::Invalid(m.into());
     let (p0, t0) = path.start().ok_or_else(|| bad("the path needs a start (a circle path is two arcs)"))?;
     let (prof, reach) = align(profile, p0, t0).ok_or_else(|| bad("the profile has no plane"))?;
+    runs(prof, reach, path)
+}
+
+/// [`sweep_runs`] for a profile already placed square to the start of the path (POLYSOLID's
+/// wall section, beside its path), reaching `reach` from the path at most.
+pub(crate) fn runs(prof: Curve, reach: f64, path: &Curve) -> Result<Vec<Run>> {
+    let bad = |m: &str| KernelError::Invalid(m.into());
+    let (p0, t0) = path.start().ok_or_else(|| bad("the path needs a start (a circle path is two arcs)"))?;
     let Curve::Segs(segs) = path else {
         return Ok(vec![Run { profile: prof, path: path.clone(), cuts: Vec::new() }]);
     };
@@ -352,22 +388,34 @@ pub(crate) fn sweep_runs(profile: &Curve, path: &Curve) -> Result<Vec<Run>> {
         Some((_, (_, t))) if path.is_closed() => corner(t, t0)?.map(|c| (p0, c)),
         _ => None,
     };
-    // A stretch as the kernel sweeps it, from its pieces, the profile's turn since the path's
-    // start, and the corners (point, mitre) it starts and ends at.
-    let finish = |run: Vec<Seg>, frame: Rot, start: Option<(Vec3, (Vec3, f64))>, end: Option<(Vec3, (Vec3, f64))>| -> Result<Run> {
+    // The trim at a corner where the stretch runs on along `along`, the profile turned by `frame`
+    // there: sized by how far the profile reaches across the turn and along its axis, not by its
+    // whole reach, so a wall's height doesn't widen the trim onto other parts of the stretch.
+    let floor = 1e-3 * reach.max(crate::MIN_LEN);
+    let trim = |at: Vec3, normal: Vec3, along: Vec3, m: Vec3, turn: f64, frame: Rot| -> Cut {
+        let axis = unit(m.cross(along)).unwrap_or(Vec3::Z);
+        let side = unit(axis.cross(along)).unwrap_or(Vec3::new(1.0, 0.0, 0.0));
+        let across = extent(&prof, p0, frame.undo(side)).max(floor);
+        let rise = extent(&prof, p0, frame.undo(axis));
+        Cut { at, normal, along, side, reach: across, rise, past: across * (turn / 2.0).tan() + across }
+    };
+    // A stretch as the kernel sweeps it, from its pieces, the profile's turn at its start and
+    // end, and the corners (point, mitre) it starts and ends at.
+    let finish = |run: Vec<Seg>, frame: Rot, end_frame: Rot, start: Option<(Vec3, (Vec3, f64))>, end: Option<(Vec3, (Vec3, f64))>| -> Result<Run> {
         let (first, last) = (run.first().ok_or_else(|| bad("empty path"))?, run.last().ok_or_else(|| bad("empty path"))?);
         let (((s0, _), (ts, _)), ((_, q), (_, te))) = (piece(first)?, piece(last)?);
-        let past = |turn: f64| reach * (turn / 2.0).tan() + reach;
         let (mut path, mut cuts, mut from) = (Vec::with_capacity(run.len() + 2), Vec::new(), s0);
         if let Some((p, (m, turn))) = start {
-            from = s0 - ts * past(turn);
+            let c = trim(p, -m, -ts, m, turn, frame);
+            from = s0 - ts * c.past;
             path.push(Seg::Line { a: from, b: s0 });
-            cuts.push(Cut { at: p, normal: -m, along: -ts, reach, past: past(turn) });
+            cuts.push(c);
         }
         path.extend(run);
         if let Some((p, (m, turn))) = end {
-            path.push(Seg::Line { a: q, b: q + te * past(turn) });
-            cuts.push(Cut { at: p, normal: m, along: te, reach, past: past(turn) });
+            let c = trim(p, m, te, m, turn, end_frame);
+            path.push(Seg::Line { a: q, b: q + te * c.past });
+            cuts.push(c);
         }
         Ok(Run { profile: prof.map(&|p| from + frame.apply(p - p0), &|v| frame.apply(v)), path: Curve::Segs(path), cuts })
     };
@@ -380,7 +428,7 @@ pub(crate) fn sweep_runs(profile: &Curve, path: &Curve) -> Result<Vec<Run>> {
         if let Some(p) = prev
             && let Some(c) = corner(p, ta)?
         {
-            runs.push(finish(std::mem::take(&mut run), run_frame, start, Some((a, c)))?);
+            runs.push(finish(std::mem::take(&mut run), run_frame, frame, start, Some((a, c)))?);
             frame = frame.then(&Rot::between(p, ta));
             (run_frame, start) = (frame, Some((a, c)));
         }
@@ -392,7 +440,7 @@ pub(crate) fn sweep_runs(profile: &Curve, path: &Curve) -> Result<Vec<Run>> {
         }
         prev = Some(tb);
     }
-    runs.push(finish(run, run_frame, start, closing)?);
+    runs.push(finish(run, run_frame, frame, start, closing)?);
     Ok(runs)
 }
 

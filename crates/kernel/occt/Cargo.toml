@@ -1,0 +1,27 @@
+[package]
+name = "cadcraft-kernel-occt"
+description = "The OpenCASCADE operations cadcraft-kernel needs beyond the opencascade crate: our own C++ behind a cxx bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Empty on wasm: OpenCASCADE is native only (cadcraft-kernel uses this crate only with `occt`).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+cxx = "1"
+# Builds and links OpenCASCADE (the libraries our C++ calls); `builtin` builds it from source.
+opencascade-sys = { version = "0.3", features = ["builtin"] }
+
+[build-dependencies]
+cxx-build = "1"
+occt-sys = "7.8.1"
+
+# The workspace forbids unsafe code; a cxx bridge has to declare its C++ functions in an
+# `unsafe extern "C++"` block, so here it is denied everywhere but that block.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+too_many_arguments = "allow"
+type_complexity = "allow"
