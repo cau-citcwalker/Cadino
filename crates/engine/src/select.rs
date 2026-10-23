@@ -1,7 +1,7 @@
 //! Hit testing and window/crossing selection.
 
 use cadcraft_doc::{Drawing, Entity, EntityKind, Handle, Prim, Space, entity_bounds};
-use cadcraft_geom::{Bounds2, Line, Vec2, point_in_polygon};
+use cadcraft_geom::{Bounds2, Line, Vec2, ViewDir, point_in_polygon};
 
 use crate::spatial::{self, SpatialIndex};
 use crate::{Accept, Prompt};
@@ -395,6 +395,10 @@ pub(crate) const MAX_MODE_POINTS: usize = 10_000;
 pub struct SelectMode {
     pub kind: SelectKind,
     pub pts: Vec<Vec2>,
+    /// For each point, the view it was clicked in and its view-plane point there, when the UI gave
+    /// it from a view that picks what is drawn ([`crate::Session::view_at`]); see
+    /// [`SelectMode::seen`].
+    pub seen: Vec<Option<(ViewDir, Vec2)>>,
 }
 
 impl SelectMode {
@@ -410,7 +414,7 @@ impl SelectMode {
             "g" | "group" => SelectKind::Group,
             _ => return None,
         };
-        Some(SelectMode { kind, pts: Vec::new() })
+        Some(SelectMode { kind, pts: Vec::new(), seen: Vec::new() })
     }
     fn is_box(&self) -> bool {
         matches!(self.kind, SelectKind::Window | SelectKind::Crossing | SelectKind::Box)
@@ -430,12 +434,28 @@ impl SelectMode {
             Some(p) => Prompt::new(next, Accept::POINT).kw(&["Undo"]).base(p),
         }
     }
-    /// Add a point. Returns whether the mode is complete (the second corner of W/C).
-    pub fn push(&mut self, p: Vec2) -> bool {
+    /// Add a point, with where it was clicked when a view that picks what is drawn gave it
+    /// (`seen`). Returns whether the mode is complete (the second corner of W/C).
+    pub fn push(&mut self, p: Vec2, seen: Option<(ViewDir, Vec2)>) -> bool {
         if p.is_finite() && self.pts.len() < MAX_MODE_POINTS {
             self.pts.push(p);
+            self.seen.push(seen.filter(|(_, v)| v.is_finite()));
         }
         self.is_box() && self.pts.len() >= 2
+    }
+    /// Take back the last point (Undo).
+    pub fn undo(&mut self) {
+        self.pts.pop();
+        self.seen.pop();
+    }
+    /// The view every point was clicked in and the points in its view plane, when they all were
+    /// clicked in one view that picks what is drawn: the mode then selects as that view shows the
+    /// drawing ([`select_in_view`]), as a window dragged there does. `None` otherwise (plan
+    /// views, typed points): it selects in the construction plane.
+    pub fn seen(&self) -> Option<(ViewDir, Vec<Vec2>)> {
+        let dir = self.seen.first().copied().flatten()?.0;
+        let pts = self.seen.iter().map(|s| s.filter(|(d, _)| *d == dir).map(|(_, v)| v)).collect::<Option<Vec<_>>>()?;
+        (pts.len() == self.pts.len()).then_some((dir, pts))
     }
     /// The objects the mode selects, or `None` while it has too few points.
     pub fn select(&self, d: &Drawing, space: &Space) -> Option<Vec<Handle>> {
@@ -451,6 +471,68 @@ impl SelectMode {
             _ => None,
         }
     }
+}
+
+/// What typed selection mode `mode`, its points in view-plane coordinates, takes as view `dir`
+/// draws `space` of `d` ([`cadcraft_render::build`] at chord `tolerance`, solids as faces): every
+/// part drawn (a polyline, a filled triangle, a point, a line without end) is tested as an object
+/// of its own, and an object is taken when all the parts it draws are (W, WP, a BOX drawn to the
+/// right) or any is (C, CP, F, a BOX drawn to the left). How a typed mode selects in a 3D view, as
+/// a window dragged there does (the canvas windows its own display list). `None` while the mode
+/// has too few points.
+/// ponytail: builds the space's whole list per selection (O(drawing)); hand the canvas's list over
+/// if typed modes in 3D views lag on large drawings.
+pub fn select_in_view(mode: &SelectMode, d: &Drawing, space: &Space, dir: ViewDir, tolerance: f64) -> Option<Vec<Handle>> {
+    use cadcraft_doc::{Point, Polyline3d, RayLine, Solid};
+    use cadcraft_render::Kind;
+    let list = cadcraft_render::build(d, space, &cadcraft_render::Options { tolerance, view_dir: dir, shaded: true, ..Default::default() });
+    // Part `i` is object `Handle(i + 1)` of `parts`, drawn by `owner[i]`.
+    let (mut parts, mut owner) = (Drawing::default(), Vec::new());
+    let v3 = |p: &Vec2| p.to3(0.0);
+    for prim in list.prims.iter().filter(|p| p.handle != cadcraft_render::VIEWPORT_CONTENT) {
+        let pts = list.points(prim);
+        let kinds: Vec<EntityKind> = match prim.kind {
+            Kind::Polyline => vec![EntityKind::Polyline3d(Polyline3d { points: pts.iter().map(v3).collect(), closed: false })],
+            Kind::Tris | Kind::Mask => pts
+                .chunks_exact(3)
+                .filter_map(|t| match t {
+                    [a, b, c] => Some(EntityKind::Solid(Solid { corners: [v3(a), v3(b), v3(c), v3(c)] })),
+                    _ => None,
+                })
+                .collect(),
+            Kind::Point => pts.first().map(|p| EntityKind::Point(Point { p: v3(p), angle: 0.0 })).into_iter().collect(),
+            Kind::Infinite { ray } => match pts {
+                [base, dir, ..] => {
+                    let l = RayLine { base: v3(base), dir: v3(dir) };
+                    vec![if ray { EntityKind::Ray(l) } else { EntityKind::XLine(l) }]
+                }
+                _ => Vec::new(),
+            },
+        };
+        for k in kinds {
+            owner.push(prim.handle);
+            parts.model.push(Entity::new(Handle(owner.len() as u64), k));
+        }
+    }
+    let taken: std::collections::HashSet<Handle> = mode.select(&parts, &Space::Model)?.into_iter().collect();
+    let whole = match (mode.kind, mode.pts.as_slice()) {
+        (SelectKind::Window | SelectKind::WPolygon, _) => true,
+        (SelectKind::Box, [a, b, ..]) => b.x >= a.x,
+        _ => false,
+    };
+    // Per object, in drawing order: all its parts taken, any taken.
+    let (mut out, mut at): (Vec<(Handle, bool, bool)>, std::collections::HashMap<Handle, usize>) = Default::default();
+    for (i, o) in owner.iter().enumerate() {
+        let t = taken.contains(&Handle(i as u64 + 1));
+        match at.get(o).and_then(|j| out.get_mut(*j)) {
+            Some(e) => (e.1, e.2) = (e.1 && t, e.2 || t),
+            None => {
+                at.insert(*o, out.len());
+                out.push((*o, t, t));
+            }
+        }
+    }
+    Some(out.into_iter().filter(|(_, all, any)| if whole { *all } else { *any }).map(|(h, ..)| h).collect())
 }
 
 #[cfg(test)]

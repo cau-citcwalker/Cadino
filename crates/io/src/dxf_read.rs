@@ -2058,6 +2058,11 @@ struct Objects {
     layout_views: Vec<(String, (Vec2, f64))>,
     /// SORTENTSTABLE objects: (owning block record handle, entity handle → sort handle).
     sortents: Vec<(String, HashMap<Handle, u64>)>,
+    /// Dictionary handle (upper case) → its owner's: XCLIP boundaries hang off a reference's
+    /// extension dictionary.
+    dict_owners: HashMap<String, String>,
+    /// SPATIAL_FILTER objects (XCLIP): (owner handle, groups).
+    spatial_filters: Vec<(String, Vec<Tag>)>,
 }
 
 const MAX_OBJECTS: usize = 1_000_000;
@@ -2074,6 +2079,11 @@ impl Objects {
                 }
             }
             "DICTIONARY" => {
+                if let Some(o) = crate::dxf_xclip::owner(tags)
+                    && self.dict_owners.len() < MAX_OBJECTS
+                {
+                    self.dict_owners.insert(h.clone(), o);
+                }
                 let mut name: Option<String> = None;
                 for t in tags {
                     match t.code {
@@ -2094,6 +2104,11 @@ impl Objects {
             }
             "TABLESTYLE" if self.table_styles.len() < MAX_OBJECTS => self.table_styles.push((h, tags.to_vec())),
             "DIMASSOC" if self.dimassocs.len() < MAX_OBJECTS => self.dimassocs.push(tags.to_vec()),
+            "SPATIAL_FILTER" if self.spatial_filters.len() < MAX_OBJECTS => {
+                if let Some(o) = crate::dxf_xclip::owner(tags) {
+                    self.spatial_filters.push((o, tags.to_vec()));
+                }
+            }
             "MLEADERSTYLE" if self.mleader_styles.len() < MAX_OBJECTS => self.mleader_styles.push((h, tags.to_vec())),
             "GROUP" if self.groups.len() < MAX_OBJECTS => self.groups.push((h, tags.to_vec())),
             "SORTENTSTABLE" if self.sortents.len() < MAX_OBJECTS => {
@@ -2235,6 +2250,7 @@ impl Objects {
         for tags in &self.dimassocs {
             dimassoc(d, tags);
         }
+        crate::dxf_xclip::apply(d, &self.spatial_filters, &self.dict_owners, &self.names);
     }
 }
 

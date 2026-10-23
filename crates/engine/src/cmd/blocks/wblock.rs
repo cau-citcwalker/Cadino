@@ -12,9 +12,9 @@ const EQUAL: &str = "= (block=output file)";
 const WHOLE: &str = "* (whole drawing)";
 
 /// -WBLOCK: the output file, then an existing block, `=` (the block named like the file), `*`
-/// (the whole drawing) or Enter (a new drawing from a base point and objects).
-// ponytail: the objects written stay in the drawing (AutoCAD erases them; there is no OOPS yet);
-// `*` writes model space only.
+/// (the whole drawing) or Enter (a new drawing from a base point and objects, which are then
+/// erased from the drawing: OOPS brings them back, as in AutoCAD).
+// ponytail: `*` writes model space only.
 #[derive(Default)]
 pub(super) struct WblockM {
     path: Option<String>,
@@ -138,7 +138,7 @@ impl Interactive for WblockM {
 
 impl WblockM {
     fn objects_out(&self, s: &mut Session, base: Vec2, hs: &[Handle]) -> Result<Step> {
-        let step = self.write(s, json!({ "handles": hs.iter().map(|h| h.hex()).collect::<Vec<_>>(), "base": [base.x, base.y] }));
+        let step = self.write(s, json!({ "handles": hs.iter().map(|h| h.hex()).collect::<Vec<_>>(), "base": [base.x, base.y], "keep": "delete" }));
         s.set_selection(Vec::new());
         step
     }

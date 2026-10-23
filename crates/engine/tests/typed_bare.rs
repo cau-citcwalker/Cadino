@@ -283,7 +283,9 @@ fn dash_wblock_prompts_write_objects_blocks_and_the_drawing() {
     s.input(Input::Enter).unwrap();
     assert!(s.running.is_none());
     assert_eq!(std::fs::read_to_string(dir.join("part.dwg")).unwrap(), "1");
-    assert_eq!(s.doc().unwrap().model.len(), 2, "the objects stay");
+    assert_eq!(s.doc().unwrap().model.len(), 1, "the objects written are erased, as in AutoCAD");
+    s.cmdline("oops").unwrap();
+    assert_eq!(s.doc().unwrap().model.len(), 2, "OOPS brings them back");
 
     // An existing file is replaced only on Yes; `*` writes the whole drawing.
     s.cmdline("-w").unwrap();

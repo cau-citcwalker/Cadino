@@ -34,7 +34,8 @@ fn dialog(app: &mut CadApp) -> Option<String> {
 #[test]
 fn aliases_reach_their_commands_dialogs_and_palettes() {
     let (mut app, asked) = app();
-    for (typed, shown) in [("DDLMODES", "layers"), ("ddunits", "units"), ("DDLTYPE", "linetype"), ("DDRMODES", "dsettings"), ("DDOSNAP", "dsettings")]
+    for (typed, shown) in
+        [("DDLMODES", "layers"), ("ddunits", "units"), ("DDLTYPE", "linetype"), ("DDRMODES", "dsettings"), ("DDOSNAP", "dsettings:osnap")]
     {
         assert!(app.cmdline(typed).is_none(), "{typed}");
         assert_eq!(dialog(&mut app).as_deref(), Some(shown), "{typed}");

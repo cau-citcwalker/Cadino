@@ -1495,19 +1495,31 @@ fn selection_area_fill(s: &cadcraft_engine::Settings, crossing: bool) -> Option<
 }
 
 fn draw_snap_marker(p: &egui::Painter, at: Pos2, hit: &SnapHit) {
-    let t = Tokens::get();
-    let s = crate::theme::snap_marker_half();
-    let st = Stroke::new(2.0, t.snap);
+    snap_glyph(p, at, hit.mode, crate::theme::snap_marker_half(), Stroke::new(2.0, Tokens::get().snap));
+    p.text(at + vec2(12.0, 12.0), egui::Align2::LEFT_TOP, crate::i18n::t(hit.name), crate::theme::small(), Color32::BLACK);
+    let galley = p.layout_no_wrap(crate::i18n::t(hit.name).to_string(), crate::theme::small(), Color32::BLACK);
+    let r = Rect::from_min_size(at + vec2(10.0, 10.0), galley.size() + vec2(6.0, 2.0));
+    p.rect_filled(r, 2.0, Color32::from_rgb(0xff, 0xff, 0xe1));
+    p.galley(r.min + vec2(3.0, 1.0), galley, Color32::BLACK);
+}
+
+/// The marker of object snap `mode` (an OSMODE bit) at `at`, `s` from its centre to its sides:
+/// on the canvas and beside the modes in Drafting Settings.
+pub(crate) fn snap_glyph(p: &egui::Painter, at: Pos2, m: u32, s: f32, st: Stroke) {
     use snap::mode;
-    match hit.mode {
+    match m {
         mode::END => {
             p.rect_stroke(Rect::from_center_size(at, vec2(2.0 * s, 2.0 * s)), 0.0, st, egui::StrokeKind::Middle);
         }
         mode::MID => {
             p.add(Shape::closed_line(vec![at + vec2(0.0, -s), at + vec2(s, s * 0.8), at + vec2(-s, s * 0.8)], st));
         }
-        mode::CEN | mode::GCEN => {
+        mode::CEN => {
             p.circle_stroke(at, s, st);
+        }
+        mode::GCEN => {
+            p.circle_stroke(at, s, st);
+            p.circle_filled(at, 1.5, st.color);
         }
         mode::QUA => {
             p.add(Shape::closed_line(vec![at + vec2(0.0, -s), at + vec2(s, 0.0), at + vec2(0.0, s), at + vec2(-s, 0.0)], st));
@@ -1515,7 +1527,7 @@ fn draw_snap_marker(p: &egui::Painter, at: Pos2, hit: &SnapHit) {
         mode::INT | mode::APP => {
             p.line_segment([at + vec2(-s, -s), at + vec2(s, s)], st);
             p.line_segment([at + vec2(s, -s), at + vec2(-s, s)], st);
-            if hit.mode == mode::APP {
+            if m == mode::APP {
                 p.rect_stroke(Rect::from_center_size(at, vec2(2.0 * s, 2.0 * s)), 0.0, st, egui::StrokeKind::Middle);
             }
         }
@@ -1546,15 +1558,21 @@ fn draw_snap_marker(p: &egui::Painter, at: Pos2, hit: &SnapHit) {
                 st,
             );
         }
+        // Extension: a dotted line; Parallel: two slanted strokes.
+        mode::EXT => {
+            for x in [-s, 0.0, s] {
+                p.circle_filled(at + vec2(x, 0.0), 1.2, st.color);
+            }
+        }
+        mode::PAR => {
+            p.line_segment([at + vec2(-s, s), at + vec2(-0.2 * s, -s)], st);
+            p.line_segment([at + vec2(0.2 * s, s), at + vec2(s, -s)], st);
+        }
+        // Nearest (and anything else): an hourglass.
         _ => {
             p.line(vec![at + vec2(-s, -s), at + vec2(s, -s), at + vec2(-s, s), at + vec2(s, s), at + vec2(-s, -s)], st);
         }
     }
-    p.text(at + vec2(12.0, 12.0), egui::Align2::LEFT_TOP, crate::i18n::t(hit.name), crate::theme::small(), Color32::BLACK);
-    let galley = p.layout_no_wrap(crate::i18n::t(hit.name).to_string(), crate::theme::small(), Color32::BLACK);
-    let r = Rect::from_min_size(at + vec2(10.0, 10.0), galley.size() + vec2(6.0, 2.0));
-    p.rect_filled(r, 2.0, Color32::from_rgb(0xff, 0xff, 0xe1));
-    p.galley(r.min + vec2(3.0, 1.0), galley, Color32::BLACK);
 }
 
 /// Acquired tracking points (small `+`, `//` for a Parallel line), the dotted paths the cursor
@@ -1934,7 +1952,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         app.session.cursor_deferred = app.canvas.snap.and_then(|h| h.deferred);
         // Typed or menu snap overrides (END, NON…) and Tab cycling; a locked Dynamic Input value wins.
         if dyn_frame.and_then(|f| crate::dyninput::parse(&app.cmd.buffer, &f)).is_none_or(|e| e.first_locked().is_none()) {
-            override_cursor(app, w, &xf);
+            override_cursor(app, w, &xf, hover_pos.unwrap_or_else(|| xf.to_screen(w)));
             // A 3D view also snaps to solids where it draws them (the engine snaps in plan).
             if grip_held.is_none()
                 && let Some(hp) = hover_pos
@@ -1999,6 +2017,9 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
             let view_select =
                 xf.picks_drawn() && app.session.select_mode.is_none() && app.session.current_prompt().is_some_and(|q| q.picks_objects());
             let at = hover_pos.filter(|_| view_select);
+            // Where the click is in such a view: a pick at a point-only object prompt becomes a
+            // point on the object, and typed selection modes select what is drawn.
+            app.session.view_at = hover_pos.filter(|_| xf.picks_drawn()).map(|hp| (xf.dir(), xf.to_view(hp)));
             let result = if let Some(hp) = at.filter(|_| app.session.pending_window.is_some()) {
                 close_view_window(app, &xf, hp, mods.shift)
             } else if let Some(h) = at.and_then(|hp| view_pick_at(app, &xf, Some(hp))) {
@@ -2011,6 +2032,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
                 // a 3D snap's height.
                 snap3d::send_point(app, p)
             };
+            app.session.view_at = None;
             if let Err(e) = result {
                 app.session.echo(e.to_string());
             }
@@ -2504,7 +2526,7 @@ fn snap_cycle(app: &mut CadApp, raw: Vec2, ap: f64) -> Option<usize> {
 /// The cursor under a one-pick object snap override (`Session::snap_override`: END, NON…) or
 /// while Tab cycles the candidates: the snap of that mode (or the cycled candidate) replaces
 /// what the running snaps found; with none, a running snap no longer holds the cursor.
-fn override_cursor(app: &mut CadApp, raw: Vec2, xf: &Xf) {
+fn override_cursor(app: &mut CadApp, raw: Vec2, xf: &Xf, at: Pos2) {
     let over = app.session.snap_override();
     let ap = app.session.settings.aperture / xf.scale;
     let cycle = snap_cycle(app, raw, ap);
@@ -2526,7 +2548,13 @@ fn override_cursor(app: &mut CadApp, raw: Vec2, xf: &Xf) {
     let hit = match cycle {
         Some(i) => {
             let cands = cadcraft_engine::pointmod::snap_candidates(&d, &space, raw, ap, osmode, base, deferred);
-            cands.get(i % cands.len().max(1)).copied()
+            // A 3D view also cycles through the snaps where objects are drawn.
+            let all = snap3d::cycle_list(app, xf, at, cands);
+            match all.get(i % all.len().max(1)) {
+                Some(snap3d::Pick::World(p, m)) => return snap3d::set(app, xf, *p, *m),
+                Some(snap3d::Pick::Plane(h)) => Some(*h),
+                None => None,
+            }
         }
         None => snap::osnap(&d, &space, raw, ap, osmode, base, deferred),
     };
@@ -2595,26 +2623,23 @@ fn dynamic_input(app: &mut CadApp, p: &egui::Painter, hover: Pos2) {
         && let Some(e) = crate::dyninput::parse(&app.cmd.buffer, &f)
         && let Some(c) = app.canvas.cursor
     {
-        let message = if show_prompt { crate::i18n::t(&prompt.message) } else { "" };
-        let r = dynamic_input_boxes(p, at, message, &f, &e, c, app.cmd.second_locked(), options, length_units(&app.session));
+        let message = if show_prompt { crate::i18n::line(&prompt.message) } else { String::new() };
+        let r = dynamic_input_boxes(p, at, &message, &f, &e, c, app.cmd.second_locked(), options, length_units(&app.session));
         options_menu(app, p, r, hover);
         return;
     }
     if !show_prompt {
         return;
     }
-    let mut text = crate::i18n::t(&prompt.message).to_string();
+    // Prompts built with format! translate as the command line's do.
+    let message = crate::i18n::line(&prompt.message);
+    let mut text = message.clone();
     if !app.cmd.buffer.is_empty() {
-        text = format!("{}: {}", crate::i18n::t(&prompt.message), app.cmd.buffer);
+        text = format!("{message}: {}", app.cmd.buffer);
     } else if let (Some(base), Some(c)) = (prompt.base, app.canvas.cursor) {
-        text = format!(
-            "{}   {}  <  {}°",
-            crate::i18n::t(&prompt.message),
-            distance_text(&app.session, base.dist(c)),
-            (base.angle_to(c).to_degrees() * 10.0).round() / 10.0
-        );
+        text = format!("{message}   {}  <  {}°", distance_text(&app.session, base.dist(c)), (base.angle_to(c).to_degrees() * 10.0).round() / 10.0);
     } else if let Some(c) = app.canvas.cursor {
-        text = format!("{}   {}, {}", crate::i18n::t(&prompt.message), distance_text(&app.session, c.x), distance_text(&app.session, c.y));
+        text = format!("{message}   {}, {}", distance_text(&app.session, c.x), distance_text(&app.session, c.y));
     }
     let t = Tokens::get();
     let galley = p.layout_no_wrap(text, crate::theme::small(), t.text);
@@ -3438,7 +3463,7 @@ pub(crate) mod tests {
             .looking(ViewDir::new(cadcraft_geom::Vec3::new(-1.0, -1.0, 1.0)));
         let p = cadcraft_geom::Vec3::new(0.0, 0.0, 15.0);
         let at = snap3d::screen_of(&xf, p);
-        let near = |d: &cadcraft_doc::Drawing| snap3d::nearest(d, &cadcraft_doc::Space::Model, &xf, at, 10.0, snap::mode::END);
+        let near = |d: &cadcraft_doc::Drawing| snap3d::nearest(d, &cadcraft_doc::Space::Model, &xf, at, 10.0, snap::mode::END, None);
         assert_eq!(near(&d), Some((p, snap::mode::END)));
         let shut: [fn(&mut cadcraft_doc::Layer); 2] = [|l| l.on = false, |l| l.frozen = true];
         for f in shut {
@@ -3556,10 +3581,34 @@ pub(crate) mod tests {
             .looking(ViewDir::new(cadcraft_geom::Vec3::new(-1.0, -1.0, 1.0)));
         let p = g(0.0, 0.0, 15.0);
         let t = std::time::Instant::now();
-        let hit = snap3d::nearest(&d, &cadcraft_doc::Space::Model, &xf, snap3d::screen_of(&xf, p), 10.0, snap::mode::END);
+        let hit = snap3d::nearest(&d, &cadcraft_doc::Space::Model, &xf, snap3d::screen_of(&xf, p), 10.0, snap::mode::END, None);
         let took = t.elapsed();
         assert_eq!(hit, Some((p, snap::mode::END)));
         assert!(took < std::time::Duration::from_millis(250), "{took:?}");
+    }
+
+    /// Crossings pair up the pieces of the curves under the cursor: a crowd of round solid edges
+    /// (a zoomed-out view of furniture with round parts) stays quick with INT and APP running.
+    #[test]
+    fn three_d_crossings_stay_quick_under_a_crowd_of_round_edges() {
+        let g = cadcraft_geom::Vec3::new;
+        let ring = |r: f64, z: f64| -> Vec<cadcraft_geom::Vec3> {
+            (0..=70).map(|i| f64::from(i % 70) * std::f64::consts::TAU / 70.0).map(|t| g(r * t.cos(), r * t.sin(), z)).collect()
+        };
+        let mut d = cadcraft_doc::Drawing::new_metric();
+        for k in 0..200 {
+            let edges = (0..4).map(|j| ring(1.0 + f64::from(j) * 0.1, f64::from(k) * 0.01)).collect();
+            let mesh = cadcraft_geom::Mesh3 { verts: Vec::new(), tris: Vec::new(), edges, open: false };
+            let solid = cadcraft_doc::Solid3d { brep: "".into(), mesh: std::sync::Arc::new(mesh), ..Default::default() };
+            d.add(&cadcraft_doc::Space::Model, cadcraft_doc::Common::default(), cadcraft_doc::EntityKind::Solid3d(solid)).unwrap();
+        }
+        // Half a point to the unit: every ring is within the aperture.
+        let xf = Xf::new(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0)), Vec2::ZERO, 0.5).looking(ViewDir::new(g(-1.0, -1.0, 1.0)));
+        let t = std::time::Instant::now();
+        let at = snap3d::screen_of(&xf, g(0.0, 0.0, 0.0));
+        let _ = snap3d::nearest(&d, &cadcraft_doc::Space::Model, &xf, at, 10.0, snap::mode::INT | snap::mode::APP, None);
+        let took = t.elapsed();
+        assert!(took < std::time::Duration::from_millis(500), "{took:?}");
     }
 
     /// The app with an empty drawing looking along `dir`, its list built (at once, not in the
@@ -3689,6 +3738,34 @@ pub(crate) mod tests {
         app.session.input(Input::Enter).unwrap();
         let d = app.session.doc().unwrap();
         assert!(d.entity(a).is_none() && d.entity(b).is_some());
+    }
+
+    /// In a 3D view a click on a raised line at OFFSET's "Select object to offset" (a prompt that
+    /// takes a point) picks that line, and a typed W window round where it is drawn selects it.
+    #[test]
+    fn a_3d_view_picks_at_point_prompts_and_windows_typed_modes_as_drawn() {
+        let mut f = Frames::default();
+        let mut app = app_looking(&mut f, [-1.0, -1.0, 1.0]);
+        let g = cadcraft_geom::Vec3::new;
+        let (a, b) = (g(0.0, 0.0, 30.0), g(100.0, 0.0, 30.0));
+        let up = app.session.add_entity_world(cadcraft_doc::EntityKind::Line(cadcraft_doc::Line { a, b })).unwrap();
+        let dir = app.session.state().unwrap().view_dir;
+        app.session.state_mut().unwrap().set_view_quiet(cadcraft_engine::View { center: dir.project(g(50.0, 0.0, 30.0)), height: 200.0 });
+        rebuild_now(&mut f, &mut app);
+        let xf = app.canvas.xf.unwrap();
+        app.session.cmdline("offset").unwrap();
+        app.session.cmdline("10").unwrap();
+        f.click(&mut app, xf.world_to_screen(g(50.0, 0.0, 30.0)));
+        assert_eq!(app.session.selection(), vec![up], "{:?}", app.session.current_prompt().map(|p| p.display()));
+        app.session.cancel();
+        app.session.cmdline("erase").unwrap();
+        app.session.cmdline("w").unwrap();
+        let (sa, sb) = (xf.world_to_screen(a), xf.world_to_screen(b));
+        f.click(&mut app, pos2(sa.x.min(sb.x) - 10.0, sa.y.max(sb.y) + 10.0));
+        f.click(&mut app, pos2(sa.x.max(sb.x) + 10.0, sa.y.min(sb.y) - 10.0));
+        assert!(app.session.view_at.is_none());
+        app.session.input(Input::Enter).unwrap();
+        assert!(app.session.doc().unwrap().entity(up).is_none(), "{:?}", app.session.log.last());
     }
 
     /// Clicking where nothing is drawn in a 3D view starts a window: it doesn't pick a solid by
@@ -3994,6 +4071,110 @@ pub(crate) mod tests {
         assert!(got.iter().any(|(p, m)| *m == CEN && (*p - g(5.0, 0.0, 0.0)).len() < 1e-9), "{got:?}");
         let quadrant = |p: &cadcraft_geom::Vec3| (p.x - 5.0).abs() < 1e-9 && ((p.y.abs() - 2.0).abs() < 1e-9 || (p.z.abs() - 2.0).abs() < 1e-9);
         assert_eq!(got.iter().filter(|(p, m)| *m == QUA && quadrant(p)).count(), 4, "{got:?}");
+    }
+
+    /// A drawing of model space objects `kinds` (level, default layer) and a view of it looking
+    /// down from the south-west, 5 points to the unit.
+    fn snap_scene(kinds: Vec<cadcraft_doc::EntityKind>) -> (cadcraft_doc::Drawing, Xf) {
+        let mut d = cadcraft_doc::Drawing::new_metric();
+        for k in kinds {
+            d.add(&cadcraft_doc::Space::Model, cadcraft_doc::Common::default(), k).unwrap();
+        }
+        let xf = Xf::new(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0)), Vec2::ZERO, 5.0)
+            .looking(ViewDir::new(cadcraft_geom::Vec3::new(-1.0, -1.0, 1.0)));
+        (d, xf)
+    }
+
+    fn line3(a: cadcraft_geom::Vec3, b: cadcraft_geom::Vec3) -> cadcraft_doc::EntityKind {
+        cadcraft_doc::EntityKind::Line(cadcraft_doc::Line { a, b })
+    }
+
+    /// In 3D, lines snap where they are: the nearest point along one, an intersection where two
+    /// meet in the world, an apparent intersection (on the one in front) where one passes behind
+    /// the other on screen, and none where only INT runs; an end beats a nearest point.
+    #[test]
+    fn three_d_snaps_nearest_intersection_and_apparent_intersection() {
+        use snap::mode::{APP, END, INT, NEA};
+        let g = cadcraft_geom::Vec3::new;
+        let toward = ViewDir::new(g(-1.0, -1.0, 1.0)).dir;
+        // C stands in front of A's (1, 0, 10), crossing it on screen only.
+        let front = g(1.0, 0.0, 10.0) + toward * 4.0;
+        let (d, xf) = snap_scene(vec![
+            line3(g(0.0, 0.0, 10.0), g(10.0, 0.0, 10.0)),
+            line3(g(5.0, -5.0, 10.0), g(5.0, 5.0, 10.0)),
+            line3(front - g(0.0, 0.0, 3.0), front + g(0.0, 0.0, 3.0)),
+        ]);
+        let near = |p: cadcraft_geom::Vec3, m: u32| {
+            snap3d::nearest(&d, &cadcraft_doc::Space::Model, &xf, snap3d::screen_of(&xf, p) + vec2(2.0, 1.0), 10.0, m, None)
+        };
+        assert_eq!(near(g(5.0, 0.0, 10.0), INT), Some((g(5.0, 0.0, 10.0), INT)));
+        let (p, m) = near(g(1.0, 0.0, 10.0), INT | APP).unwrap();
+        assert!(m == APP && (p - front).len() < 1e-9, "{p:?} {m}");
+        assert_eq!(near(g(1.0, 0.0, 10.0), INT), None, "they don't meet");
+        let (p, m) = near(g(7.0, 0.0, 10.0), NEA).unwrap();
+        assert!(m == NEA && p.y.abs() < 1e-9 && (p.z - 10.0).abs() < 1e-9 && (p.x - 7.0).abs() < 0.5, "{p:?}");
+        assert_eq!(near(g(10.0, 0.0, 10.0), END | NEA), Some((g(10.0, 0.0, 10.0), END)));
+    }
+
+    /// Along a raised circle the nearest point is on the circle itself (not on a chord of it), and
+    /// a line through its plane meets it exactly; the perpendicular from a base point is the
+    /// circle's point square to it, and a line's foot.
+    #[test]
+    fn three_d_snaps_on_a_raised_circle_are_on_it() {
+        use snap::mode::{INT, NEA, PER};
+        let g = cadcraft_geom::Vec3::new;
+        let circle = cadcraft_doc::EntityKind::Circle(cadcraft_doc::Circle { center: g(0.0, 0.0, 5.0), radius: 4.0 });
+        let (d, xf) = snap_scene(vec![circle, line3(g(4.0, 0.0, 0.0), g(4.0, 0.0, 10.0)), line3(g(-5.0, 10.0, 20.0), g(10.0, 10.0, 20.0))]);
+        let near = |p: cadcraft_geom::Vec3, m: u32, base| {
+            snap3d::nearest(&d, &cadcraft_doc::Space::Model, &xf, snap3d::screen_of(&xf, p) + vec2(1.5, -1.0), 10.0, m, base)
+        };
+        let on = g(4.0 * 2.0_f64.cos(), 4.0 * 2.0_f64.sin(), 5.0);
+        let (p, m) = near(on, NEA, None).unwrap();
+        assert!(m == NEA && ((p - g(0.0, 0.0, 5.0)).len() - 4.0).abs() < 1e-9 && (p.z - 5.0).abs() < 1e-12, "{p:?}");
+        let (p, m) = near(g(4.0, 0.0, 5.0), INT, None).unwrap();
+        assert!(m == INT && (p - g(4.0, 0.0, 5.0)).len() < 1e-9, "{p:?}");
+        let (p, m) = near(on, PER, Some(g(0.0, 0.0, 5.0) + (on - g(0.0, 0.0, 5.0)) * 3.0 + g(0.0, 0.0, 7.0))).unwrap();
+        assert!(m == PER && (p - on).len() < 1e-9, "{p:?}");
+        let (p, m) = near(g(0.0, 10.0, 20.0), PER, Some(g(0.0, 0.0, 0.0))).unwrap();
+        assert!(m == PER && (p - g(0.0, 10.0, 20.0)).len() < 1e-9, "{p:?}");
+    }
+
+    /// In a 3D view LINE's second point snaps perpendicular to a raised line from the first, with
+    /// its height; Tab reaches a vertex hidden behind another on screen, and the click gives it.
+    #[test]
+    fn a_3d_view_snaps_perpendicular_and_tab_reaches_a_hidden_vertex() {
+        use snap::mode::{END, PER};
+        let g = cadcraft_geom::Vec3::new;
+        let mut f = Frames::default();
+        let foot = g(0.0, 10.0, 20.0);
+        let mut app = app_snapping(&mut f, [-1.0, -1.0, 1.0], foot, PER);
+        let raised = line3(g(-5.0, 10.0, 20.0), g(10.0, 10.0, 20.0));
+        app.session.doc_mut().unwrap().add(&cadcraft_doc::Space::Model, cadcraft_doc::Common::default(), raised).unwrap();
+        app.session.cmdline("0,0").unwrap();
+        let xf = app.canvas.xf.unwrap();
+        f.run(&mut app, vec![egui::Event::PointerMoved(snap3d::screen_of(&xf, foot) + vec2(2.0, 2.0))]);
+        let hit = app.canvas.snap.unwrap();
+        assert!(hit.point.dist(foot.xy()) < 1e-9 && hit.mode == PER && app.canvas.snap_z.is_some_and(|z| (z - 20.0).abs() < 1e-9), "{hit:?}");
+        app.session.cancel();
+
+        // Two raised ends one behind the other along the line of sight.
+        let toward = ViewDir::new(g(-1.0, -1.0, 1.0)).dir;
+        let (front, back) = (g(10.0, 0.0, 20.0), g(10.0, 0.0, 20.0) - toward * 6.0);
+        let d = app.session.doc_mut().unwrap();
+        for (a, b) in [(front, front + g(5.0, 0.0, 0.0)), (back, back + g(0.0, -5.0, 0.0))] {
+            d.add(&cadcraft_doc::Space::Model, cadcraft_doc::Common::default(), line3(a, b)).unwrap();
+        }
+        app.session.settings.osmode = END;
+        app.session.cmdline("line").unwrap();
+        let at = snap3d::screen_of(&xf, front) + vec2(2.0, -1.0);
+        f.run(&mut app, vec![egui::Event::PointerMoved(at)]);
+        assert_eq!(app.canvas.snap_z, Some(20.0), "the end in front");
+        app.canvas.snap_tab = true;
+        f.run(&mut app, vec![egui::Event::PointerMoved(at)]);
+        let hit = app.canvas.snap.unwrap();
+        assert!(hit.point.dist(back.xy()) < 1e-9 && app.canvas.snap_z.is_some_and(|z| (z - back.z).abs() < 1e-9), "{hit:?}");
+        f.click(&mut app, at);
+        assert!(app.session.last_point.dist(back.xy()) < 1e-9 && app.session.point_z.is_some_and(|z| (z - back.z).abs() < 1e-9));
     }
 
     /// In Rhino's four views the Front tile draws on the Front construction plane: a point clicked

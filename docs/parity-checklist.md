@@ -1,22 +1,22 @@
 # Parity checklist
 
-> **Generated:** 2026-10-12 by `cargo xtask parity`. Do not edit by hand.
+> **Generated:** 2026-10-23 by `cargo xtask parity`. Do not edit by hand.
 
 Menu-breadth parity: a reference menu item counts as covered when a CADCraft command is registered under the same menu label. It measures breadth, not depth; see [target-app-parity.md](target-app-parity.md) for the weighted assessment.
 
-**Menu breadth: 280 / 491 items (57%)** · 409 registered commands.
+**Menu breadth: 323 / 491 items (66%)** · 504 registered commands.
 
 | Menu | Items | Covered | % |
 |---|---|---|---|
 | File | 22 | 13 | 59% |
 | Edit | 13 | 11 | 85% |
-| View | 75 | 31 | 41% |
+| View | 75 | 44 | 59% |
 | Insert | 11 | 5 | 45% |
 | Format | 27 | 25 | 93% |
-| Tools | 85 | 57 | 67% |
-| Draw | 87 | 55 | 63% |
+| Tools | 85 | 59 | 69% |
+| Draw | 87 | 75 | 86% |
 | Dimension | 28 | 28 | 100% |
-| Modify | 113 | 52 | 46% |
+| Modify | 113 | 60 | 53% |
 | Window | 22 | 3 | 14% |
 | Help | 8 | 0 | 0% |
 
@@ -34,31 +34,18 @@ Menu-breadth parity: a reference menu item counts as covered when a CADCraft com
 - Edit > Undo Group of commands
 - Edit > Cut with Base Point
 - View > Pan > Point
-- View > Orbit > Constrained Orbit
 - View > Orbit > Free Orbit
 - View > Camera > Adjust Distance
 - View > Camera > Swivel
 - View > Viewports > Named Viewports...
-- View > 3D Views > Viewpoint
 - View > 3D Views > Plan View > Current UCS
 - View > 3D Views > Plan View > World UCS
 - View > 3D Views > Plan View > Named UCS
-- View > 3D Views > Top
-- View > 3D Views > Bottom
-- View > 3D Views > Front
-- View > 3D Views > Back
-- View > 3D Views > SW Isometric
-- View > 3D Views > SE Isometric
-- View > 3D Views > NE Isometric
-- View > 3D Views > NW Isometric
 - View > Hide
-- View > Visual Styles > 2D Wireframe
 - View > Visual Styles > Wireframe
 - View > Visual Styles > Hidden
 - View > Visual Styles > Realistic
 - View > Visual Styles > Conceptual
-- View > Visual Styles > Shaded
-- View > Visual Styles > Shaded with Edges
 - View > Visual Styles > Shades of Gray
 - View > Visual Styles > Sketchy
 - View > Visual Styles > X-Ray
@@ -88,9 +75,7 @@ Menu-breadth parity: a reference menu item counts as covered when a CADCraft com
 - Tools > Spelling
 - Tools > Inquiry > Volume
 - Tools > Update Fields
-- Tools > Block Editor
 - Tools > Edit Xref in Place
-- Tools > Load Application...
 - Tools > New UCS > World
 - Tools > New UCS > Face
 - Tools > New UCS > View
@@ -114,30 +99,10 @@ Menu-breadth parity: a reference menu item counts as covered when a CADCraft com
 - Tools > Express Tools > Super Hatch > Xref...
 - Tools > Express Tools > Super Hatch > Select Existing Object
 - Draw > 3D Modeling > Polysolid
-- Draw > 3D Modeling > Box
-- Draw > 3D Modeling > Wedge
-- Draw > 3D Modeling > Cone
-- Draw > 3D Modeling > Sphere
-- Draw > 3D Modeling > Cylinder
-- Draw > 3D Modeling > Torus
-- Draw > 3D Modeling > Pyramid
-- Draw > 3D Modeling > Extrude
-- Draw > 3D Modeling > Revolve
-- Draw > 3D Modeling > Sweep
-- Draw > 3D Modeling > Loft
 - Draw > 3D Modeling > Section Plane
-- Draw > 3D Modeling > Surfaces > Planar
 - Draw > 3D Modeling > Surfaces > Network
 - Draw > 3D Modeling > Surfaces > Patch
-- Draw > 3D Modeling > Meshes > Primitives > Box
-- Draw > 3D Modeling > Meshes > Primitives > Wedge
-- Draw > 3D Modeling > Meshes > Primitives > Cone
-- Draw > 3D Modeling > Meshes > Primitives > Sphere
-- Draw > 3D Modeling > Meshes > Primitives > Cylinder
-- Draw > 3D Modeling > Meshes > Primitives > Torus
-- Draw > 3D Modeling > Meshes > Primitives > Pyramid
 - Draw > 3D Modeling > Meshes > Smooth Mesh
-- Draw > 3D Modeling > Meshes > 3D Face
 - Draw > 3D Modeling > Meshes > Meshes, Revolved Surface
 - Draw > 3D Modeling > Meshes > Meshes, Tabulated Surface
 - Draw > 3D Modeling > Meshes > Meshes, Ruled Surface
@@ -152,22 +117,15 @@ Menu-breadth parity: a reference menu item counts as covered when a CADCraft com
 - Modify > Object > Image > Frame
 - Modify > Object > Block Description...
 - Modify > Clip > Image
-- Modify > Clip > Xref
-- Modify > 3D Operations > 3D Move
-- Modify > 3D Operations > 3D Rotate
 - Modify > 3D Operations > 3D Align
-- Modify > 3D Operations > 3D Mirror
 - Modify > 3D Operations > 3D Array
 - Modify > 3D Operations > Interference Checking
-- Modify > 3D Operations > Slice
 - Modify > 3D Operations > Thicken
 - Modify > 3D Operations > Convert to Solid
 - Modify > 3D Operations > Convert to Surface
 - Modify > 3D Operations > Extract Edges
 - Modify > 3D Operations > Extract Isolines
 - Modify > Solid Editing > Imprint Edges
-- Modify > Solid Editing > Fillet edges
-- Modify > Solid Editing > Chamfer edges
 - Modify > Solid Editing > Color edges
 - Modify > Solid Editing > Copy edges
 - Modify > Solid Editing > Extrude faces
@@ -180,7 +138,6 @@ Menu-breadth parity: a reference menu item counts as covered when a CADCraft com
 - Modify > Solid Editing > Copy faces
 - Modify > Solid Editing > Clean
 - Modify > Solid Editing > Separate
-- Modify > Solid Editing > Shell
 - Modify > Solid Editing > Check
 - Modify > Surface Editing > Untrim
 - Modify > Surface Editing > Sculpt

@@ -1,8 +1,10 @@
 //! Shared curve geometry for the M1/M2 draw and modify commands: arc constructions, tangent
 //! circles (TTR/TTT), length parametrisation of curves, spline splitting and picking helpers.
 
-use cadcraft_doc::{Entity, EntityKind, Handle, Prim};
-use cadcraft_geom::{Arc, Circle, EPS, Line, PolyVertex, Polyline, Segment, Spline, TAU, Vec2, circle_circle, line_circle, line_line_infinite};
+use cadcraft_doc::{Drawing, Entity, EntityKind, Handle, Prim};
+use cadcraft_geom::{
+    Arc, Circle, EPS, Line, Mat4, PolyVertex, Polyline, Segment, Spline, TAU, Vec2, Vec3, ViewDir, circle_circle, line_circle, line_line_infinite,
+};
 
 use crate::{EngineError, Result, Session};
 
@@ -20,8 +22,53 @@ pub fn pick_aperture(s: &Session) -> f64 {
 
 /// The object under `p` in the current space (as the current construction plane sees it).
 pub fn pick_at(s: &Session, p: Vec2) -> Option<Handle> {
-    let space = s.space();
-    crate::select::pick(&*s.pick_doc().ok()?, &space, p, pick_aperture(s))
+    pick_in(s, &*s.pick_doc().ok()?, p, pick_aperture(s))
+}
+
+/// The object under `p` in drawing `d` (the drawing as the construction plane sees it, or the
+/// drawing itself in World) within `aperture`: the topmost there, or the one a view picked when
+/// `p` is the point it gave for it ([`Session::input_view_pick`]), whatever plan shows there.
+pub fn pick_in(s: &Session, d: &Drawing, p: Vec2, aperture: f64) -> Option<Handle> {
+    if let Some((h, w)) = s.view_pick
+        && d.entity(h).is_some()
+        && let Some(q) = s.cplane().inverse().map(|ci| ci.apply(w).xy())
+        && q.dist(p) <= 1e-9 * (1.0 + q.x.abs() + q.y.abs())
+    {
+        return Some(h);
+    }
+    crate::select::pick(d, &s.space(), p, aperture)
+}
+
+/// The world point of object `h` that view `dir` draws nearest its view-plane point `v` (of two
+/// as near, the nearer to the viewer): where a click there in a 3D view is on the object. `None`
+/// for objects without lines to find it on (solids, rays).
+pub(crate) fn drawn_point(s: &Session, h: Handle, dir: ViewDir, v: Vec2) -> Option<Vec3> {
+    let d = s.doc().ok()?;
+    let e = d.entity(h)?;
+    let lift = |pl: &Mat4, pts: Vec<Vec2>| pts.into_iter().map(|q| pl.apply(q.to3(0.0))).collect::<Vec<_>>();
+    let lines: Vec<Vec<Vec3>> = match (&e.kind, e.plane()) {
+        (EntityKind::Line(l), _) => vec![vec![l.a, l.b]],
+        (EntityKind::Point(p), _) => vec![vec![p.p, p.p]],
+        (EntityKind::Polyline3d(p), _) => vec![p.points.iter().chain(p.points.first().filter(|_| p.closed)).copied().collect()],
+        (EntityKind::Face3d(f), _) => vec![f.corners.iter().chain(f.corners.first()).copied().collect()],
+        // In its own plane's coordinates the object is flat: its plan lines, lifted back.
+        (_, Some(pl)) => crate::select::hit_polylines(d, &e.on(&pl)?, pick_aperture(s) / 4.0).into_iter().map(|l| lift(&pl, l)).collect(),
+        _ => return None,
+    };
+    let mut best: Option<(f64, f64, Vec3)> = None;
+    for w in lines.iter().flat_map(|l| l.windows(2)) {
+        let &[a, b] = w else { continue };
+        let (pa, pb) = (dir.project(a), dir.project(b));
+        let ab = pb - pa;
+        let t = if ab.dot(ab) > 0.0 { ((v - pa).dot(ab) / ab.dot(ab)).clamp(0.0, 1.0) } else { 0.0 };
+        let q = a + (b - a) * t;
+        let (dist, depth) = ((pa + ab * t).dist(v), dir.depth(q));
+        let eps = 1e-9 * (1.0 + dist);
+        if q.is_finite() && best.is_none_or(|(bd, bz, _)| dist < bd - eps || (dist <= bd + eps && depth > bz)) {
+            best = Some((dist, depth, q));
+        }
+    }
+    best.map(|(.., q)| q)
 }
 
 pub fn entity(s: &Session, h: Handle) -> Result<Entity> {

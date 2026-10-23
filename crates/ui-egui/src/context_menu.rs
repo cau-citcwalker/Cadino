@@ -247,8 +247,8 @@ const SNAP_GROUPS: &[&[(u32, &str)]] = &[
 ];
 /// The point filters submenu.
 const FILTERS: &[&str] = &[".X", ".Y", ".Z", ".XY", ".XZ", ".YZ"];
-/// The id of the Osnap Settings item (the Drafting Settings dialog).
-const OSNAP_SETTINGS: &str = "dsettings";
+/// The id of the Osnap Settings item (OSNAP: Drafting Settings on its Object Snap tab).
+const OSNAP_SETTINGS: &str = "osnap";
 
 /// The object snap menu (Shift/Ctrl+right-click): Temporary track point, From, Mid Between 2
 /// Points, Point Filters, the snap modes, None and Osnap Settings. An item's id is the text it

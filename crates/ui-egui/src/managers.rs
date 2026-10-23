@@ -1,7 +1,8 @@
 //! Style and settings dialogs opened from the menus: Linetype Manager, Point Style, Text Style,
 //! Table Style, Multileader Style, Page Setup Manager, Plot and Constraint Settings; the Dimension
 //! Style Manager, Select Color, Lineweight Settings, Find and Replace, Write Block, Layer States
-//! Manager and Multiline Style are in their own files.
+//! Manager, Multiline Style, Drawing Properties, Paste Special, Object Selection Filters,
+//! LayerWalk and the Layer Translator are in their own files.
 //!
 //! Typed or chosen from a menu (no parameters) these commands open their dialog; JSON calls run
 //! the command. The dialogs read the drawing and change it only through the same commands
@@ -22,12 +23,22 @@ mod battman;
 mod current;
 /// The Dimension Style Manager (DIMSTYLE).
 mod dimstyle;
+/// Drawing Properties (DWGPROPS).
+mod dwgprops;
+/// Object Selection Filters (FILTER).
+mod filter;
 /// Find and Replace (FIND).
 mod find;
 /// The Layer States Manager (LAYERSTATE).
 mod layerstates;
+/// The Layer Translator (LAYTRANS).
+mod laytrans;
+/// LayerWalk (LAYWALK).
+mod laywalk;
 /// Multiline Style (MLSTYLE).
 mod mlstyle;
+/// Paste Special (PASTESPEC).
+mod pastespec;
 /// Write Block (WBLOCK).
 mod wblock;
 
@@ -52,6 +63,11 @@ pub fn route(app: &mut CadApp, id: &str, params: &Value) -> Option<Result<Value,
         "wblock" => "wblock",
         "layerstate.save" | "layerstate" | "las" | "lman" => "layerstates",
         "mlstyle" => "mlstyle",
+        "dwgprops" => "dwgprops",
+        "pastespec" | "pa" => "pastespec",
+        "filter" | "fi" => "filter",
+        "laywalk" => "laywalk",
+        "laytrans" => "laytrans",
         "linetype" | "lt" | "ltype" => "linetype",
         "ddptype" | "ptype" => "ptype",
         "style" | "st" => "textstyle",
@@ -81,6 +97,11 @@ pub fn dialog(app: &mut CadApp, ctx: &egui::Context, name: &str, open: &mut bool
         "wblock" => wblock::dialog(app, ctx, open),
         "layerstates" => layerstates::dialog(app, ctx, open),
         "mlstyle" => mlstyle::dialog(app, ctx, open),
+        "dwgprops" => dwgprops::dialog(app, ctx, open),
+        "pastespec" => pastespec::dialog(app, ctx, open),
+        "filter" => filter::dialog(app, ctx, open),
+        "laywalk" => laywalk::dialog(app, ctx, open),
+        "laytrans" => laytrans::dialog(app, ctx, open),
         "linetype" => linetype(app, ctx, open),
         "ptype" => point_style(app, ctx, open),
         "textstyle" => text_style(app, ctx, open),
@@ -98,6 +119,16 @@ pub fn dialog(app: &mut CadApp, ctx: &egui::Context, name: &str, open: &mut bool
         // Errors are echoed on the command line by `run`.
         let _ = app.run(cmd, p);
     }
+}
+
+/// Each frame: a LayerWalk another dialog replaced (or one closed with `ui.dialog`) ends, its
+/// layers back as its Close would leave them; after Paste Special's text paste the clipboard
+/// comes back.
+pub fn end_hidden(app: &mut CadApp, ctx: &egui::Context) {
+    if app.ui.dialog.as_deref() != Some("laywalk") {
+        laywalk::end_stale(app, ctx, false);
+    }
+    pastespec::restore_clipboard(app, ctx);
 }
 
 /// A command to run after the dialog is drawn.

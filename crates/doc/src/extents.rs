@@ -172,6 +172,18 @@ fn bounds_own<'a>(d: &'a Drawing, e: &Entity, depth: usize, blocks: &mut HashMap
                         inner
                     }
                 };
+                // XCLIP: a clipped reference takes no more room than its boundary.
+                let inner = match crate::xclip::XClip::of(&e.common).filter(|x| x.on) {
+                    Some(x) if !inner.is_empty() => {
+                        let c = x.bounds();
+                        let (lo, hi) = (
+                            Vec2::new(inner.min.x.max(c.min.x), inner.min.y.max(c.min.y)),
+                            Vec2::new(inner.max.x.min(c.max.x), inner.max.y.min(c.max.y)),
+                        );
+                        if lo.x <= hi.x && lo.y <= hi.y { Bounds2::new(lo, hi) } else { Bounds2::EMPTY }
+                    }
+                    _ => inner,
+                };
                 b = if inner.is_empty() { Bounds2::EMPTY } else { Bounds2::from_points(inner.corners().map(|c| m.apply(c))) };
                 if ins.cols > 1 || ins.rows > 1 {
                     let off =
@@ -249,6 +261,8 @@ fn bounds_own<'a>(d: &'a Drawing, e: &Entity, depth: usize, blocks: &mut HashMap
             Bounds2::from_points([o, o + u, o + v, o + u + v])
         }
         EntityKind::LwPolyline(p) => lwpolyline_bounds(p),
+        // Its corners, also where its edges are invisible (they are only not drawn).
+        EntityKind::Face3d(f) => Bounds2::from_points(f.corners.map(|c| c.xy())),
         kind => prims_bounds(kind.prims()),
     }
 }

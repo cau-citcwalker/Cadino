@@ -433,6 +433,7 @@ pub const FILE_COMMANDS: &[&str] = &[
     "xopen",
     "attach",
     "datalink",
+    "attext",
     "appload",
     "lisp",
     "aliasedit",

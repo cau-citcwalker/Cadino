@@ -1163,7 +1163,9 @@ impl EntityKind {
             EntityKind::Face3d(f) => {
                 let c = &f.corners;
                 let pts = [c[0].xy(), c[1].xy(), c[2].xy(), c[3].xy(), c[0].xy()];
-                pts.windows(2).filter_map(|w| Some(Prim::Seg(Segment::Line(GLine::new(*w.first()?, *w.get(1)?))))).collect()
+                // Invisible edges (DXF 70 bits 1, 2, 4, 8) are not drawn.
+                let shown = pts.windows(2).enumerate().filter(|(i, _)| f.hidden_edges & (1 << i) == 0);
+                shown.filter_map(|(_, w)| Some(Prim::Seg(Segment::Line(GLine::new(*w.first()?, *w.get(1)?))))).collect()
             }
             EntityKind::Region(r) => r.segments().into_iter().map(Prim::Seg).collect(),
             EntityKind::Solid3d(s) => s.segments().into_iter().map(Prim::Seg).collect(),

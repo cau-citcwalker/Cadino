@@ -232,27 +232,8 @@ fn apply(items: &mut Vec<Item>, usage: &mut [u64; 3], e: Event) {
 /// One of the assistant's own messages ([`cadcraft_ai::text`]) in the interface language, its
 /// `{names}` filled with what the English one held; any other text (a provider's) as it is.
 pub(crate) fn translated(msg: &str) -> String {
-    let found = cadcraft_ai::text::ALL.iter().find_map(|t| filled(t, msg).map(|values| crate::i18n::format(t, &values)));
+    let found = cadcraft_ai::text::ALL.iter().find_map(|t| crate::i18n::filled(t, msg).map(|values| crate::i18n::format(t, &values)));
     found.unwrap_or_else(|| msg.to_string())
-}
-
-/// The values of `template`'s `{names}` in `msg`, when `msg` is `template` filled in.
-fn filled<'t>(template: &'t str, msg: &str) -> Option<Vec<(&'t str, String)>> {
-    let mut parts = template.split('{').peekable();
-    let mut rest = msg.strip_prefix(parts.next()?)?;
-    let mut values = Vec::new();
-    while let Some(part) = parts.next() {
-        let (name, literal) = part.split_once('}')?;
-        // The last value runs to the end; one before a literal, to its first occurrence.
-        let end = match parts.peek() {
-            None => rest.strip_suffix(literal)?.len(),
-            Some(_) if literal.is_empty() => return None,
-            Some(_) => rest.find(literal)?,
-        };
-        values.push((name, rest.get(..end)?.to_string()));
-        rest = rest.get(end + literal.len()..)?;
-    }
-    rest.is_empty().then_some(values)
 }
 
 /// Open the palette (ASSISTANT, AI, Tools ▸ AI Assistant) with the keyboard in its input. The

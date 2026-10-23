@@ -1681,6 +1681,7 @@ fn insert(b: &mut Builder, ctx: &Ctx, e: &Entity, ins: &cadcraft_doc::Insert, rg
     if let Some(blk) = ctx.d.block(&ins.block) {
         let cols = ins.cols.clamp(1, 10_000);
         let rows = ins.rows.clamp(1, 10_000);
+        let xclip = cadcraft_doc::xclip::XClip::of(&e.common).filter(|x| x.on);
         'copies: for r in 0..rows {
             for c in 0..cols {
                 if !b.expand() {
@@ -1690,6 +1691,10 @@ fn insert(b: &mut Builder, ctx: &Ctx, e: &Entity, ins: &cadcraft_doc::Insert, rg
                 let m = Mat3::translate(off).then_before(ins.transform(blk.base.xy()));
                 // In 3D the block's z takes the reference's z scale about the base point's height.
                 let sub = Ctx { block_pstyle: b.named, block_transparency: b.transparency, ..sub_ctx(ctx, e, m, ins.lift(&m, blk.base)) };
+                if let Some(x) = &xclip {
+                    xclipped(b, &sub, blk, x, rgb);
+                    continue;
+                }
                 for be in blk.entities.iter() {
                     // Constant/visible attribute definitions inside blocks are not drawn; attribs are.
                     if matches!(be.kind, EntityKind::AttDef(_)) {
@@ -1739,6 +1744,44 @@ fn insert(b: &mut Builder, ctx: &Ctx, e: &Entity, ins: &cadcraft_doc::Insert, rg
             }
         }
         b.transparency = reference;
+    }
+}
+
+/// A block reference's contents clipped to its XCLIP boundary (`sub` places the block), with the
+/// boundary drawn as XCLIPFRAME says (0 hidden, 1 shown and plotted, 2 shown, not plotted).
+// ponytail: the contents are clipped as drawn lines and fills, so clipped block contents lose
+// their plot layers, pens, plotted-text glyphs and shaded-face depth order; front/back clipping
+// planes (Clipdepth) are kept but not drawn. Clip in the block's own pass if those matter.
+fn xclipped(b: &mut Builder, sub: &Ctx, blk: &cadcraft_doc::Block, x: &cadcraft_doc::xclip::XClip, ink: Ink) {
+    let outline: Vec<Vec2> = x.polygon().iter().map(|p| sub.xf.apply(*p)).collect();
+    let Some(pc) = clip::PolyClip::new(&outline) else { return };
+    let mut part = Builder { list: DisplayList::default(), depth: b.depth, ..*b };
+    part.list.expanded = b.list.expanded;
+    for be in blk.entities.iter() {
+        if matches!(be.kind, EntityKind::AttDef(_)) {
+            continue;
+        }
+        if !part.expand() {
+            break;
+        }
+        entity(&mut part, sub, be);
+    }
+    b.list.expanded = part.list.expanded;
+    append_clipped(&mut b.list, &part.list, &Clip::Poly(&pc));
+    let frame = sub.d.header.i64("XCLIPFRAME", 2);
+    if frame == 1 || (frame == 2 && !b.plotting) {
+        let mut closed = pc.polygon().to_vec();
+        closed.extend(closed.first().copied());
+        b.polyline_at(sub, ink, 0.0, &closed, Mat3::IDENTITY, &[]);
+    }
+    // Shaded lists keep a depth per vertex: the clipped pieces lie in the block's plane.
+    if b.depth.is_some() {
+        let g = sub.grad;
+        let at = |q: &Vec2| g[0] * q.x + g[1] * q.y + g[2];
+        let v: Vec<f64> = b.list.verts.get(b.list.vert_depth.len()..).unwrap_or(&[]).iter().map(at).collect();
+        b.list.vert_depth.extend(v);
+        let t: Vec<f64> = b.list.tris.get(b.list.tri_depth.len()..).unwrap_or(&[]).iter().map(at).collect();
+        b.list.tri_depth.extend(t);
     }
 }
 

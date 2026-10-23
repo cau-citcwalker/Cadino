@@ -1589,3 +1589,1464 @@ menu	Modify	수정
 	Enter new layer name	새 도면층 이름 입력
 	Enter old layer name	이전 도면층 이름 입력
 	Enter transparency value (0-90)	투명도 값 입력(0-90)
+# Command-line prompts and messages: engine prompts, echoes, refusals and results (see i18n::line).
+	"{0}" is built in; create a new plotter first.	"{0}"은(는) 기본 제공 플로터입니다. 먼저 새 플로터를 만드십시오.
+	"{0}" is now the current text style.	이제 "{0}"이(가) 현재 문자 스타일입니다.
+	"{key}" is not an xref	"{key}"은(는) 외부 참조가 아닙니다.
+	"{name}" is not a valid view name.	"{name}"은(는) 유효한 뷰 이름이 아닙니다.
+	"{name}" is not a valid viewport configuration name.	"{name}"은(는) 유효한 뷰포트 구성 이름이 아닙니다.
+	"{n}" is not a valid group name.	"{n}"은(는) 유효한 그룹 이름이 아닙니다.
+	"{n}" is not a valid parameter name.	"{n}"은(는) 유효한 매개변수 이름이 아닙니다.
+	"{t}" is listed twice.	"{t}"이(가) 두 번 나열되었습니다.
+	(need {0})	({0} 필요)
+	** Command not allowed in Model Tab ** (switch to a layout first)	** 모형 탭에서는 사용할 수 없는 명령입니다 ** (먼저 배치로 전환하십시오)
+	** STRETCH **	** 신축 **
+	******** WARNING ********	******** 경고 ********
+	*Invalid selection*	*잘못된 선택*
+	-LAYER {other} is not available yet.	-LAYER {other}은(는) 아직 사용할 수 없습니다.
+	0 found	0개 찾음
+	1 object was on a locked layer.	객체 1개가 잠긴 도면층에 있었습니다.
+	3D views are available on the Model tab only.	3D 뷰는 모형 탭에서만 사용할 수 있습니다.
+	; error: {0}	; 오류: {0}
+	; error: {msg}	; 오류: {msg}
+	<Isodraft off>	<등각 제도 끄기>
+	<Isodraft {0}>	<등각 제도 {0}>
+	<Osnap {0}>	<객체 스냅 {0}>
+	>> Expression	>> 표현식
+	A closed spline has no end tangents.	닫힌 스플라인에는 끝 접선이 없습니다.
+	A closed spline of degree {p} needs more than {0} control points.	차수가 {p}인 닫힌 스플라인에는 제어점이 {0}개보다 많아야 합니다.
+	A curve has no length.	곡선의 길이가 없습니다.
+	A group named "{n}" already exists.	"{n}" 그룹이 이미 있습니다.
+	A line fillets or chamfers with an end segment of an open polyline.	선은 열린 폴리선의 끝 구간과만 모깎기 또는 모따기할 수 있습니다.
+	A multileader needs a leader line or content; nothing was drawn.	다중 지시선에는 지시선이나 내용이 필요합니다. 아무것도 그려지지 않았습니다.
+	A multiline style named {to} already exists.	{to} 다중선 스타일이 이미 있습니다.
+	A polygonal boundary needs at least three points.	다각형 경계에는 점이 세 개 이상 필요합니다.
+	A polyline fillets or chamfers with a line, or with another segment of itself.	폴리선은 선 또는 자신의 다른 구간과 모깎기 또는 모따기할 수 있습니다.
+	A profile encloses no area.	프로파일이 면적을 둘러싸지 않습니다.
+	A region can't be subtracted from itself.	영역은 자신에게서 뺄 수 없습니다.
+	A rotation axis (3D) is not available yet; specify the center point.	회전축(3D)은 아직 사용할 수 없습니다. 중심점을 지정하십시오.
+	A scale named "{text}" already exists.	"{text}" 축척이 이미 있습니다.
+	A solid can't be subtracted from itself.	솔리드는 자신에게서 뺄 수 없습니다.
+	A spline has no length.	스플라인의 길이가 없습니다.
+	A spline needs at least {min} fit points.	스플라인에는 맞춤점이 {min}개 이상 필요합니다.
+	A spline of degree {p} needs at least {0} control points.	차수가 {p}인 스플라인에는 제어점이 {0}개 이상 필요합니다.
+	A tag must be non-empty and without spaces.	태그는 비어 있지 않고 공백이 없어야 합니다.
+	A transparent command is already in progress.	투명 명령이 이미 진행 중입니다.
+	A vertex is already there.	그 위치에 이미 정점이 있습니다.
+	A viewport configuration needs a viewport.	뷰포트 구성에는 뷰포트가 필요합니다.
+	A wipeout needs three or more points enclosing an area.	가리기에는 면적을 둘러싸는 점이 세 개 이상 필요합니다.
+	A {0} can't be placed in this construction plane (it stays level); use CPLANE World or a level plane.	{0}은(는) 이 작업 평면에 배치할 수 없습니다(수평으로 유지됨). CPLANE World 또는 수평 평면을 사용하십시오.
+	A {0} in a tilted plane can't be scaled unevenly.	기울어진 평면의 {0}은(는) 비균일하게 축척할 수 없습니다.
+	A {what} can't be stretched in Z (only the vertices of lines, 3D polylines and 3D faces can; other objects move in Z only wholly inside the window, as MOVE moves them). Give the displacement without a Z value.	{what}은(는) Z 방향으로 신축할 수 없습니다(선, 3D 폴리선, 3D 면의 정점만 가능하며, 다른 객체는 창 안에 완전히 들어 있을 때만 MOVE처럼 Z 방향으로 이동합니다). Z 값 없이 변위를 입력하십시오.
+	ATTACH is not available yet: raster images and PDF/DWF/DGN underlays can't be shown yet	ATTACH는 아직 사용할 수 없습니다. 래스터 이미지와 PDF/DWF/DGN 언더레이는 아직 표시할 수 없습니다.
+	ATTSYNC block {0}?	{0} 블록을 ATTSYNC하시겠습니까?
+	ATTSYNC block {block}: {n} reference{0} synchronized.	ATTSYNC 블록 {block}: 참조 {n}개가 동기화되었습니다.
+	ATTSYNC block {name}: {n} reference{0} synchronized.	ATTSYNC 블록 {name}: 참조 {n}개가 동기화되었습니다.
+	Active Layout: {current}	활성 배치: {current}
+	Align block with object?	블록을 객체에 정렬하시겠습니까?
+	All edits have been undone.	모든 편집이 취소되었습니다.
+	An array's items can't contain the array itself.	배열 항목에는 배열 자체가 포함될 수 없습니다.
+	An array's source objects are being edited; enter ARRAYCLOSE first.	배열의 원본 객체를 편집하는 중입니다. 먼저 ARRAYCLOSE를 입력하십시오.
+	An ellipse has no size.	타원의 크기가 없습니다.
+	An object is on a locked layer.	객체가 잠긴 도면층에 있습니다.
+	Analyzing the selected data... {0} loop(s)	선택한 데이터 분석 중... 루프 {0}개
+	Angle = {ang}°	각도 = {ang}°
+	Angle Override: {0}	각도 재지정: {0}
+	Angle options apply to arcs.	각도 옵션은 호에 적용됩니다.
+	Animation effects are {shown}	애니메이션 효과: {shown}
+	Animation effects follow the system setting ({shown})	애니메이션 효과가 시스템 설정을 따릅니다({shown})
+	Answer Yes or No.	Yes 또는 No로 답하십시오.
+	Arc cannot be full 360 degrees.	호는 360도 전체가 될 수 없습니다.
+	Associate the hatch with the new boundary?	해치를 새 경계와 연관시키시겠습니까?
+	Associative dimension priority	연관 치수 우선순위
+	At most {MAX_PICKS} picks.	최대 {MAX_PICKS}번까지 선택할 수 있습니다.
+	At most {MAX_TILES} viewports can be shown.	뷰포트는 최대 {MAX_TILES}개까지 표시할 수 있습니다.
+	At most {MAX_VERTICES} points.	점은 최대 {MAX_VERTICES}개입니다.
+	Attribute {0}: enter property to change	속성 {0}: 변경할 특성 입력
+	BOUNDARY created {0} polyline(s)	BOUNDARY에서 폴리선 {0}개를 만들었습니다.
+	Block "{0}" already has an attribute tagged "{t}".	블록 "{0}"에 태그가 "{t}"인 속성이 이미 있습니다.
+	Block "{0}" has no attribute definitions.	블록 "{0}"에 속성 정의가 없습니다.
+	Block "{0}" has no attribute tagged "{1}".	블록 "{0}"에 태그가 "{1}"인 속성이 없습니다.
+	Block "{0}" not found.	블록 "{0}"을(를) 찾을 수 없습니다.
+	Block "{b}" has no attribute definitions.	블록 "{b}"에 속성 정의가 없습니다.
+	Block "{b}" not found.	블록 "{b}"을(를) 찾을 수 없습니다.
+	Block "{name}" already exists. Redefine it?	블록 "{name}"이(가) 이미 있습니다. 재정의하시겠습니까?
+	Block "{name}" can't contain a reference to itself.	블록 "{name}"은(는) 자신에 대한 참조를 포함할 수 없습니다.
+	Block "{name}" defined with {0} object(s).	블록 "{name}"이(가) 객체 {0}개로 정의되었습니다.
+	Block "{name}" has no attribute definitions.	블록 "{name}"에 속성 정의가 없습니다.
+	Block "{name}" not found.	블록 "{name}"을(를) 찾을 수 없습니다.
+	Block "{name}" saved.	블록 "{name}"이(가) 저장되었습니다.
+	Block "{name}" saved; the Block Editor now edits it.	블록 "{name}"이(가) 저장되었습니다. 이제 블록 편집기에서 이 블록을 편집합니다.
+	Block "{n}" already exists. Redefine it?	블록 "{n}"이(가) 이미 있습니다. 재정의하시겠습니까?
+	Block Editor: editing "{name}". BSAVE saves it into the drawing; BCLOSE closes the editor.	블록 편집기: "{name}" 편집 중. BSAVE는 도면에 저장하고 BCLOSE는 편집기를 닫습니다.
+	Block Editor: new block "{name}". BSAVE creates it in the drawing; BCLOSE closes the editor.	블록 편집기: 새 블록 "{name}". BSAVE는 도면에 블록을 만들고 BCLOSE는 편집기를 닫습니다.
+	Block {0}: enter an option	블록 {0}: 옵션 입력
+	Block {0}: {n} reference{1} in the drawing.	블록 {0}: 도면에 참조 {n}개가 있습니다.
+	Blocks with attributes: {0}	속성이 있는 블록: {0}
+	Breaking there would remove the whole polyline.	그 위치에서 끊으면 폴리선 전체가 제거됩니다.
+	Bring to front	맨 앞으로 가져오기
+	CAL: {m}	CAL: {m}
+	CONSTRAINTINFER = {0}	CONSTRAINTINFER = {0}
+	CV: not available yet	CV: 아직 사용할 수 없음
+	Calculate rectangle dimensions based on	직사각형 치수 계산 기준
+	Can't write {path}: {e}	{path}에 쓸 수 없습니다: {e}
+	Cannot add a control point to this spline.	이 스플라인에 제어점을 추가할 수 없습니다.
+	Cannot break a polyline at its end vertex.	폴리선을 끝 정점에서 끊을 수 없습니다.
+	Cannot break that object.	그 객체는 끊을 수 없습니다.
+	Cannot convert.	변환할 수 없습니다.
+	Cannot delete that control point.	그 제어점은 삭제할 수 없습니다.
+	Cannot divide/measure that object.	그 객체는 등분/길이 분할할 수 없습니다.
+	Cannot elevate the order of this spline.	이 스플라인의 차수를 올릴 수 없습니다.
+	Cannot extend a closed ellipse.	닫힌 타원은 연장할 수 없습니다.
+	Cannot extend a closed spline.	닫힌 스플라인은 연장할 수 없습니다.
+	Cannot extend that object.	그 객체는 연장할 수 없습니다.
+	Cannot extend that spline.	그 스플라인은 연장할 수 없습니다.
+	Cannot fillet an object to itself.	객체를 자신과 모깎기할 수 없습니다.
+	Cannot find layer "{m}".	도면층 "{m}"을(를) 찾을 수 없습니다.
+	Cannot find layer "{name}".	도면층 "{name}"을(를) 찾을 수 없습니다.
+	Cannot find layer "{n}".	도면층 "{n}"을(를) 찾을 수 없습니다.
+	Cannot find layer "{t}".	도면층 "{t}"을(를) 찾을 수 없습니다.
+	Cannot find multiline style "{0}".	다중선 스타일 "{0}"을(를) 찾을 수 없습니다.
+	Cannot find multiline style "{name}".	다중선 스타일 "{name}"을(를) 찾을 수 없습니다.
+	Cannot find text style "{name}".	문자 스타일 "{name}"을(를) 찾을 수 없습니다.
+	Cannot freeze layer "{cur}". It is the CURRENT layer.	도면층 "{cur}"을(를) 동결할 수 없습니다. 현재 도면층입니다.
+	Cannot join these objects into a spline.	이 객체들을 스플라인으로 결합할 수 없습니다.
+	Cannot join to a closed polyline.	닫힌 폴리선에는 결합할 수 없습니다.
+	Cannot join to a closed spline.	닫힌 스플라인에는 결합할 수 없습니다.
+	Cannot lengthen a closed ellipse.	닫힌 타원은 길이를 조정할 수 없습니다.
+	Cannot lengthen a closed spline.	닫힌 스플라인은 길이를 조정할 수 없습니다.
+	Cannot lengthen that spline.	그 스플라인은 길이를 조정할 수 없습니다.
+	Cannot measure that object.	그 객체는 측정할 수 없습니다.
+	Cannot merge into xref-dependent layer "{name}".	외부 참조 종속 도면층 "{name}"(으)로 병합할 수 없습니다.
+	Cannot merge layer "{name}" into itself.	도면층 "{name}"을(를) 자신에게 병합할 수 없습니다.
+	Cannot offset that object.	그 객체는 간격띄우기할 수 없습니다.
+	Cannot set the current layer to frozen layer "{0}".	동결된 도면층 "{0}"을(를) 현재 도면층으로 설정할 수 없습니다.
+	Cannot trim that object.	그 객체는 자를 수 없습니다.
+	Cannot trim that spline.	그 스플라인은 자를 수 없습니다.
+	Change area {0} of {n}.	변경 영역 {0}/{n}.
+	Choose one of the options.	옵션 중 하나를 선택하십시오.
+	Circle does not exist.	원이 존재하지 않습니다.
+	Circle must intersect cutting edges at two or more points.	원은 절단 모서리와 두 개 이상의 점에서 교차해야 합니다.
+	Clipboard is empty.	클립보드가 비어 있습니다.
+	Clipping boundary deleted.	자르기 경계가 삭제되었습니다.
+	Close: no drawing to close	닫기: 닫을 도면이 없습니다.
+	Color books are not available yet.	색상표는 아직 사용할 수 없습니다.
+	Combine collinear objects that meet end to end	끝과 끝이 만나는 동일 선상 객체 결합
+	Combine collinear objects that partially overlap	부분적으로 겹치는 동일 선상 객체 결합
+	Combine identical rows?	동일한 행을 결합하시겠습니까?
+	Combine layer property changes into one undo step?	도면층 특성 변경을 하나의 명령 취소 단계로 결합하시겠습니까?
+	Combine zooms and pans into one undo step?	줌과 초점 이동을 하나의 명령 취소 단계로 결합하시겠습니까?
+	Command: {0}	명령: {0}
+	Command: {shown}	명령: {shown}
+	Constant?	상수입니까?
+	Construction planes are for the Model tab.	작업 평면은 모형 탭용입니다.
+	Continuity = {0}	연속성 = {0}
+	Corner joints need open multilines.	모서리 접합에는 열린 다중선이 필요합니다.
+	Could not find view "{0}".	뷰 "{0}"을(를) 찾을 수 없습니다.
+	Could not find viewport configuration "{0}".	뷰포트 구성 "{0}"을(를) 찾을 수 없습니다.
+	Could not find viewport configuration "{name}".	뷰포트 구성 "{name}"을(를) 찾을 수 없습니다.
+	Create associative array	연관 배열 작성
+	Current active settings: {text}	현재 활성 설정: {text}
+	Current layer:  "{cur}"	현재 도면층:  "{cur}"
+	Current length: {l}	현재 길이: {l}
+	Current length: {l}, included angle: {0}	현재 길이: {l}, 사이각: {0}
+	Current line-width is {0}	현재 선 폭: {0}
+	Current linetype: "{cur}"	현재 선종류: "{cur}"
+	Current lineweight: {0}	현재 선가중치: {0}
+	Current osnap modes: {0}	현재 객체 스냅 모드: {0}
+	Current pattern: {0}  Scale: {1}  Angle: {2}	현재 패턴: {0}  축척: {1}  각도: {2}
+	Current plot style is "{cur}"	현재 플롯 스타일: "{cur}"
+	Current point modes:  PDMODE={m}  PDSIZE={sz}	현재 점 모드:  PDMODE={m}  PDSIZE={sz}
+	Current setting: Hide layers, Viewports=Off	현재 설정: 도면층 숨기기, 뷰포트=끄기
+	Current settings: Erase source={0}  Layer={1}  OFFSETGAPTYPE=0	현재 설정: 원본 지우기={0}  도면층={1}  OFFSETGAPTYPE=0
+	Current settings: Justification = {0}, Scale = {1}, Style = {2}	현재 설정: 자리맞추기 = {0}, 축척 = {1}, 스타일 = {2}
+	Current settings: Method=CV   Degree={0}	현재 설정: 방법=CV   차수={0}
+	Current settings: Method=Fit   Knots={0}	현재 설정: 방법=맞춤   매듭={0}
+	Current settings: Projection={proj}, Edge={0}, Mode={1}	현재 설정: 투영={proj}, 모서리={0}, 모드={1}
+	Current text style:  "{0}"  Text height:  {1}  Annotative:  {2}	현재 문자 스타일:  "{0}"  문자 높이:  {1}  주석:  {2}
+	Defined blocks: {0}	정의된 블록: {0}
+	Degree must be 1..10.	차수는 1..10이어야 합니다.
+	Delete old boundary(s)?	이전 경계를 삭제하시겠습니까?
+	Delete source objects?	원본 객체를 삭제하시겠습니까?
+	Diameter = {0}	지름 = {0}
+	Dimension style "{name}" not found.	치수 스타일 "{name}"을(를) 찾을 수 없습니다.
+	Dimension style: {0}	치수 스타일: {0}
+	Dimension text = {0}	치수 문자 = {0}
+	Distance = {0}	거리 = {0}
+	Do you wish to continue?	계속하시겠습니까?
+	Drafting mode?	제도 모드입니까?
+	Drawing revision: {rev}	도면 개정: {rev}
+	Dynamic grips are dragged in plan: use a level construction plane (CPLANE World, or a UCS turned about Z).	동적 그립은 평면도에서 끌어야 합니다. 수평 작업 평면(CPLANE World 또는 Z축으로 회전한 UCS)을 사용하십시오.
+	Edge endpoints must differ.	모서리 끝점은 서로 달라야 합니다.
+	Edit attributes one at a time?	속성을 한 번에 하나씩 편집하시겠습니까?
+	Edit only attributes visible on screen?	화면에 보이는 속성만 편집하시겠습니까?
+	Edit path for which xref(s)	경로를 편집할 외부 참조
+	Edit the source objects, then enter ARRAYCLOSE to save or discard the changes.	원본 객체를 편집한 다음 ARRAYCLOSE를 입력하여 변경 사항을 저장하거나 취소하십시오.
+	Editing the array with grips is not available yet; choose an option.	그립으로 배열을 편집하는 기능은 아직 사용할 수 없습니다. 옵션을 선택하십시오.
+	Edits recorded: {0}	기록된 편집: {0}
+	Ellipse must intersect cutting edges at two or more points.	타원은 절단 모서리와 두 개 이상의 점에서 교차해야 합니다.
+	Enter All, None, One, Combine or Layer.	All, None, One, Combine 또는 Layer를 입력하십시오.
+	Enter ON or OFF.	ON 또는 OFF를 입력하십시오.
+	Enter Single or Multiple.	Single 또는 Multiple을 입력하십시오.
+	Enter Trim mode option	자르기 모드 옵션 입력
+	Enter UNDO Auto mode	UNDO 자동 모드 입력
+	Enter X scale factor, specify opposite corner	X 축척 비율 입력, 반대 구석 지정
+	Enter Y scale factor	Y 축척 비율 입력
+	Enter Yes or No.	Yes 또는 No를 입력하십시오.
+	Enter a base point option for scaling	축척 기준점 옵션 입력
+	Enter a color name or a number from 0 to 256.	색상 이름 또는 0에서 256 사이의 번호를 입력하십시오.
+	Enter a configuration option	구성 옵션 입력
+	Enter a default viewport visibility option	기본 뷰포트 가시성 옵션 입력
+	Enter a group description	그룹 설명 입력
+	Enter a group name	그룹 이름 입력
+	Enter a group option	그룹 옵션 입력
+	Enter a hatch option	해치 옵션 입력
+	Enter a justification option	자리맞추기 옵션 입력
+	Enter a layout name or [?]	배치 이름 또는 [?] 입력
+	Enter a name for the new plotter	새 플로터 이름 입력
+	Enter a new name for the group	그룹의 새 이름 입력
+	Enter a page setup name	페이지 설정 이름 입력
+	Enter a parameters option	매개변수 옵션 입력
+	Enter a plotter option	플로터 옵션 입력
+	Enter a projection option	투영 옵션 입력
+	Enter a property to turn on or off	켜거나 끌 특성 입력
+	Enter a ratio such as 1:50.	1:50과 같은 비율을 입력하십시오.
+	Enter a scale factor (nX or nXP)	축척 비율 입력(nX 또는 nXP)
+	Enter a text edit mode option	문자 편집 모드 옵션 입력
+	Enter an UNDO control option	UNDO 제어 옵션 입력
+	Enter an implied edge extension mode	암시적 모서리 연장 모드 입력
+	Enter an option [Add/Remove] <Add>	옵션 입력 [Add/Remove] <Add>
+	Enter an option [Distribute/make segments Parallel/Specify spacing/Use current spacing]: type D, P, S or U.	옵션 입력 [Distribute/make segments Parallel/Specify spacing/Use current spacing]: D, P, S 또는 U를 입력하십시오.
+	Enter an option to change	변경할 옵션 입력
+	Enter an output device name or [?]	출력 장치 이름 또는 [?] 입력
+	Enter angle tolerance	각도 공차 입력
+	Enter array type	배열 유형 입력
+	Enter attribute tag	속성 태그 입력
+	Enter attribute tag specification	속성 태그 사양 입력
+	Enter attribute value specification	속성 값 사양 입력
+	Enter attribute visibility setting	속성 가시성 설정 입력
+	Enter block name or select a block reference [?]	블록 이름 입력 또는 블록 참조 선택 [?]
+	Enter block name specification	블록 이름 사양 입력
+	Enter block names to extract	추출할 블록 이름 입력
+	Enter block(s) to list	나열할 블록 입력
+	Enter cell style name of table style {0}	표 스타일 {0}의 셀 스타일 이름 입력
+	Enter clipping option	자르기 옵션 입력
+	Enter column type	열 유형 입력
+	Enter constraint bar transparency (0-90)	구속조건 막대 투명도 입력(0-90)
+	Enter datum reference {0}	데이텀 참조 {0} 입력
+	Enter dependent {t} name(s)	종속 {t} 이름 입력
+	Enter distance tolerance	거리 공차 입력
+	Enter drawing orientation	도면 방향 입력
+	Enter expression for new parameter	새 매개변수의 표현식 입력
+	Enter file format	파일 형식 입력
+	Enter file name	파일 이름 입력
+	Enter first angle constraint	첫 번째 각도 구속 입력
+	Enter first tolerance value	첫 번째 공차 값 입력
+	Enter fit tolerance	맞춤 공차 입력
+	Enter geometric characteristic	기하학적 특성 입력
+	Enter group description	그룹 설명 입력
+	Enter group name	그룹 이름 입력
+	Enter group name(s) to list	나열할 그룹 이름 입력
+	Enter inspection rate	검사 비율 입력
+	Enter inspection shape	검사 모양 입력
+	Enter justification	자리맞추기 입력
+	Enter knot parameterization	매듭 매개변수화 입력
+	Enter label (press ENTER for none)	레이블 입력(없으면 ENTER)
+	Enter layer name(s) to change default viewport visibility	기본 뷰포트 가시성을 변경할 도면층 이름 입력
+	Enter layer name(s) {what}	{what} 도면층 이름 입력
+	Enter layer option for offset objects	간격띄우기 객체의 도면층 옵션 입력
+	Enter layout name for copy	복사본의 배치 이름 입력
+	Enter layout name(s) to list	나열할 배치 이름 입력
+	Enter layout option	배치 옵션 입력
+	Enter layout to make current	현재로 설정할 배치 입력
+	Enter layout to rename	이름을 바꿀 배치 입력
+	Enter line spacing factor or distance	줄 간격 비율 또는 거리 입력
+	Enter line spacing type	줄 간격 유형 입력
+	Enter linetype(s) to load	로드할 선종류 입력
+	Enter lower left corner of window	창의 왼쪽 아래 구석 입력
+	Enter magnification or height	배율 또는 높이 입력
+	Enter maximum part height or	최대 부품 높이 입력 또는
+	Enter mline editing option	다중선 편집 옵션 입력
+	Enter mline style name or [?]	다중선 스타일 이름 또는 [?] 입력
+	Enter name for new parameter	새 매개변수 이름 입력
+	Enter name for new scale	새 축척 이름 입력
+	Enter name for new viewport configuration	새 뷰포트 구성 이름 입력
+	Enter name of LISP file to load	로드할 LISP 파일 이름 입력
+	Enter name of block to manage	관리할 블록 이름 입력
+	Enter name of block to sync	동기화할 블록 이름 입력
+	Enter name of drawing file to recover	복구할 도면 파일 이름 입력
+	Enter name of file to {0}	파일 이름 입력({0})
+	Enter name of layout to copy	복사할 배치 이름 입력
+	Enter name of layout to delete	삭제할 배치 이름 입력
+	Enter name of linetype file	선종류 파일 이름 입력
+	Enter name of new layout	새 배치 이름 입력
+	Enter name of parameter to delete	삭제할 매개변수 이름 입력
+	Enter name of parameter to edit	편집할 매개변수 이름 입력
+	Enter name of parameter to rename	이름을 바꿀 매개변수 이름 입력
+	Enter name of scale to delete	삭제할 축척 이름 입력
+	Enter name of script file	스크립트 파일 이름 입력
+	Enter name of sheet list file	시트 리스트 파일 이름 입력
+	Enter name of viewport configuration to restore	복원할 뷰포트 구성 이름 입력
+	Enter name(s) of new layers frozen in all viewports	모든 뷰포트에서 동결할 새 도면층 이름 입력
+	Enter name(s) of viewport configurations to delete	삭제할 뷰포트 구성 이름 입력
+	Enter name(s) of viewport configurations to list	나열할 뷰포트 구성 이름 입력
+	Enter name(s) to purge	소거할 이름 입력
+	Enter named scale to add	추가할 명명된 축척 입력
+	Enter named scale to delete	삭제할 명명된 축척 입력
+	Enter new attribute value	새 속성 값 입력
+	Enter new color	새 색상 입력
+	Enter new default value	새 기본값 입력
+	Enter new dimension text	새 치수 문자 입력
+	Enter new expression for parameter	매개변수의 새 표현식 입력
+	Enter new group name	새 그룹 이름 입력
+	Enter new layout name	새 배치 이름 입력
+	Enter new name for parameter	매개변수의 새 이름 입력
+	Enter new or existing layout name to make current	현재로 설정할 새 배치 또는 기존 배치 이름 입력
+	Enter new order	새 순서 입력
+	Enter new path for "{0}"	"{0}"의 새 경로 입력
+	Enter new prompt	새 프롬프트 입력
+	Enter new string	새 문자열 입력
+	Enter new tag	새 태그 입력
+	Enter new value for CONSTRAINTINFER	CONSTRAINTINFER의 새 값 입력
+	Enter new value for PICKSTYLE	PICKSTYLE의 새 값 입력
+	Enter new value for dimension variable {0}	치수 변수 {0}의 새 값 입력
+	Enter new value for {n}	{n}의 새 값 입력
+	Enter new weight (current = {w})	새 가중치 입력(현재 = {w})
+	Enter new {0} name	새 {0} 이름 입력
+	Enter next line of text (empty line to finish)	다음 문자 줄 입력(빈 줄이면 완료)
+	Enter number of actions	작업 수 입력
+	Enter number of items in array	배열의 항목 수 입력
+	Enter number of items to array	배열할 항목 수 입력
+	Enter object ordering option	객체 순서 옵션 입력
+	Enter object type to rename	이름을 바꿀 객체 유형 입력
+	Enter obliquing angle (press ENTER for none)	기울기 각도 입력(없으면 ENTER)
+	Enter old group name	이전 그룹 이름 입력
+	Enter old {0} name	이전 {0} 이름 입력
+	Enter one of CC OC MC CT OT MT CJ AV DV CS CA WA.	CC OC MC CT OT MT CJ AV DV CS CA WA 중 하나를 입력하십시오.
+	Enter option	옵션 입력
+	Enter option [Save/Discard reference changes] <Save>	옵션 입력 [Save/Discard reference changes] <Save>
+	Enter paper size or [?]	용지 크기 또는 [?] 입력
+	Enter paper units	용지 단위 입력
+	Enter parameter(s) to list	나열할 매개변수 입력
+	Enter plot area	플롯 영역 입력
+	Enter plot offset (x,y)	플롯 간격띄우기 입력(x,y)
+	Enter plot scale (Plotted {units}=Drawing Units)	플롯 축척 입력(플롯 {units}=도면 단위)
+	Enter plot style table name or [?] (enter . for none)	플롯 스타일 테이블 이름 또는 [?] 입력(없으면 . 입력)
+	Enter properties to match (SELECTSIMILARMODE bit code)	일치시킬 특성 입력(SELECTSIMILARMODE 비트 코드)
+	Enter scale	축척 입력
+	Enter scale ratio (paper units:drawing units)	축척 비율 입력(용지 단위:도면 단위)
+	Enter second angle constraint	두 번째 각도 구속 입력
+	Enter second tolerance value	두 번째 공차 값 입력
+	Enter shade plot setting	음영 플롯 설정 입력
+	Enter sketch type	스케치 유형 입력
+	Enter spline creation method	스플라인 작성 방법 입력
+	Enter string to change	변경할 문자열 입력
+	Enter style name	스타일 이름 입력
+	Enter symbol type to bind	결합할 기호 유형 입력
+	Enter target layer name	대상 도면층 이름 입력
+	Enter text for cell {0} (=formula)	셀 {0}의 문자 입력(=수식)
+	Enter the drawing to compare with (an open drawing's name or a file path)	비교할 도면 입력(열린 도면 이름 또는 파일 경로)
+	Enter the maximum points for leader line	지시선의 최대 점 수 입력
+	Enter the number of columns	열 수 입력
+	Enter the number of levels	레벨 수 입력
+	Enter the number of operations to undo	명령 취소할 작업 수 입력
+	Enter the number of rows	행 수 입력
+	Enter the output	출력 대상 입력
+	Enter the paper name	용지 이름 입력
+	Enter the paper width,height in mm	용지 폭,높이를 mm 단위로 입력
+	Enter the plotter to add a paper size to	용지 크기를 추가할 플로터 입력
+	Enter the plotter to delete	삭제할 플로터 입력
+	Enter the position of the first object to move (0-{last})	이동할 첫 번째 객체의 위치 입력(0-{last})
+	Enter the position to move it to (0-{last})	이동할 대상 위치 입력(0-{last})
+	Enter the shell offset distance	쉘 간격띄우기 거리 입력
+	Enter three values from 0 to 255, separated by commas.	0에서 255 사이의 값 세 개를 쉼표로 구분하여 입력하십시오.
+	Enter tolerance location	공차 위치 입력
+	Enter trim method	자르기 방법 입력
+	Enter type of dimension editing	치수 편집 유형 입력
+	Enter type of unused objects to purge	소거할 사용하지 않는 객체 유형 입력
+	Enter type of value modification	값 수정 유형 입력
+	Enter upper right corner of window	창의 오른쪽 위 구석 입력
+	Enter value	값 입력
+	Enter value for {tag}	{tag}의 값 입력
+	Enter view name	뷰 이름 입력
+	Enter view name to restore	복원할 뷰 이름 입력
+	Enter view name to save	저장할 뷰 이름 입력
+	Enter view name(s) to delete	삭제할 뷰 이름 입력
+	Enter view name(s) to list	나열할 뷰 이름 입력
+	Enter viewport arrangement	뷰포트 배열 입력
+	Enter viewport configuration name	뷰포트 구성 이름 입력
+	Enter what to pick	선택할 대상 입력
+	Enter width,height in mm.	폭,높이를 mm 단위로 입력하십시오.
+	Enter xref name(s) to {op}	{op}할 외부 참조 이름 입력
+	Enter xref(s) to list	나열할 외부 참조 입력
+	Erase polyline?	폴리선을 지우시겠습니까?
+	Erase source object after offsetting?	간격띄우기 후 원본 객체를 지우시겠습니까?
+	Erase source objects?	원본 객체를 지우시겠습니까?
+	Everything has been undone	모든 작업이 취소되었습니다.
+	Existing style.	기존 스타일입니다.
+	Exported to {path}	{path}(으)로 내보냈습니다.
+	Exported {n} solid(s) to {path}.	솔리드 {n}개를 {path}(으)로 내보냈습니다.
+	Fillet and chamfer work on straight polyline segments.	모깎기와 모따기는 직선 폴리선 구간에 적용됩니다.
+	Fillet works on lines, arcs, circles, elliptical arcs and splines (and polylines with the Polyline option).	모깎기는 선, 호, 원, 타원형 호, 스플라인(Polyline 옵션을 사용하면 폴리선)에 적용됩니다.
+	First point of mid	중간의 첫 번째 점
+	First tracking point	첫 번째 추적점
+	Fix any errors detected?	감지된 오류를 수정하시겠습니까?
+	Frames mode must be ON, OFF or Display.	프레임 모드는 ON, OFF 또는 Display여야 합니다.
+	Get from the drawing or [Point/Distance/Angle/Intersection]	도면에서 가져오기 또는 [Point/Distance/Angle/Intersection]
+	Group "{n}" created with {0} object(s).	객체 {0}개로 그룹 "{n}"을(를) 만들었습니다.
+	Group reordered.	그룹 순서가 변경되었습니다.
+	Group {0} has no objects left and was deleted.	그룹 {0}에 남은 객체가 없어 삭제되었습니다.
+	Group {0} renamed to {1}.	그룹 {0}의 이름이 {1}(으)로 변경되었습니다.
+	Group {0} renamed to {new}.	그룹 {0}의 이름이 {new}(으)로 변경되었습니다.
+	Group {n} ungrouped.	그룹 {n}이(가) 해제되었습니다.
+	Guide crosshairs along cloud path	구름 경로를 따라 십자선 안내
+	Imported 1 solid from {path}.	{path}에서 솔리드 1개를 가져왔습니다.
+	Indicate dimension point to add	추가할 치수 점 지정
+	Indicate dimension point to remove	제거할 치수 점 지정
+	Insert mode: Copy (nested objects are copied as independent objects).	삽입 모드: 복사(중첩된 객체가 독립 객체로 복사됨).
+	Internal error in {id}: {m}	{id}의 내부 오류: {m}
+	Internal error; press Enter to end the command	내부 오류입니다. Enter 키를 눌러 명령을 끝내십시오.
+	Invalid X axis.	잘못된 X축입니다.
+	Invalid angle.	잘못된 각도입니다.
+	Invalid arc endpoint.	잘못된 호 끝점입니다.
+	Invalid arc for these values.	이 값으로는 호를 만들 수 없습니다.
+	Invalid arc or circle for these values.	이 값으로는 호나 원을 만들 수 없습니다.
+	Invalid block name.	잘못된 블록 이름입니다.
+	Invalid color.	잘못된 색상입니다.
+	Invalid direction.	잘못된 방향입니다.
+	Invalid end point.	잘못된 끝점입니다.
+	Invalid group name.	잘못된 그룹 이름입니다.
+	Invalid input.	잘못된 입력입니다.
+	Invalid input: {0}	잘못된 입력: {0}
+	Invalid lineweight.	잘못된 선가중치입니다.
+	Invalid option keyword.	잘못된 옵션 키워드입니다.
+	Invalid option.	잘못된 옵션입니다.
+	Invalid point.	잘못된 점입니다.
+	Invalid spline.	잘못된 스플라인입니다.
+	Invalid style name.	잘못된 스타일 이름입니다.
+	Invisible?	숨김입니까?
+	Island detection style	아일랜드 감지 스타일
+	Isometric plane?	등각 평면입니까?
+	Keep associative objects	연관 객체 유지
+	Key points are not available yet; specify a point.	키 점은 아직 사용할 수 없습니다. 점을 지정하십시오.
+	LAYOUT {other} is not available yet.	LAYOUT {other}은(는) 아직 사용할 수 없습니다.
+	Layer "{0}" not found.	도면층 "{0}"을(를) 찾을 수 없습니다.
+	Layer "{n}": {0}	도면층 "{n}": {0}
+	Layer(s) {0} have been isolated.	도면층 {0}이(가) 분리되었습니다.
+	Layers currently frozen in viewport {0}:	현재 뷰포트 {0}에서 동결된 도면층:
+	Layers not isolated are turned off (Lock and fade is not available yet).	분리되지 않은 도면층은 꺼집니다(잠금 및 페이드는 아직 사용할 수 없음).
+	Layout "{from}" copied to "{to}".	배치 "{from}"을(를) "{to}"(으)로 복사했습니다.
+	Layout "{gone}" deleted.	배치 "{gone}"이(가) 삭제되었습니다.
+	Layout "{name}" not found.	배치 "{name}"을(를) 찾을 수 없습니다.
+	Layout "{n}" not found.	배치 "{n}"을(를) 찾을 수 없습니다.
+	Layout: {n}	배치: {n}
+	Lengthening would make the object zero length or negative.	길이를 조정하면 객체 길이가 0 또는 음수가 됩니다.
+	Lines are parallel.	선이 평행합니다.
+	Linetype "{t}" is not loaded. Load it with the LINETYPE command.	선종류 "{t}"이(가) 로드되지 않았습니다. LINETYPE 명령으로 로드하십시오.
+	Linetype {name} is already loaded.	선종류 {name}이(가) 이미 로드되어 있습니다.
+	Linetype {name} is already loaded. Reload it?	선종류 {name}이(가) 이미 로드되어 있습니다. 다시 로드하시겠습니까?
+	Linetype {name} reloaded.	선종류 {name}을(를) 다시 로드했습니다.
+	Linetype {n} loaded.	선종류 {n}을(를) 로드했습니다.
+	Linetype(s) {name} loaded.	선종류 {name}을(를) 로드했습니다.
+	Linked {path}: {0} row(s), {1} column(s).	{path} 링크됨: 행 {0}개, 열 {1}개.
+	Loaded linetypes:	로드된 선종류:
+	Loaded linetypes: {0}	로드된 선종류: {0}
+	Loaded multiline styles: {0}	로드된 다중선 스타일: {0}
+	Lock the view of viewports?	뷰포트의 뷰를 잠그시겠습니까?
+	Merged tee is not available yet.	병합된 T자형은 아직 사용할 수 없습니다.
+	Minimum arc length: {0}   Maximum arc length: {0}   Style: Normal   Type: {t}	최소 호 길이: {0}   최대 호 길이: {0}   스타일: 일반   유형: {t}
+	Mirror line points must differ.	대칭선의 점은 서로 달라야 합니다.
+	Missed, try again.	선택되지 않았습니다. 다시 시도하십시오.
+	Model space page setups are not saved yet.	모형 공간 페이지 설정은 아직 저장되지 않습니다.
+	Model space page setups are not stored yet; run -PAGESETUP on a layout tab.	모형 공간 페이지 설정은 아직 저장되지 않습니다. 배치 탭에서 -PAGESETUP을 실행하십시오.
+	Multiline style {0} is in use: its elements and properties can't be changed.	다중선 스타일 {0}이(가) 사용 중이므로 요소와 특성을 변경할 수 없습니다.
+	Multiline style {from} is in use and can't be renamed.	다중선 스타일 {from}이(가) 사용 중이므로 이름을 바꿀 수 없습니다.
+	Multiline style {st} is in use and can't be deleted.	다중선 스타일 {st}이(가) 사용 중이므로 삭제할 수 없습니다.
+	Named dimension styles:	명명된 치수 스타일:
+	Named page setups are not available yet; the layout's own page setup is used.	명명된 페이지 설정은 아직 사용할 수 없습니다. 배치 자체의 페이지 설정이 사용됩니다.
+	Nested object: {0}	중첩된 객체: {0}
+	New drawings will be saved as version {v}	새 도면은 {v} 버전으로 저장됩니다.
+	New drawings will be saved as {0}	새 도면은 {0}(으)로 저장됩니다.
+	New style.	새 스타일입니다.
+	Next point (Press ENTER to end tracking)	다음 점(추적을 끝내려면 ENTER)
+	No annotative objects selected.	선택된 주석 객체가 없습니다.
+	No array is being edited.	편집 중인 배열이 없습니다.
+	No array item there; select an item of the array.	그 위치에 배열 항목이 없습니다. 배열의 항목을 선택하십시오.
+	No array selected.	선택된 배열이 없습니다.
+	No block references selected.	선택된 블록 참조가 없습니다.
+	No blocks to edit.	편집할 블록이 없습니다.
+	No blocks with attributes match.	일치하는 속성 블록이 없습니다.
+	No blocks with attributes.	속성이 있는 블록이 없습니다.
+	No clip boundary to delete.	삭제할 자르기 경계가 없습니다.
+	No clip boundary to set clipping planes on.	자르기 평면을 설정할 자르기 경계가 없습니다.
+	No clip boundary to trace.	추적할 자르기 경계가 없습니다.
+	No closed boundary objects selected.	선택된 닫힌 경계 객체가 없습니다.
+	No color books are available.	사용할 수 있는 색상표가 없습니다.
+	No command alias file is loaded; ALIASEDIT {file} loads one.	로드된 명령 별칭 파일이 없습니다. ALIASEDIT {file}(으)로 로드하십시오.
+	No differences.	차이가 없습니다.
+	No dimensions selected.	선택된 치수가 없습니다.
+	No fillet of that radius fits these objects.	이 객체들에 맞는 해당 반지름의 모깎기가 없습니다.
+	No first corner.	첫 번째 구석이 없습니다.
+	No grip of a selected object there.	그 위치에 선택된 객체의 그립이 없습니다.
+	No group named "{0}".	"{0}" 그룹이 없습니다.
+	No group named "{t}".	"{t}" 그룹이 없습니다.
+	No hatch selected.	선택된 해치가 없습니다.
+	No layout matches "{pat}".	"{pat}"과(와) 일치하는 배치가 없습니다.
+	No layout to move objects to.	객체를 이동할 배치가 없습니다.
+	No leader to remove.	제거할 지시선이 없습니다.
+	No lengthen mode.	길이 조정 모드가 없습니다.
+	No line or arc to continue.	계속할 선이나 호가 없습니다.
+	No line selected.	선택된 선이 없습니다.
+	No linear dimension to continue. Create one with DIMLINEAR first.	계속할 선형 치수가 없습니다. 먼저 DIMLINEAR로 만드십시오.
+	No linetype matching {0} in {path}.	{path}에 {0}과(와) 일치하는 선종류가 없습니다.
+	No mark: undo everything?	표식이 없습니다. 모두 명령 취소하시겠습니까?
+	No matching groups found.	일치하는 그룹이 없습니다.
+	No matching layer states.	일치하는 도면층 상태가 없습니다.
+	No matching parameters.	일치하는 매개변수가 없습니다.
+	No matching viewport configurations found.	일치하는 뷰포트 구성이 없습니다.
+	No matching views found.	일치하는 뷰가 없습니다.
+	No named plot styles.	명명된 플롯 스타일이 없습니다.
+	No object found.	객체를 찾을 수 없습니다.
+	No object.	객체가 없습니다.
+	No objects are isolated or hidden.	분리되거나 숨겨진 객체가 없습니다.
+	No objects found.	객체를 찾을 수 없습니다.
+	No objects to array (objects on locked layers are left out).	배열할 객체가 없습니다(잠긴 도면층의 객체는 제외됨).
+	No polyline.	폴리선이 없습니다.
+	No previous view saved.	저장된 이전 뷰가 없습니다.
+	No replacement objects.	대체 객체가 없습니다.
+	No saved viewport configurations.	저장된 뷰포트 구성이 없습니다.
+	No spline.	스플라인이 없습니다.
+	No such object.	해당 객체가 없습니다.
+	No such viewport.	해당 뷰포트가 없습니다.
+	No table cell there.	그 위치에 표 셀이 없습니다.
+	No table there.	그 위치에 표가 없습니다.
+	No tangent or perpendicular from the last point.	마지막 점에서 접선이나 수직선을 그을 수 없습니다.
+	No text objects selected.	선택된 문자 객체가 없습니다.
+	No vertex.	정점이 없습니다.
+	No viewport found there.	그 위치에서 뷰포트를 찾을 수 없습니다.
+	No xref matches "{t}".	"{t}"과(와) 일치하는 외부 참조가 없습니다.
+	No xrefs are attached.	부착된 외부 참조가 없습니다.
+	No {0} found for specified point.	지정한 점에서 {0}을(를) 찾을 수 없습니다.
+	No {noun} named "{name}".	"{name}" {noun}이(가) 없습니다.
+	No {what} line through that point; pick another point.	그 점을 지나는 {what} 선이 없습니다. 다른 점을 선택하십시오.
+	Not a number or distance: {text}	숫자나 거리가 아닙니다: {text}
+	Nothing nested there.	그 위치에 중첩된 객체가 없습니다.
+	Nothing to join.	결합할 객체가 없습니다.
+	Nothing to redo	다시 실행할 작업이 없습니다.
+	Nothing to restore: OOPS brings back what the last ERASE removed.	복원할 것이 없습니다. OOPS는 마지막 ERASE로 지운 객체를 되살립니다.
+	Nothing to undo.	명령 취소할 작업이 없습니다.
+	Nothing would be left of the first multiline.	첫 번째 다중선에 남는 부분이 없게 됩니다.
+	Nothing would be left of the second multiline.	두 번째 다중선에 남는 부분이 없게 됩니다.
+	Number of objects to move	이동할 객체 수
+	Number of turns = {0}     Twist=CCW	회전 수 = {0}     비틀기=CCW
+	OBJECTISOLATIONMODE 1 (isolation saved with the drawing) is not available yet	OBJECTISOLATIONMODE 1(도면과 함께 저장되는 분리)은 아직 사용할 수 없습니다.
+	OOPS is not available in the Block Editor; use UNDO.	블록 편집기에서는 OOPS를 사용할 수 없습니다. UNDO를 사용하십시오.
+	Object cannot be dimensioned this way.	이 방법으로는 객체에 치수를 기입할 수 없습니다.
+	Object does not intersect a cutting edge.	객체가 절단 모서리와 교차하지 않습니다.
+	Object does not intersect an edge.	객체가 모서리와 교차하지 않습니다.
+	Object not converted: {why}.	객체가 변환되지 않았습니다: {why}.
+	Object selected is not a circle or arc.	선택한 객체가 원이나 호가 아닙니다.
+	Object selected is not a dimension.	선택한 객체가 치수가 아닙니다.
+	Object selected is not a polyline.	선택한 객체가 폴리선이 아닙니다.
+	Object selected is not a polyline. Do you want to turn it into one?	선택한 객체가 폴리선이 아닙니다. 폴리선으로 바꾸시겠습니까?
+	Object selected is not a spline.	선택한 객체가 스플라인이 아닙니다.
+	Object {0} not converted: {why}.	객체 {0}이(가) 변환되지 않았습니다: {why}.
+	Objects are not connected end to end.	객체가 끝과 끝으로 연결되어 있지 않습니다.
+	Objects are not connected.	객체가 연결되어 있지 않습니다.
+	Only part of a polyline connects; join it whole or explode it first.	폴리선의 일부만 연결됩니다. 전체를 결합하거나 먼저 분해하십시오.
+	Optimize segments within polylines	폴리선 내 구간 최적화
+	Paper "{paper}" added to "{dev}".	용지 "{paper}"을(를) "{dev}"에 추가했습니다.
+	Parameter "{n}" already exists.	매개변수 "{n}"이(가) 이미 있습니다.
+	Parameter "{n}" not found.	매개변수 "{n}"을(를) 찾을 수 없습니다.
+	Performing global editing of attribute values.	속성 값을 전역으로 편집하는 중입니다.
+	Pick a table cell	표 셀 선택
+	Pick internal point	내부 점 선택
+	Pick second point	두 번째 점 선택
+	Plot style "{name}" not found.	플롯 스타일 "{name}"을(를) 찾을 수 없습니다.
+	Plot style table "{n}" not found.	플롯 스타일 테이블 "{n}"을(를) 찾을 수 없습니다.
+	Plotted to {0}.	{0}(으)로 플롯했습니다.
+	Plotted to {path}	{path}(으)로 플롯했습니다.
+	Plotter "{0}" deleted.	플로터 "{0}"이(가) 삭제되었습니다.
+	Plotter "{name}" created.	플로터 "{name}"을(를) 만들었습니다.
+	Plotter "{n}" already exists.	플로터 "{n}"이(가) 이미 있습니다.
+	Plotter "{n}" not found.	플로터 "{n}"을(를) 찾을 수 없습니다.
+	Point or option keyword required.	점 또는 옵션 키워드가 필요합니다.
+	Point or value required.	점 또는 값이 필요합니다.
+	Point required.	점이 필요합니다.
+	Polylines with arc segments cannot be used for wipeouts.	호 구간이 있는 폴리선은 가리기에 사용할 수 없습니다.
+	Proceed with plot?	플롯을 진행하시겠습니까?
+	Property to ignore or compare again (ignored: {0})	무시하거나 다시 비교할 특성(무시됨: {0})
+	Purge {0} "{n}"?	{0} "{n}"을(를) 소거하시겠습니까?
+	QuickCalc: {m}	QuickCalc: {m}
+	Radius = {r}	반지름 = {r}
+	Radius is too large.	반지름이 너무 큽니다.
+	Really want layer "{cur}" (the CURRENT layer) off?	도면층 "{cur}"(현재 도면층)을(를) 정말 끄시겠습니까?
+	Reference changes discarded.	참조 변경 사항이 취소되었습니다.
+	Reference changes saved.	참조 변경 사항이 저장되었습니다.
+	Regenerating all viewports.	모든 뷰포트를 재생성하는 중입니다.
+	Regenerating model.	모형을 재생성하는 중입니다.
+	Regions and 3D solids can't be combined: select one kind.	영역과 3D 솔리드는 함께 결합할 수 없습니다. 한 종류만 선택하십시오.
+	Remove objects	객체 제거
+	Renaming a {noun} is not available yet.	{noun} 이름 바꾸기는 아직 사용할 수 없습니다.
+	Replaced items were restored.	대체된 항목이 복원되었습니다.
+	Requires Ruled or Smooth.	Ruled 또는 Smooth가 필요합니다.
+	Requires Top, Front or Right.	Top, Front 또는 Right가 필요합니다.
+	Requires Yes or No.	Yes 또는 No가 필요합니다.
+	Requires a count of 1 or more.	1 이상의 개수가 필요합니다.
+	Requires a direction.	방향이 필요합니다.
+	Requires a distance of 0 or more.	0 이상의 거리가 필요합니다.
+	Requires a distance or Remove.	거리 또는 Remove가 필요합니다.
+	Requires a distance.	거리가 필요합니다.
+	Requires a factor between 0.25x and 4x, or a distance.	0.25x에서 4x 사이의 비율 또는 거리가 필요합니다.
+	Requires a fill angle between -360 and 360 degrees (not 0).	-360도에서 360도 사이의 채우기 각도가 필요합니다(0 제외).
+	Requires a geometric characteristic or None.	기하학적 특성 또는 None이 필요합니다.
+	Requires a gutter width of 0 or more.	0 이상의 홈 폭이 필요합니다.
+	Requires a layout name.	배치 이름이 필요합니다.
+	Requires a name.	이름이 필요합니다.
+	Requires a non-negative distance.	음수가 아닌 거리가 필요합니다.
+	Requires a non-negative fit tolerance.	음수가 아닌 맞춤 공차가 필요합니다.
+	Requires a non-negative number or Auto.	음수가 아닌 숫자 또는 Auto가 필요합니다.
+	Requires a non-negative number.	음수가 아닌 숫자가 필요합니다.
+	Requires a non-negative value.	음수가 아닌 값이 필요합니다.
+	Requires a non-negative width.	음수가 아닌 폭이 필요합니다.
+	Requires a non-zero number.	0이 아닌 숫자가 필요합니다.
+	Requires a nonzero angle.	0이 아닌 각도가 필요합니다.
+	Requires a nonzero distance.	0이 아닌 거리가 필요합니다.
+	Requires a nonzero radius.	0이 아닌 반지름이 필요합니다.
+	Requires a number between {lo} and {hi}.	{lo}에서 {hi} 사이의 숫자가 필요합니다.
+	Requires a number or point.	숫자 또는 점이 필요합니다.
+	Requires a number.	숫자가 필요합니다.
+	Requires a plot style name.	플롯 스타일 이름이 필요합니다.
+	Requires a point on a grip.	그립 위의 점이 필요합니다.
+	Requires a point or an angle.	점 또는 각도가 필요합니다.
+	Requires a point or an option keyword.	점 또는 옵션 키워드가 필요합니다.
+	Requires a point or option keyword.	점 또는 옵션 키워드가 필요합니다.
+	Requires a point, or Enter to accept the view.	점이 필요합니다. 뷰를 적용하려면 Enter를 누르십시오.
+	Requires a point, scale factor or option keyword.	점, 축척 비율 또는 옵션 키워드가 필요합니다.
+	Requires a point.	점이 필요합니다.
+	Requires a positive distance.	양수 거리가 필요합니다.
+	Requires a positive height.	양수 높이가 필요합니다.
+	Requires a positive integer.	양의 정수가 필요합니다.
+	Requires a positive length.	양수 길이가 필요합니다.
+	Requires a positive number or Off.	양수 또는 Off가 필요합니다.
+	Requires a positive number.	양수가 필요합니다.
+	Requires a positive percentage.	양수 백분율이 필요합니다.
+	Requires a positive radius.	양수 반지름이 필요합니다.
+	Requires a positive scale such as 1:50, or Fit.	1:50과 같은 양수 축척 또는 Fit이 필요합니다.
+	Requires a positive value.	양수 값이 필요합니다.
+	Requires a positive weight.	양수 가중치가 필요합니다.
+	Requires a scale factor (n, nX or nXP).	축척 비율(n, nX 또는 nXP)이 필요합니다.
+	Requires a valid angle in degrees.	도 단위의 유효한 각도가 필요합니다.
+	Requires a valid angle.	유효한 각도가 필요합니다.
+	Requires a valid base point.	유효한 기준점이 필요합니다.
+	Requires a view name.	뷰 이름이 필요합니다.
+	Requires a viewport.	뷰포트가 필요합니다.
+	Requires a whole number between 0 and {0}.	0에서 {0} 사이의 정수가 필요합니다.
+	Requires a whole number between 1 and {0}.	1에서 {0} 사이의 정수가 필요합니다.
+	Requires a whole number of columns from 1 to 100.	1에서 100 사이의 정수 열 수가 필요합니다.
+	Requires a whole number.	정수가 필요합니다.
+	Requires an angle between 0 and 89.4 degrees.	0도에서 89.4도 사이의 각도가 필요합니다.
+	Requires an angle from 0 to 180 degrees.	0도에서 180도 사이의 각도가 필요합니다.
+	Requires an angle or point.	각도 또는 점이 필요합니다.
+	Requires an angle.	각도가 필요합니다.
+	Requires an integer between 0 and 1.	0에서 1 사이의 정수가 필요합니다.
+	Requires an integer between 0 and 3.	0에서 3 사이의 정수가 필요합니다.
+	Requires an integer between 0 and 99.	0에서 99 사이의 정수가 필요합니다.
+	Requires an integer between 1 and {MAX_COLS}.	1에서 {MAX_COLS} 사이의 정수가 필요합니다.
+	Requires an integer between 1 and {MAX_ROWS}.	1에서 {MAX_ROWS} 사이의 정수가 필요합니다.
+	Requires an integer between 1 and {max} (MAXARRAY limits the size of the array).	1에서 {max} 사이의 정수가 필요합니다(MAXARRAY가 배열 크기를 제한함).
+	Requires an integer between 2 and 32767.	2에서 32767 사이의 정수가 필요합니다.
+	Requires an integer between 2 and {MAX_LEADER_POINTS}.	2에서 {MAX_LEADER_POINTS} 사이의 정수가 필요합니다.
+	Requires an integer between 2 and {max}.	2에서 {max} 사이의 정수가 필요합니다.
+	Requires an integer between 3 and 1024.	3에서 1024 사이의 정수가 필요합니다.
+	Requires an integer value.	정수 값이 필요합니다.
+	Requires an offset x,y, or Center.	간격띄우기 x,y 또는 Center가 필요합니다.
+	Requires an option keyword.	옵션 키워드가 필요합니다.
+	Requires an order between {current} and {max}.	{current}에서 {max} 사이의 차수가 필요합니다.
+	Requires dx,dy or dx,dy,dz.	dx,dy 또는 dx,dy,dz가 필요합니다.
+	Requires numeric distance or a point.	숫자 거리 또는 점이 필요합니다.
+	Requires numeric distance or point.	숫자 거리 또는 점이 필요합니다.
+	Requires numeric distance or second point.	숫자 거리 또는 두 번째 점이 필요합니다.
+	Requires numeric distance or two points.	숫자 거리 또는 두 점이 필요합니다.
+	Requires numeric value.	숫자 값이 필요합니다.
+	Requires the name of a block defined in the drawing.	도면에 정의된 블록 이름이 필요합니다.
+	Requires the string to change.	변경할 문자열이 필요합니다.
+	Requires three values from 0 to 255, separated by commas.	0에서 255 사이의 값 세 개를 쉼표로 구분하여 입력해야 합니다.
+	Requires valid numeric angle or second point.	유효한 숫자 각도 또는 두 번째 점이 필요합니다.
+	Requires {what}.	{what}이(가) 필요합니다.
+	Reset Model space limits:	모형 공간 한계 재설정:
+	Reset the scale list to the defaults?	축척 리스트를 기본값으로 재설정하시겠습니까?
+	Restored previous layer states.	이전 도면층 상태를 복원했습니다.
+	Resuming {0} command.	{0} 명령을 재개합니다.
+	Revision cloud finished.	구름형 수정 기호가 완료되었습니다.
+	Rotate arrayed items?	배열 항목을 회전하시겠습니까?
+	Rotating/scaling a copy of the selected objects.	선택한 객체의 사본을 회전/축척하는 중입니다.
+	Row elevations need an associative array; the copies stay at the same elevation.	행 고도에는 연관 배열이 필요합니다. 사본은 같은 고도에 유지됩니다.
+	SHARE is not available yet: there is no online service to share through; EXPORT or PUBLISH the drawing and send the file	SHARE는 아직 사용할 수 없습니다. 공유할 온라인 서비스가 없으므로 도면을 EXPORT 또는 PUBLISH하여 파일을 보내십시오.
+	SPELL is not available yet: Cadino has no spelling dictionary; FIND finds and replaces text	SPELL은 아직 사용할 수 없습니다. Cadino에는 맞춤법 사전이 없습니다. FIND로 문자를 찾고 바꿀 수 있습니다.
+	Save changes to array?	배열의 변경 사항을 저장하시겠습니까?
+	Save changes to block "{name}"?	블록 "{name}"의 변경 사항을 저장하시겠습니까?
+	Save layer settings with views?	뷰와 함께 도면층 설정을 저장하시겠습니까?
+	Scale objects based on alignment points?	정렬점을 기준으로 객체를 축척하시겠습니까?
+	Scales of the selected objects: {0}	선택한 객체의 축척: {0}
+	Second point of mid	중간의 두 번째 점
+	Select 3D solids to subtract.	뺄 3D 솔리드를 선택하십시오.
+	Select a block	블록 선택
+	Select a content type	내용 유형 선택
+	Select a different viewport to join.	결합할 다른 뷰포트를 선택하십시오.
+	Select a dimension.	치수를 선택하십시오.
+	Select a leader type	지시선 유형 선택
+	Select a line, arc, open polyline, elliptical arc or open spline.	선, 호, 열린 폴리선, 타원형 호 또는 열린 스플라인을 선택하십시오.
+	Select a linear or aligned dimension.	선형 또는 정렬 치수를 선택하십시오.
+	Select a multileader	다중 지시선 선택
+	Select a multileader.	다중 지시선을 선택하십시오.
+	Select a multiline.	다중선을 선택하십시오.
+	Select a polyline segment.	폴리선 구간을 선택하십시오.
+	Select a text object with the desired height	원하는 높이의 문자 객체 선택
+	Select a text object.	문자 객체를 선택하십시오.
+	Select a viewport	뷰포트 선택
+	Select a viewport.	뷰포트를 선택하십시오.
+	Select an arc, circle or line.	호, 원 또는 선을 선택하십시오.
+	Select an item in array to replace	대체할 배열 항목 선택
+	Select annotative objects	주석 객체 선택
+	Select array	배열 선택
+	Select at least one region.	영역을 하나 이상 선택하십시오.
+	Select at least two 3D solids.	3D 솔리드를 두 개 이상 선택하십시오.
+	Select attributes	속성 선택
+	Select base dimension	기준 치수 선택
+	Select base point of replacement objects	대체 객체의 기준점 선택
+	Select block reference	블록 참조 선택
+	Select boundary edges ...	경계 모서리 선택 ...
+	Select boundary objects (Enter finds them)	경계 객체 선택(Enter를 누르면 찾음)
+	Select clipping object	자르기 객체 선택
+	Select closed profile	닫힌 프로파일 선택
+	Select cross sections in lofting order	로프트 순서대로 단면 선택
+	Select cutting edges ...	절단 모서리 선택 ...
+	Select destination object(s)	대상 객체 선택
+	Select dimension to add jog	꺾기를 추가할 치수 선택
+	Select dimension to add/remove break	끊기를 추가/제거할 치수 선택
+	Select dimensions to space	간격을 조정할 치수 선택
+	Select first mline	첫 번째 다중선 선택
+	Select geometry to dimension	치수를 기입할 형상 선택
+	Select grip to edit array	배열을 편집할 그립 선택
+	Select group	그룹 선택
+	Select hatch object	해치 객체 선택
+	Select item in array	배열 항목 선택
+	Select jog to remove	제거할 꺾기 선택
+	Select mline	다중선 선택
+	Select multileader to align to or [Options]	정렬 기준 다중 지시선 선택 또는 [Options]
+	Select new datum point	새 기준점 선택
+	Select object on target layer	대상 도면층의 객체 선택
+	Select object to break dimension	치수를 끊을 객체 선택
+	Select object to clip viewport	뷰포트를 자를 객체 선택
+	Select object to count or [List/Spaces]	개수를 셀 객체 선택 또는 [List/Spaces]
+	Select objects or	객체 선택 또는
+	Select objects other than the array.	배열 이외의 객체를 선택하십시오.
+	Select objects to add to the group	그룹에 추가할 객체 선택
+	Select objects to erase or	지울 객체 선택 또는
+	Select objects to join to the spline.	스플라인에 결합할 객체를 선택하십시오.
+	Select objects to remove from the group	그룹에서 제거할 객체 선택
+	Select objects to sweep	스윕할 객체 선택
+	Select one or more regions.	영역을 하나 이상 선택하십시오.
+	Select polyline	폴리선 선택
+	Select reference objects	참조 객체 선택
+	Select regions to subtract ..	뺄 영역 선택 ..
+	Select regions to subtract from ..	빼기 대상 영역 선택 ..
+	Select regions to subtract from.	빼기 대상 영역을 선택하십시오.
+	Select replacement objects	대체 객체 선택
+	Select second mline	두 번째 다중선 선택
+	Select solids	솔리드 선택
+	Select source object	원본 객체 선택
+	Select sweep path	스윕 경로 선택
+	Select text object to align to	정렬 기준 문자 객체 선택
+	Select text objects to align	정렬할 문자 객체 선택
+	Select two different multilines.	서로 다른 다중선 두 개를 선택하십시오.
+	Select two different segments of the polyline.	폴리선의 서로 다른 구간 두 개를 선택하십시오.
+	Select two segments.	구간 두 개를 선택하십시오.
+	Select viewport to clip	자를 뷰포트 선택
+	Select viewports	뷰포트 선택
+	Selected layers: {0}.	선택한 도면층: {0}.
+	Separate hatches: off	개별 해치: 끄기
+	Separate hatches: on	개별 해치: 켜기
+	Set current plot style	현재 플롯 스타일 설정
+	Sheet list files are not available on the web.	시트 리스트 파일은 웹에서 사용할 수 없습니다.
+	Sketch done: {n} object{0} added.	스케치 완료: 객체 {n}개가 추가되었습니다.
+	Specify a fit tolerance	맞춤 공차 지정
+	Specify a point away from the vertex.	정점에서 떨어진 점을 지정하십시오.
+	Specify a point on desired side	원하는 쪽의 점 지정
+	Specify a point on the spline <exit>	스플라인 위의 점 지정 <종료>
+	Specify a point on the {name} axis	{name} 축 위의 점 지정
+	Specify a precision	정밀도 지정
+	Specify a view point (x,y,z)	뷰 점 지정(x,y,z)
+	Specify angle for dimension text	치수 문자의 각도 지정
+	Specify angle of revolution	회전 각도 지정
+	Specify axis endpoint	축 끝점 지정
+	Specify axis start point	축 시작점 지정
+	Specify back clip distance	뒤 자르기 거리 지정
+	Specify base point on the profile	프로파일의 기준점 지정
+	Specify block attachment	블록 부착 지정
+	Specify center location override	중심 위치 재지정 지정
+	Specify center of isocircle	등각원 중심 지정
+	Specify center of view box	뷰 상자 중심 지정
+	Specify center point	중심점 지정
+	Specify chamfer angle from the first line	첫 번째 선으로부터 모따기 각도 지정
+	Specify chamfer length on the first line	첫 번째 선의 모따기 길이 지정
+	Specify clipping boundary	자르기 경계 지정
+	Specify collected multileader location or [Vertical/Horizontal/Wrap]	수집된 다중 지시선 위치 지정 또는 [Vertical/Horizontal/Wrap]
+	Specify column height	열 높이 지정
+	Specify column width	열 폭 지정
+	Specify control point	제어점 지정
+	Specify control point <exit>	제어점 지정 <종료>
+	Specify diameter of isocircle	등각원 지름 지정
+	Specify dimension line position	치수선 위치 지정
+	Specify direction	방향 지정
+	Specify direction (first point)	방향 지정(첫 번째 점)
+	Specify direction (second point)	방향 지정(두 번째 점)
+	Specify direction of chord for arc	호의 현 방향 지정
+	Specify direction of vertex tangent	정점 접선 방향 지정
+	Specify displacement	변위 지정
+	Specify displacement (dx,dy,dz)	변위 지정(dx,dy,dz)
+	Specify distance	거리 지정
+	Specify distance from boundary	경계로부터의 거리 지정
+	Specify end tangent	끝 접선 지정
+	Specify endpoint of the arc	호의 끝점 지정
+	Specify existing fit point <exit>	기존 맞춤점 지정 <종료>
+	Specify first break point	첫 번째 끊기점 지정
+	Specify first corner of the unit cell	단위 셀의 첫 번째 구석 지정
+	Specify first fence point	첫 번째 울타리 점 지정
+	Specify first point for arc length dimension	호 길이 치수의 첫 번째 점 지정
+	Specify first point of mirror plane (3 points)	대칭 평면의 첫 번째 점 지정(3점)
+	Specify first point on axis	축 위의 첫 번째 점 지정
+	Specify first point on plane	평면 위의 첫 번째 점 지정
+	Specify first point or [Options]	첫 번째 점 지정 또는 [Options]
+	Specify fit point	맞춤점 지정
+	Specify front clip distance	앞 자르기 거리 지정
+	Specify gutter width	홈 폭 지정
+	Specify height of extrusion	돌출 높이 지정
+	Specify insertion point for the table	표의 삽입점 지정
+	Specify insertion point of the table	표의 삽입점 지정
+	Specify jog location	꺾기 위치 지정
+	Specify jog location (or press ENTER)	꺾기 위치 지정(또는 ENTER)
+	Specify leader arrowhead location or [Remove leaders]	지시선 화살촉 위치 지정 또는 [Remove leaders]
+	Specify leaders to remove	제거할 지시선 지정
+	Specify leaders to remove or [Add leaders]	제거할 지시선 지정 또는 [Add leaders]
+	Specify length of line	선 길이 지정
+	Specify linetype name	선종류 이름 지정
+	Specify location of base view	기준 뷰 위치 지정
+	Specify location of the text	문자 위치 지정
+	Specify new angle	새 각도 지정
+	Specify new fit point <exit>	새 맞춤점 지정 <종료>
+	Specify new length	새 길이 지정
+	Specify new location	새 위치 지정
+	Specify new location for dimension text	치수 문자의 새 위치 지정
+	Specify new model height	새 모형 높이 지정
+	Specify new origin point	새 원점 지정
+	Specify new paper height	새 용지 높이 지정
+	Specify new point on spline <exit>	스플라인 위의 새 점 지정 <종료>
+	Specify next fence point	다음 울타리 점 지정
+	Specify number of columns	열 수 지정
+	Specify orientation	방향 지정
+	Specify other corner	다른 구석 지정
+	Specify point on X-axis	X축 위의 점 지정
+	Specify point on the XY plane	XY 평면 위의 점 지정
+	Specify point on {name} plane	{name} 평면 위의 점 지정
+	Specify quadrant	사분점 지정
+	Specify radius of isocircle	등각원 반지름 지정
+	Specify reference angle	참조 각도 지정
+	Specify reference length	참조 길이 지정
+	Specify rotation angle about {axis} axis	{axis}축을 중심으로 한 회전 각도 지정
+	Specify rotation around major axis	장축을 중심으로 한 회전 지정
+	Specify scale factor for XYZ axes	XYZ축의 축척 비율 지정
+	Specify second point for arc length dimension	호 길이 치수의 두 번째 점 지정
+	Specify second point on arc	호 위의 두 번째 점 지정
+	Specify second point on axis	축 위의 두 번째 점 지정
+	Specify second point on mirror plane	대칭 평면 위의 두 번째 점 지정
+	Specify second point on plane	평면 위의 두 번째 점 지정
+	Specify size of view box	뷰 상자 크기 지정
+	Specify sketch	스케치 지정
+	Specify sketch record increment	스케치 기록 증분 지정
+	Specify spacing	간격 지정
+	Specify spline fit tolerance	스플라인 맞춤 공차 지정
+	Specify start tangent	시작 접선 지정
+	Specify temporary OTRACK point	임시 OTRACK 점 지정
+	Specify text height	문자 높이 지정
+	Specify the angle between items	항목 사이의 각도 지정
+	Specify the angle to fill (+=ccw, -=cw)	채울 각도 지정(+=시계 반대 방향, -=시계 방향)
+	Specify the incrementing elevation between rows	행 사이의 증분 고도 지정
+	Specify the new angle	새 각도 지정
+	Specify the pattern origin	패턴 원점 지정
+	Specify the reference angle	참조 각도 지정
+	Specify the tangent direction for the start point of arc	호 시작점의 접선 방향 지정
+	Specify the view point as x,y,z.	뷰 점을 x,y,z로 지정하십시오.
+	Specify thickness	두께 지정
+	Specify third point on mirror plane	대칭 평면 위의 세 번째 점 지정
+	Specify tolerance	공차 지정
+	Specify total width	전체 폭 지정
+	Specify trace width	트레이스 폭 지정
+	Specify width	폭 지정
+	Specify {which} {unit}	{which} {unit} 지정
+	Spline must intersect cutting edges at two or more points.	스플라인은 절단 모서리와 두 개 이상의 점에서 교차해야 합니다.
+	Table in {0} part(s).	표가 {0}개 부분으로 나뉘었습니다.
+	Table of {0} block(s) inserted.	블록 {0}개의 표가 삽입되었습니다.
+	Text styles:	문자 스타일:
+	Text styles: {0}	문자 스타일: {0}
+	That object is not a block reference.	그 객체는 블록 참조가 아닙니다.
+	That would make a degenerate object.	그렇게 하면 퇴화된 객체가 만들어집니다.
+	The Block Editor is already open on "{name}"; close it first (BCLOSE).	블록 편집기가 이미 "{name}"에서 열려 있습니다. 먼저 닫으십시오(BCLOSE).
+	The Block Editor is already open on "{open}"; close it first (BCLOSE).	블록 편집기가 이미 "{open}"에서 열려 있습니다. 먼저 닫으십시오(BCLOSE).
+	The Block Editor is not open.	블록 편집기가 열려 있지 않습니다.
+	The Block Editor is open on the current drawing; there is no block to save under another name.	블록 편집기가 현재 도면에서 열려 있으므로 다른 이름으로 저장할 블록이 없습니다.
+	The Block Editor works in the World construction plane.	블록 편집기는 World 작업 평면에서 작동합니다.
+	The Leader Settings dialog is not available yet: QLEADER draws a straight leader with an arrow and multiline text.	지시선 설정 대화상자는 아직 사용할 수 없습니다. QLEADER는 화살표와 여러 줄 문자가 있는 직선 지시선을 그립니다.
+	The STANDARD and the current multiline style can't be deleted ({st}).	STANDARD 및 현재 다중선 스타일은 삭제할 수 없습니다({st}).
+	The STANDARD multiline style can't be renamed.	STANDARD 다중선 스타일은 이름을 바꿀 수 없습니다.
+	The X axis point must differ from the origin.	X축 점은 원점과 달라야 합니다.
+	The array base point is not a valid point.	배열 기준점이 유효한 점이 아닙니다.
+	The array has no such item.	배열에 해당 항목이 없습니다.
+	The array no longer exists; the edited objects stay in the drawing.	배열이 더 이상 존재하지 않습니다. 편집한 객체는 도면에 남아 있습니다.
+	The array parameters are not valid.	배열 매개변수가 유효하지 않습니다.
+	The array would create {total} objects; the limit is {max} (MAXARRAY). Use fewer items or select fewer objects.	배열이 객체 {total}개를 만들게 되지만 한계는 {max}개(MAXARRAY)입니다. 항목 수를 줄이거나 객체를 적게 선택하십시오.
+	The array's block is missing.	배열의 블록이 없습니다.
+	The array's scale is zero.	배열의 축척이 0입니다.
+	The array's source block is missing.	배열의 원본 블록이 없습니다.
+	The axis needs two different points.	축에는 서로 다른 두 점이 필요합니다.
+	The block reference has no nested objects.	블록 참조에 중첩된 객체가 없습니다.
+	The block reference is in a tilted plane; NCOPY works on references in plan.	블록 참조가 기울어진 평면에 있습니다. NCOPY는 평면도의 참조에서 작동합니다.
+	The chamfer angle does not fit this corner.	모따기 각도가 이 모서리에 맞지 않습니다.
+	The chamfer distances are too large.	모따기 거리가 너무 큽니다.
+	The changes to the array were discarded.	배열의 변경 사항이 취소되었습니다.
+	The columns and gutters don't fit in the total width.	열과 홈이 전체 폭에 맞지 않습니다.
+	The corner must not be level with the insertion point.	구석이 삽입점과 같은 높이에 있으면 안 됩니다.
+	The current drawing can't be saved as a block from the Block Editor; use WBLOCK or BLOCK.	블록 편집기에서는 현재 도면을 블록으로 저장할 수 없습니다. WBLOCK 또는 BLOCK을 사용하십시오.
+	The current viewport is too small to divide.	현재 뷰포트가 너무 작아서 나눌 수 없습니다.
+	The cut list does not fit its table.	재단 목록이 표에 맞지 않습니다.
+	The displacement is too large.	변위가 너무 큽니다.
+	The end segment is an arc; explode the polyline or use an open line end.	끝 구간이 호입니다. 폴리선을 분해하거나 열린 선 끝을 사용하십시오.
+	The ends coincide.	끝이 일치합니다.
+	The feature control frame is empty.	형상 공차 기입틀이 비어 있습니다.
+	The fillet radius must be zero or more.	모깎기 반지름은 0 이상이어야 합니다.
+	The first multiline has no segments.	첫 번째 다중선에 구간이 없습니다.
+	The included angle must be between 0 and 360 degrees.	사이각은 0도에서 360도 사이여야 합니다.
+	The items would span more than 360 degrees; enter a smaller angle or fewer items.	항목이 360도를 넘게 됩니다. 각도를 줄이거나 항목 수를 줄이십시오.
+	The lines do not define a center line.	선이 중심선을 정의하지 않습니다.
+	The multiline has too few vertices to delete one.	다중선의 정점이 너무 적어서 삭제할 수 없습니다.
+	The multilines are parallel.	다중선이 평행합니다.
+	The new arc would be zero length or a full circle.	새 호의 길이가 0이 되거나 전체 원이 됩니다.
+	The new elliptical arc would be a full ellipse or longer.	새 타원형 호가 전체 타원 이상이 됩니다.
+	The object can't be edited in this construction plane.	이 작업 평면에서는 객체를 편집할 수 없습니다.
+	The object has no area.	객체에 면적이 없습니다.
+	The object is not a member of any group.	객체가 어떤 그룹에도 속하지 않습니다.
+	The object is not a table.	객체가 표가 아닙니다.
+	The object is not an associative array.	객체가 연관 배열이 아닙니다.
+	The object is on a locked layer.	객체가 잠긴 도면층에 있습니다.
+	The objects are on a locked layer.	객체가 잠긴 도면층에 있습니다.
+	The objects can't be edited that way (locked, or the result would be degenerate).	그 방법으로는 객체를 편집할 수 없습니다(잠겨 있거나 결과가 퇴화됨).
+	The objects do not intersect.	객체가 교차하지 않습니다.
+	The objects nest block references too deeply (more than {MAX_BLOCK_DEPTH} levels).	객체의 블록 참조 중첩이 너무 깊습니다({MAX_BLOCK_DEPTH}단계 초과).
+	The objects nest block references too deeply to array (more than {MAX_BLOCK_DEPTH} levels).	객체의 블록 참조 중첩이 너무 깊어서 배열할 수 없습니다({MAX_BLOCK_DEPTH}단계 초과).
+	The order must list each of the {all} attribute tags once.	순서에는 속성 태그 {all}개가 각각 한 번씩 나열되어야 합니다.
+	The path has no length.	경로의 길이가 없습니다.
+	The plane does not cut the selected solids.	평면이 선택한 솔리드를 자르지 않습니다.
+	The plane needs two different points.	평면에는 서로 다른 두 점이 필요합니다.
+	The point must be off the X axis.	점은 X축 위에 있으면 안 됩니다.
+	The points must be different.	점은 서로 달라야 합니다.
+	The polyline must be closed with at least three vertices.	폴리선은 정점이 세 개 이상인 닫힌 폴리선이어야 합니다.
+	The rectangle has no area.	직사각형에 면적이 없습니다.
+	The result is empty: the regions were erased.	결과가 비어 있습니다. 영역이 지워졌습니다.
+	The revision cloud needs at least three points enclosing an area.	구름형 수정 기호에는 면적을 둘러싸는 점이 세 개 이상 필요합니다.
+	The scale must be a positive number or a ratio such as 1:10.	축척은 양수 또는 1:10과 같은 비율이어야 합니다.
+	The second multiline has no segments.	두 번째 다중선에 구간이 없습니다.
+	The segments are parallel or in line.	구간이 평행하거나 일직선입니다.
+	The segments are parallel.	구간이 평행합니다.
+	The segments meet at a kept end; nothing to cut.	구간이 유지되는 끝에서 만납니다. 자를 부분이 없습니다.
+	The segments must be adjacent or separated by one segment.	구간은 인접하거나 구간 하나로 떨어져 있어야 합니다.
+	The selected object has no area.	선택한 객체에 면적이 없습니다.
+	The selected viewports do not form a rectangle.	선택한 뷰포트가 직사각형을 이루지 않습니다.
+	The source would have no objects; enter ARRAYCLOSE No to discard the changes, or erase the array.	원본에 객체가 없게 됩니다. ARRAYCLOSE No를 입력하여 변경 사항을 취소하거나 배열을 지우십시오.
+	The spline has no control points.	스플라인에 제어점이 없습니다.
+	The spline has no direction at that end.	스플라인의 그 끝에는 방향이 없습니다.
+	The spline has no fit data.	스플라인에 맞춤 데이터가 없습니다.
+	The spline has no fit data; give `fit` points.	스플라인에 맞춤 데이터가 없습니다. `fit` 점을 지정하십시오.
+	The spline is invalid.	스플라인이 유효하지 않습니다.
+	The spline was erased.	스플라인이 지워졌습니다.
+	The start point of a closed spline can't be deleted.	닫힌 스플라인의 시작점은 삭제할 수 없습니다.
+	The tangent needs a point away from the end point.	접선에는 끝점에서 떨어진 점이 필요합니다.
+	The tangent point must differ from the fit point.	접선 점은 맞춤점과 달라야 합니다.
+	The text height must be a positive number.	문자 높이는 양수여야 합니다.
+	The thickness must be positive.	두께는 양수여야 합니다.
+	The three points are on one line: specify a third point off it.	세 점이 한 직선 위에 있습니다. 직선 밖에 세 번째 점을 지정하십시오.
+	The two points must be different.	두 점은 서로 달라야 합니다.
+	The two points must differ.	두 점은 서로 달라야 합니다.
+	The unit cell must have a width and a height.	단위 셀에는 폭과 높이가 있어야 합니다.
+	The window has no area.	창에 면적이 없습니다.
+	The window needs a width and a height.	창에는 폭과 높이가 필요합니다.
+	The {0} can't be placed in this construction plane.	{0}은(는) 이 작업 평면에 배치할 수 없습니다.
+	The {0} is in a tilted plane, which this command can't edit: it can be moved, rotated, scaled, mirrored, grip-edited, offset or lengthened in plan.	{0}이(가) 기울어진 평면에 있어 이 명령으로 편집할 수 없습니다. 평면도에서 이동, 회전, 축척, 대칭, 그립 편집, 간격띄우기 또는 길이 조정은 할 수 있습니다.
+	There are no 3D solids or curves to export{0}.	내보낼 3D 솔리드나 곡선이 없습니다{0}.
+	There are no 3D solids to export.	내보낼 3D 솔리드가 없습니다.
+	There is only one viewport.	뷰포트가 하나뿐입니다.
+	These regions are too complex to combine.	이 영역은 너무 복잡해서 결합할 수 없습니다.
+	Third pair ignored (2D align).	세 번째 쌍은 무시되었습니다(2D 정렬).
+	This is a dynamic block: its parameters and actions are kept but can't be edited in CADCraft yet.	동적 블록입니다. 매개변수와 동작은 유지되지만 CADCraft에서는 아직 편집할 수 없습니다.
+	Tiled viewports are for the Model tab; use MVIEW in a layout.	타일 뷰포트는 모형 탭용입니다. 배치에서는 MVIEW를 사용하십시오.
+	Too many fit points.	맞춤점이 너무 많습니다.
+	Too many loops.	루프가 너무 많습니다.
+	Too many point modifiers.	점 수정자가 너무 많습니다.
+	Too many vertices.	정점이 너무 많습니다.
+	Too much data for a table ({0} rows, {1} columns).	표에 넣기에는 데이터가 너무 많습니다(행 {0}개, 열 {1}개).
+	Total area = {0}	총 면적 = {0}
+	Total xref(s): {0}	총 외부 참조: {0}
+	Turns must be in (0, 500].	회전 수는 (0, 500] 범위여야 합니다.
+	Type = Path  Associative = No ({n} items)	유형 = 경로  연관 = 아니요(항목 {n}개)
+	Type = Polar  Associative = {0}	유형 = 원형  연관 = {0}
+	Type = Rectangular  Associative = {0}	유형 = 직사각형  연관 = {0}
+	Type = {0}  Increment = {1}  Tolerance = {2}	유형 = {0}  증분 = {1}  공차 = {2}
+	Type of boundary object	경계 객체 유형
+	UNDO {mode} needs UNDO Control All.	UNDO {mode}에는 UNDO Control All이 필요합니다.
+	Undo is turned off (UNDO Control None); UNDO Control All turns it on.	명령 취소가 꺼져 있습니다(UNDO Control None). UNDO Control All로 켜십시오.
+	Unknown dimension variable "{t}".	알 수 없는 치수 변수 "{t}"입니다.
+	Unknown object snap mode "{name}".	알 수 없는 객체 스냅 모드 "{name}"입니다.
+	Unknown pattern {up}.	알 수 없는 패턴 {up}입니다.
+	Unknown pattern {up}. Available: {0}	알 수 없는 패턴 {up}입니다. 사용 가능: {0}
+	Unknown variable {n}. Type SETVAR ? to list variables.	알 수 없는 변수 {n}입니다. 변수를 나열하려면 SETVAR ?를 입력하십시오.
+	Unnamed group {n} created with {0} object(s).	객체 {0}개로 이름 없는 그룹 {n}을(를) 만들었습니다.
+	Use landing	연결선 사용
+	Valid hatch boundary not found.	유효한 해치 경계를 찾을 수 없습니다.
+	Value must be between -32768 and 32767.	값은 -32768에서 32767 사이여야 합니다.
+	Value must be nonzero.	값은 0이 아니어야 합니다.
+	Value must be positive and nonzero.	값은 0이 아닌 양수여야 합니다.
+	Value must be positive.	값은 양수여야 합니다.
+	Verify each name to be purged?	소거할 각 이름을 확인하시겠습니까?
+	View "{0}" belongs to layout "{target}", which does not exist.	뷰 "{0}"은(는) 존재하지 않는 배치 "{target}"에 속합니다.
+	View "{0}" has no area.	뷰 "{0}"에 면적이 없습니다.
+	View "{n}" not found.	뷰 "{n}"을(를) 찾을 수 없습니다.
+	Viewport configuration "{name}" has no viewports to restore.	뷰포트 구성 "{name}"에 복원할 뷰포트가 없습니다.
+	Viewport configuration "{name}" saved.	뷰포트 구성 "{name}"이(가) 저장되었습니다.
+	Viewport created, zoomed to the model extents.	뷰포트를 만들고 모형 범위로 줌했습니다.
+	Volume = {v}	체적 = {v}
+	Where should the data go?	데이터를 어디에 넣으시겠습니까?
+	Written to {f}.	{f}에 썼습니다.
+	Wrote {n} object(s) to {0}	객체 {n}개를 {0}에 썼습니다.
+	Wrote {n} object{0} to {path}.	객체 {n}개를 {path}에 썼습니다.
+	Xref "{n}" bound.	외부 참조 "{n}"이(가) 결합되었습니다.
+	Xref "{n}" detached.	외부 참조 "{n}"이(가) 분리되었습니다.
+	Xref "{n}" unloaded.	외부 참조 "{n}"이(가) 언로드되었습니다.
+	You are about to delete {0} and every object on it from this drawing.	이 도면에서 {0} 및 그 위의 모든 객체를 삭제하려고 합니다.
+	You are about to merge {0} into layer "{t}".	{0}을(를) 도면층 "{t}"(으)로 병합하려고 합니다.
+	Zero-length end segment.	끝 구간의 길이가 0입니다.
+	Zero-length line.	길이가 0인 선입니다.
+	`handle` is not a block reference	`handle`이 블록 참조가 아닙니다.
+	`handles` must be an array of object handles, got {v}	`handles`는 객체 핸들 배열이어야 하는데 {v}을(를) 받았습니다.
+	`{a}` can't be an alias	`{a}`은(는) 별칭이 될 수 없습니다.
+	`{key}`: {v} is not an object handle (a hex string such as "1A2")	`{key}`: {v}은(는) 객체 핸들이 아닙니다("1A2"와 같은 16진수 문자열).
+	`{name}` belongs to a dimensional constraint; delete the constraint instead	`{name}`은(는) 치수 구속조건에 속합니다. 대신 구속조건을 삭제하십시오.
+	`{name}` is used by `{0}`	`{name}`은(는) `{0}`에서 사용 중입니다.
+	`{name}` takes {lo}{0} argument(s)	`{name}`은(는) 인수 {lo}{0}개를 받습니다.
+	`{n}` is not a plotter configuration file name	`{n}`은(는) 플로터 구성 파일 이름이 아닙니다.
+	`{to}` is already a parameter	`{to}`은(는) 이미 매개변수입니다.
+	`{used}` is used by `{0}`	`{used}`은(는) `{0}`에서 사용 중입니다.
+	a LISP routine is already running	LISP 루틴이 이미 실행 중입니다.
+	a list grip is chosen from, not dragged	목록 그립은 끄는 것이 아니라 선택하는 것입니다.
+	bad leader	잘못된 지시선
+	blocks are nested too deeply	블록 중첩이 너무 깊습니다.
+	can't add or subtract a number and a point	숫자와 점은 더하거나 뺄 수 없습니다.
+	can't convert `{from}` to `{to}`	`{from}`을(를) `{to}`(으)로 변환할 수 없습니다.
+	cell ({r}, {c}) is outside the {0}×{1} table	셀 ({r}, {c})이(가) {0}×{1} 표 밖에 있습니다.
+	column {c} is outside the table	열 {c}이(가) 표 밖에 있습니다.
+	command `{0}` is not available right now: {reason}	지금은 `{0}` 명령을 사용할 수 없습니다: {reason}
+	division by zero	0으로 나누기
+	expected a number	숫자가 필요합니다.
+	expression too deeply nested	표현식이 너무 깊이 중첩되었습니다.
+	expression too long	표현식이 너무 깁니다.
+	files are not available on the web	웹에서는 파일을 사용할 수 없습니다.
+	internal error in `{0}` (the drawing was kept as it was): {1}	`{0}`의 내부 오류(도면은 그대로 유지됨): {1}
+	invalid format {f} (general, decimal, percent, text)	잘못된 형식 {f}(general, decimal, percent, text)
+	invalid parameter name `{to}`	잘못된 매개변수 이름 `{to}`
+	invalid parameters for `{cmd}`: {reason}	`{cmd}`의 매개변수가 잘못되었습니다: {reason}
+	it has arc segments	호 구간이 있음
+	it has too few or too many vertices	정점이 너무 적거나 많음
+	it has too few vertices to close	닫기에는 정점이 너무 적음
+	it is not a polyline	폴리선이 아님
+	it is not planar	평면이 아님
+	merge at least two cells (`rows` / `cols`)	셀을 두 개 이상 병합하십시오(`rows` / `cols`).
+	more than {MAX_XREF_OBJECTS} objects	객체가 {MAX_XREF_OBJECTS}개를 초과함
+	no active document	활성 문서가 없습니다.
+	no block "{name}"	블록 "{name}"이(가) 없습니다.
+	no block reference is being edited (REFEDIT)	편집 중인 블록 참조가 없습니다(REFEDIT).
+	no dimension style "{name}"	치수 스타일 "{name}"이(가) 없습니다.
+	no dimension was made	치수가 만들어지지 않았습니다.
+	no grip	그립 없음
+	no layer "{name}"	도면층 "{name}"이(가) 없습니다.
+	no linear dimension	선형 치수 없음
+	no linetype "{name}"	선종류 "{name}"이(가) 없습니다.
+	no parameter `{from}`	매개변수 `{from}`이(가) 없습니다.
+	no parameter `{name}`	매개변수 `{name}`이(가) 없습니다.
+	no reference objects	참조 객체 없음
+	no such column (a table keeps at least one column)	해당 열이 없습니다(표에는 열이 하나 이상 있어야 함).
+	no such grip	해당 그립이 없습니다.
+	no such object	해당 객체가 없습니다.
+	no such row (a table keeps at least one row)	해당 행이 없습니다(표에는 행이 하나 이상 있어야 함).
+	no such space	해당 공간이 없습니다.
+	no symbol "{name}"	기호 "{name}"이(가) 없습니다.
+	no text style "{name}"	문자 스타일 "{name}"이(가) 없습니다.
+	nothing selected	선택된 항목 없음
+	only blocks, dimension styles, layers, linetypes and text styles can be bound	블록, 치수 스타일, 도면층, 선종류, 문자 스타일만 결합할 수 있습니다.
+	pld of two equal points	pld: 두 점이 같습니다.
+	result is not a finite number	결과가 유한한 숫자가 아닙니다.
+	row {r} is outside the table	행 {r}이(가) 표 밖에 있습니다.
+	table style {0} has no cell style {name} (it has {1})	표 스타일 {0}에 셀 스타일 {name}이(가) 없습니다({1} 있음).
+	the clipboard holds objects from this drawing; Paste to Original Coordinates pastes into another drawing	클립보드에 이 도면의 객체가 있습니다. 원래 좌표로 붙여넣기는 다른 도면에 붙여넣습니다.
+	the clipboard is empty	클립보드가 비어 있습니다.
+	the file is larger than {0} MB	파일이 {0}MB보다 큽니다.
+	the lines are parallel	선이 평행합니다.
+	the reference is on a locked layer	참조가 잠긴 도면층에 있습니다.
+	the result is a point, not a number	결과가 숫자가 아니라 점입니다.
+	to change color	색상을 변경할
+	to freeze	동결할
+	to reset	재설정할
+	to thaw	해동할
+	tolerance must be a number from 0 to {MAX_TOL}	공차는 0에서 {MAX_TOL} 사이의 숫자여야 합니다.
+	too many arguments to `{name}`	`{name}`의 인수가 너무 많습니다.
+	too many columns	열이 너무 많습니다.
+	too many rows	행이 너무 많습니다.
+	unexpected `{0}`	예기치 않은 `{0}`
+	unit type must be length, area, volume or angle, got `{k}`	단위 유형은 length, area, volume 또는 angle이어야 하는데 `{k}`을(를) 받았습니다.
+	unknown border {k}	알 수 없는 테두리 {k}
+	unknown command `{0}`	알 수 없는 명령 `{0}`
+	unknown function `{name}`	알 수 없는 함수 `{name}`
+	vec1 of two equal points	vec1: 두 점이 같습니다.
+	xref "{key}" is not loaded	외부 참조 "{key}"이(가) 로드되지 않았습니다.
+	{0} ({1}, {kind}, {2} paper sizes)	{0} ({1}, {kind}, 용지 크기 {2}개)
+	{0} Specify base point	{0} 기준점 지정
+	{0} annotative object(s) synchronized	주석 객체 {0}개가 동기화되었습니다.
+	{0} command alias(es) loaded from {path}.	{path}에서 명령 별칭 {0}개를 로드했습니다.
+	{0} constraint #{id} applied.	{0} 구속조건 #{id}이(가) 적용되었습니다.
+	{0} constraint(s) applied to {1} object(s)	객체 {1}개에 구속조건 {0}개가 적용되었습니다.
+	{0} dimension(s) changed.	치수 {0}개가 변경되었습니다.
+	{0} dimension(s) spaced.	치수 {0}개의 간격이 조정되었습니다.
+	{0} found, {others} not closed	{0}개 찾음, {others}개는 닫히지 않음
+	{0} leader(s) {1}.	지시선 {0}개: {1}.
+	{0} multileader(s) collected.	다중 지시선 {0}개가 수집되었습니다.
+	{0} needs {1} object(s)	{0}에는 객체 {1}개가 필요합니다.
+	{0} object(s) in the working set.	작업 세트에 객체 {0}개가 있습니다.
+	{0} object(s) joined into the spline	객체 {0}개가 스플라인에 결합되었습니다.
+	{0} object(s) updated	객체 {0}개가 업데이트되었습니다.
+	{0} objects cannot be constrained	객체 {0}개에는 구속조건을 적용할 수 없습니다.
+	{0} objects imported from {file}	{file}에서 객체 {0}개를 가져왔습니다.
+	{0} pattern(s) loaded from {t}: {1}	{t}에서 패턴 {0}개를 로드했습니다: {1}
+	{0} point(s) are needed	점 {0}개가 필요합니다.
+	{0} symbol(s) bound.	기호 {0}개가 결합되었습니다.
+	{0} view(s) deleted.	뷰 {0}개가 삭제되었습니다.
+	{0} viewport configuration(s) deleted.	뷰포트 구성 {0}개가 삭제되었습니다.
+	{0} viewport(s) selected.	뷰포트 {0}개가 선택되었습니다.
+	{0}: a {1} can't take this transform (it would leave the plane it must stay in, or lose its shape).	{0}: {1}에는 이 변환을 적용할 수 없습니다(유지해야 하는 평면을 벗어나거나 모양을 잃게 됨).
+	{0}Select objects	{0}객체 선택
+	{a} is a command name; it stays the command	{a}은(는) 명령 이름이므로 명령으로 유지됩니다.
+	{k} is not available yet.	{k}은(는) 아직 사용할 수 없습니다.
+	{k}: not available yet	{k}: 아직 사용할 수 없음
+	{k}: use SPLINE for fit points.	{k}: 맞춤점에는 SPLINE을 사용하십시오.
+	{l} is now the current layer.	이제 {l}이(가) 현재 도면층입니다.
+	{n} = {0} (read only)	{n} = {0}(읽기 전용)
+	{n} attribute{0} changed.	속성 {n}개가 변경되었습니다.
+	{n} attribute{0} selected.	속성 {n}개가 선택되었습니다.
+	{n} command alias(es) loaded from {path}.	{path}에서 명령 별칭 {n}개를 로드했습니다.
+	{n} command alias(es) loaded.	명령 별칭 {n}개를 로드했습니다.
+	{n} constraint(s) removed	구속조건 {n}개가 제거되었습니다.
+	{n} dimension(s) created.	치수 {n}개를 만들었습니다.
+	{n} dimension(s) updated.	치수 {n}개가 업데이트되었습니다.
+	{n} found, {0} total	{n}개 찾음, 총 {0}개
+	{n} hatch object(s) sent to back.	해치 객체 {n}개를 맨 뒤로 보냈습니다.
+	{n} item(s) selected	항목 {n}개가 선택되었습니다.
+	{n} lines were chamfered	선 {n}개가 모따기되었습니다.
+	{n} lines were filleted	선 {n}개가 모깎기되었습니다.
+	{n} loop(s) extracted. {n} Region(s) created.	루프 {n}개를 추출했습니다. 영역 {n}개를 만들었습니다.
+	{n} object(s) added to group {0}.	객체 {n}개가 그룹 {0}에 추가되었습니다.
+	{n} object(s) brought to front.	객체 {n}개를 맨 앞으로 가져왔습니다.
+	{n} object(s) changed from {0} space to {1} space.	객체 {n}개가 {0} 공간에서 {1} 공간으로 변경되었습니다.
+	{n} object(s) converted to splines	객체 {n}개가 스플라인으로 변환되었습니다.
+	{n} object(s) created.	객체 {n}개를 만들었습니다.
+	{n} object(s) direction has been reversed.	객체 {n}개의 방향이 반전되었습니다.
+	{n} object(s) flattened.	객체 {n}개가 평탄화되었습니다.
+	{n} object(s) removed from group {0}.	객체 {n}개가 그룹 {0}에서 제거되었습니다.
+	{n} objects joined into 1 {what}	객체 {n}개가 {what} 1개로 결합되었습니다.
+	{n} object{0} changed to layer "{layer}".	객체 {n}개가 도면층 "{layer}"(으)로 변경되었습니다.
+	{n} object{0} changed.	객체 {n}개가 변경되었습니다.
+	{n} of {0} dimension(s) associated.	치수 {0}개 중 {n}개가 연관되었습니다.
+	{n} row{0} extracted.	행 {n}개를 추출했습니다.
+	{n} segments added to polyline	폴리선에 구간 {n}개가 추가되었습니다.
+	{n} text object{0} aligned.	문자 객체 {n}개가 정렬되었습니다.
+	{n} viewport(s) created, zoomed to the model extents.	뷰포트 {n}개를 만들고 모형 범위로 줌했습니다.
+	{n} viewport(s) restored from "{name}".	"{name}"에서 뷰포트 {n}개를 복원했습니다.
+	{n}: no such file	{n}: 해당 파일이 없습니다.
+	{n}: the plotter configuration file is too large	{n}: 플로터 구성 파일이 너무 큽니다.
+	{path}: files can't be written in the browser	{path}: 브라우저에서는 파일을 쓸 수 없습니다.
+	{path}: the sheet list is empty.	{path}: 시트 리스트가 비어 있습니다.
+	{r} multileader(s) aligned.	다중 지시선 {r}개가 정렬되었습니다.
+	{shown} successfully loaded.	{shown}을(를) 로드했습니다.
+	{typed}: the command-line form isn't available yet; use {id}	{typed}: 명령행 형식은 아직 사용할 수 없습니다. {id}을(를) 사용하십시오.
+	{what} needs a number, not a point	{what}에는 점이 아니라 숫자가 필요합니다.
+	{what} needs a point, not a number	{what}에는 숫자가 아니라 점이 필요합니다.
+	*Cancel*	*취소*
+	<Offset>	<간격띄우기>
+	** Command not allowed in Model Tab **	** 모형 탭에서는 사용할 수 없는 명령입니다 **
+	Change	변경
+	Change Properties	특성 변경
+	Clear All	모두 지우기
+	Clip Xref	외부 참조 자르기
+	Color books are not available.	색상표를 사용할 수 없습니다.
+	Enable paper space?	도면 공간을 사용하시겠습니까?
+	Enter layout number to load	로드할 배치 번호 입력
+	Enter new linetype name	새 선종류 이름 입력
+	Enter new lineweight	새 선가중치 입력
+	Enter new text style	새 문자 스타일 입력
+	Enter number of viewports in X direction	X 방향의 뷰포트 수 입력
+	Enter number of viewports in Y direction	Y 방향의 뷰포트 수 입력
+	Enter plot style	플롯 스타일 입력
+	Enter property to change	변경할 특성 입력
+	Enter the number of model space units	모형 공간 단위 수 입력
+	Enter the number of paper space units	도면 공간 단위 수 입력
+	Justify Text	문자 자리맞추기
+	MVSETUP in model space (units, scale and a paper border) is not available yet.	모형 공간의 MVSETUP(단위, 축척, 용지 경계)은 아직 사용할 수 없습니다.
+	Make annotative?	주석으로 만드시겠습니까?
+	Materials are not available yet.	재료는 아직 사용할 수 없습니다.
+	Meshes	메쉬
+	Minimize Viewport	뷰포트 최소화
+	No viewports selected.	선택된 뷰포트가 없습니다.
+	Object Snap Settings...	객체 스냅 설정...
+	Object Snap Tracking On (F11)	객체 스냅 추적 켜기(F11)
+	Oops	OOPS
+	Scale Text	문자 축척
+	Select a viewport to maximize	최대화할 뷰포트 선택
+	Select objects to copy	복사할 객체 선택
+	Select the viewports to scale...	축척할 뷰포트 선택...
+	Set Up Viewports	뷰포트 설정
+	Set zoom scale factors for viewports	뷰포트의 줌 축척 비율 설정
+	Sketch	스케치
+	Specify basepoint	기준점 지정
+	Specify change point	변경점 지정
+	Specify distance between viewports in X direction	X 방향 뷰포트 사이 거리 지정
+	Specify distance between viewports in Y direction	Y 방향 뷰포트 사이 거리 지정
+	Specify first corner of bounding area for viewport(s)	뷰포트 경계 영역의 첫 번째 구석 지정
+	Specify new block insertion point	새 블록 삽입점 지정
+	Specify new block rotation angle	새 블록 회전 각도 지정
+	Specify new circle radius	새 원 반지름 지정
+	Specify new elevation	새 고도 지정
+	Specify new height	새 높이 지정
+	Specify new linetype scale	새 선종류 축척 지정
+	Specify new rotation angle	새 회전 각도 지정
+	Specify new text insertion point	새 문자 삽입점 지정
+	Specify new thickness	새 두께 지정
+	Specify point in viewport to be panned	초점 이동할 뷰포트의 점 지정
+	Specify second point of displacement or <use first point as displacement>	변위의 두 번째 점 지정 또는 <첫 번째 점을 변위로 사용>
+	Spelling	맞춤법 검사
+	Text Align	문자 정렬
+	The drawing has no layout.	도면에 배치가 없습니다.
+	Xref	외부 참조
+	{locked} object{0} on a locked layer.	잠긴 도면층에 있는 객체 {locked}개.
+	A template has at most {MAX_FIELDS} fields.	템플릿의 필드는 최대 {MAX_FIELDS}개입니다.
+	DXF (DXX) extract files are not available yet; choose Cdf or Sdf.	DXF(DXX) 추출 파일은 아직 사용할 수 없습니다. Cdf 또는 Sdf를 선택하십시오.
+	Enter extract file name	추출 파일 이름 입력
+	Enter extraction type or enable object selection	추출 유형 입력 또는 객체 선택 사용
+	Enter new value for {tag}	{tag}의 새 값 입력
+	Enter template file name	템플릿 파일 이름 입력
+	Select a block reference with attributes.	속성이 있는 블록 참조를 선택하십시오.
+	Select attribute to edit	편집할 속성 선택
+	Template line {0}: "{line}" is not NAME Cwwwddd or NAME Nwwwddd.	템플릿 {0}행: "{line}"이(가) NAME Cwwwddd 또는 NAME Nwwwddd 형식이 아닙니다.
+	Template line {0}: {name} needs a character.	템플릿 {0}행: {name}에는 문자가 필요합니다.
+	The template lays out no fields.	템플릿에 배치된 필드가 없습니다.
+	The text could not be pasted.	문자를 붙여넣을 수 없습니다.
+	{n} record{0} in extract file.	추출 파일에 레코드 {n}개.
+	Attribute Extraction	속성 추출
+	CAD Standards	CAD 표준
+	Copy Objects to New Layer	객체를 새 도면층에 복사
+	Do you want fast zooms?	빠른 줌을 사용하시겠습니까?
+	Drawing Properties...	도면 특성...
+	Edit Attribute In Place	내부 속성 편집
+	Enter circle zoom percent (1-20000)	원 줌 퍼센트 입력(1-20000)
+	Enter custom property name	사용자 특성 이름 입력
+	Enter value for {n}	{n}의 값 입력
+	Enter {label}	{label} 입력
+	Invalid custom property name.	잘못된 사용자 특성 이름입니다.
+	Layer Translator...	도면층 변환기...
+	Layer Walk...	도면층 탐색...
+	Object Selection Filters...	객체 선택 필터...
+	Paste Special...	선택하여 붙여넣기...
+	Requires an integer between 1 and 20000.	1에서 20000 사이의 정수가 필요합니다.
+	Update Associative Dimensions	연관 치수 업데이트
+	View Resolution	뷰 해상도
+	{n} associative dimension{0} updated.	연관 치수 {n}개가 업데이트되었습니다.
+	Enter extraction type	추출 유형 입력
+	The extract file would be larger than {0} MB; extract fewer objects or fields.	추출 파일이 {0}MB보다 커집니다. 추출할 객체나 필드를 줄이십시오.
+	Two custom properties have the same name.	이름이 같은 사용자 특성이 두 개 있습니다.
+	The construction plane is seen edge-on: points land on its line. Pick in another view or set a CPlane facing this one.	작업 평면이 옆에서 보여 점이 그 선 위에 놓입니다. 다른 뷰에서 지정하거나 이 뷰를 향하는 작업 평면을 설정하십시오.
+	Z	Z
+	Curved	곡면
+	Spherical	구형
+	Hemispherical	반구형
+	Bottom right	오른쪽 아래
+	Top right	오른쪽 위
+	Top left	왼쪽 위
+	Bottom left	왼쪽 아래
+	Hatch and Gradient	해치 및 그라데이션
+	Color 1	색상 1
+	Color 2	색상 2
+	Shape	모양
+	Inverted	반전
+	Hatch origin	해치 원점
+	Use current origin	현재 원점 사용
+	Specified origin	지정된 원점
+	Click to set new origin	클릭하여 새 원점 설정
+	Default to boundary extents	경계 범위를 기본값으로
+	Boundaries	경계
+	Add: Pick points	추가: 점 선택
+	Add: Select objects	추가: 객체 선택
+	Associative	연관
+	Create separate hatches	별도의 해치 작성
+	Island detection	아일랜드 감지
+	Normal	정상
+	Outer	외부
+	Ignore	무시
+	Origin: {x}, {y}	원점: {x}, {y}
+	Boundaries picked: {n}	선택한 경계: {n}
+	Italic	기울임꼴
+	Underline	밑줄
+	Overline	윗줄
+	Justify	양쪽 맞춤
+	Click the ruler to add a tab stop, right-click to remove one	눈금자를 클릭하면 탭 위치가 추가되고, 마우스 오른쪽 버튼을 클릭하면 제거됩니다
+	Unsaved changes	저장되지 않은 변경 사항
+	Save Block	블록 저장
+	Save Block As	다른 이름으로 블록 저장
+	Close Block Editor	블록 편집기 닫기
+	UCS icon: World Coordinate System	UCS 아이콘: 표준 좌표계
+	UCS icon: a user coordinate system (construction plane)	UCS 아이콘: 사용자 좌표계(작업 평면)
+	World (WCS)	표준(WCS)
+	Draw on the world XY plane	표준 XY 평면에 그리기
+	CPlane Front	작업 평면: 정면
+	CPlane Right	작업 평면: 오른쪽
+	CPlane Back	작업 평면: 배면
+	CPlane Left	작업 평면: 왼쪽
+	CPlane Bottom	작업 평면: 저면
+	Hide UCS Icon	UCS 아이콘 숨기기
+	Open in Block Editor	블록 편집기에서 열기
+	Edit Block Definition	블록 정의 편집
+	Block to create or edit	작성하거나 편집할 블록
+	Preview	미리보기
+	New block	새 블록
+	Animation effects	애니메이션 효과
+	Selection modes	선택 모드
+	Object grouping	객체 그룹화
+	Selection effect color	선택 효과 색상
+	Grips	그립
+	Show grips	그립 표시
+	Object selection limit for display of grips	그립 표시를 위한 객체 선택 한계
+	Selection preview	선택 미리보기
+	When a command is active	명령이 활성 상태일 때
+	When no command is active	활성 명령이 없을 때
+	Visual Effect Settings...	시각 효과 설정...
+	Visual Effect Settings	시각 효과 설정
+	Selection Area Effect	선택 영역 효과
+	Indicate selection area	선택 영역 표시
+	Window selection color:	윈도우 선택 색상:
+	Crossing selection color:	걸침 선택 색상:
+	Selection area opacity:	선택 영역 불투명도:
+	Selection Preview Filter	선택 미리보기 필터
+	Exclude:	제외:
+	Objects on locked layers	잠긴 도면층의 객체
+	Xrefs	외부 참조
+	Tables	표
+	Groups	그룹
+	Multiline text	여러 줄 문자
+	Hatches	해치
+	Drawing template	도면 템플릿
+	Not saved yet	아직 저장되지 않음
+	Summary	요약
+	Statistics	통계
+	Custom	사용자 정의
+	Custom properties	사용자 특성
+	Add...	추가...
+	{name} Properties	{name} 특성
+	The clipboard holds no drawing objects.	클립보드에 도면 객체가 없습니다.
+	Objects from another Cadino window	다른 Cadino 창의 객체
+	Objects from this drawing	이 도면의 객체
+	Objects from another drawing	다른 도면의 객체
+	Paste Special	선택하여 붙여넣기
+	Source:	원본:
+	Paste Link	링크 붙여넣기
+	As:	형식:
+	Cadino Drawing Objects	Cadino 도면 객체
+	Cadino Drawing Objects as a Block	블록으로 Cadino 도면 객체
+	Paste the text here (Ctrl+V)	여기에 문자 붙여넣기(Ctrl+V)
+	Result	결과
+	Pastes the objects; you then pick the insertion point.	객체를 붙여넣습니다. 그런 다음 삽입점을 지정합니다.
+	Pastes the objects as one block reference; you then pick the insertion point.	객체를 하나의 블록 참조로 붙여넣습니다. 그런 다음 삽입점을 지정합니다.
+	Pastes the text as multiline text; you then pick the insertion point.	문자를 여러 줄 문자로 붙여넣습니다. 그런 다음 삽입점을 지정합니다.
+	Object Selection Filters	객체 선택 필터
+	No conditions yet: add one below.	아직 조건이 없습니다. 아래에서 추가하십시오.
+	Edit Item	항목 편집
+	Clear List	목록 지우기
+	Select Filter	필터 선택
+	Add to List	목록에 추가
+	Substitute	대체
+	Add Selected Object	선택한 객체 추가
+	Add the type, layer, colour and linetype of the first selected object	처음 선택한 객체의 유형, 도면층, 색상 및 선종류 추가
+	Named Filters	이름 있는 필터
+	Current:	현재:
+	*unnamed	*이름 없음
+	Delete Current Filter List	현재 필터 목록 삭제
+	Save As:	다른 이름으로 저장:
+	Within the current selection only	현재 선택 내에서만
+	Select layers to show only them. Ctrl+click adds, Shift+click adds a range.	도면층을 선택하면 그 도면층만 표시됩니다. Ctrl+클릭은 추가, Shift+클릭은 범위를 추가합니다.
+	Restore on exit	종료 시 복원
+	LayerWalk - Layers: {n}	도면층 탐색 - 도면층: {n}
+	Layer Translator	도면층 변환기
+	Translate From	변환 원본
+	Map	매핑
+	Map same	같은 이름 매핑
+	Map every layer to the target layer of the same name	모든 도면층을 같은 이름의 대상 도면층에 매핑
+	Translate To	변환 대상
+	Load a drawing's layers or make new ones.	도면의 도면층을 로드하거나 새로 만드십시오.
+	Use the layers of another drawing	다른 도면의 도면층 사용
+	New...	새로 만들기...
+	Name:	이름:
+	Linetype:	선종류:
+	Lineweight:	선가중치:
+	Layer Translation Mappings	도면층 변환 매핑
+	Old Layer Name	이전 도면층 이름
+	New Layer Name	새 도면층 이름
+	Translate	변환
+	Title:	제목:
+	Subject:	주제:
+	Author:	작성자:
+	Keywords:	키워드:
+	Comments:	주석:
+	Hyperlink base:	하이퍼링크 기준:
+	Last saved by:	마지막 저장자:
+	Revision number:	개정 번호:
+	Type:	유형:
+	Location:	위치:
+	Size:	크기:
+	Created:	작성:
+	Modified:	수정:
+	Add to Working Set	작업 세트에 추가
+	Align Multileaders	다중 지시선 정렬
+	Animation Effects	애니메이션 효과
+	Collect	수집
+	Collect Multileaders	다중 지시선 수집
+	Construction Plane	작업 평면
+	Drag Dynamic Grip	동적 그립 끌기
+	Dynamic Block Data	동적 블록 데이터
+	Dynamic Block Grips	동적 블록 그립
+	Dynamic Block Reference	동적 블록 참조
+	Edit Multileader	다중 지시선 편집
+	Edit Reference In-Place	제자리에서 참조 편집
+	Evaluate LISP	LISP 평가
+	Gumball	검볼
+	Hatch Pick	해치 선택
+	Load Application...	응용프로그램 로드...
+	Query Texts	문자 조회
+	Save Reference Edits	참조 편집 저장
+	Set Dynamic Property	동적 특성 설정
+	Sheet Books to PDF...	시트 북을 PDF로...
+	UCS	UCS
+	Working Set	작업 세트
+	Xref and Block In-place Editing	외부 참조 및 블록 제자리 편집

@@ -74,9 +74,18 @@ pub(crate) fn free(b: &mut Builder, ctx: &Ctx, e: &Entity, rgb: Ink, lw: f32, lt
             }
             stroke3(b, ctx, rgb, lw, lt, ltscale, &pts);
         }
-        EntityKind::Face3d(f) => {
+        EntityKind::Face3d(f) if f.hidden_edges & 15 == 0 => {
             let c = f.corners;
             stroke3(b, ctx, rgb, lw, lt, ltscale, &[c[0], c[1], c[2], c[3], c[0]]);
+        }
+        EntityKind::Face3d(f) => {
+            // Invisible edges (DXF 70 bits 1, 2, 4, 8) are not drawn.
+            let c = f.corners;
+            for (i, (p, q)) in [(c[0], c[1]), (c[1], c[2]), (c[2], c[3]), (c[3], c[0])].into_iter().enumerate() {
+                if f.hidden_edges & (1 << i) == 0 {
+                    stroke3(b, ctx, rgb, lw, lt, ltscale, &[p, q]);
+                }
+            }
         }
         EntityKind::Helix(h) => {
             let h = h.clone().sanitized();

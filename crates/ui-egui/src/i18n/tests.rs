@@ -21,7 +21,10 @@ fn catalog_is_valid_and_preserves_placeholders_and_ellipses() {
                 assert_eq!(forms.len(), language.plural_forms, "{}: {key}", language.code);
             }
             for form in forms {
-                assert_eq!(placeholders(key), placeholders(form), "{key}");
+                // A translation may leave out an English plural ending ("object{0}" with "s").
+                let ending = |p: &&str| key.split(&format!("{{{p}}}")).next().is_some_and(|b| b.ends_with(|c: char| c.is_ascii_alphabetic()));
+                let dropped: Vec<_> = placeholders(key).difference(&placeholders(form)).copied().collect();
+                assert!(placeholders(form).is_subset(&placeholders(key)) && dropped.iter().all(ending), "{key}");
                 for suffix in ["...", "…"] {
                     assert_eq!(key.ends_with(suffix), form.ends_with(suffix), "{key}");
                 }
@@ -118,6 +121,15 @@ fn missing_marked_ui_literals(language: &str) -> BTreeSet<String> {
         include_str!("../managers/layerstates.rs"),
         include_str!("../managers/mlstyle.rs"),
         include_str!("../managers/wblock.rs"),
+        include_str!("../managers/dwgprops.rs"),
+        include_str!("../managers/pastespec.rs"),
+        include_str!("../managers/filter.rs"),
+        include_str!("../managers/laywalk.rs"),
+        include_str!("../managers/laytrans.rs"),
+        include_str!("../chrome/annoscale.rs"),
+        include_str!("../context_menu.rs"),
+        include_str!("../plotstyles.rs"),
+        include_str!("../spacemouse.rs"),
     ];
     let mut missing = BTreeSet::new();
     for source in sources {
@@ -154,32 +166,298 @@ fn missing_marked_ui_literals(language: &str) -> BTreeSet<String> {
     missing
 }
 
-/// The prompts of the commands typed bare (the settings, styles, layer tools, measurements and
-/// file commands that used to need JSON parameters) reach the command line translated: the
-/// command line looks a prompt up by its text ([`crate::cmdline`]).
+/// Everything the engine (and the UI) puts on the command line in English: prompt messages,
+/// echoes, refusals and results reach Korean and Ukrainian users translated ([`line`]). Adding a
+/// prompt or a message means adding its ko and uk rows; this test lists the missing ones as
+/// catalog rows to fill in.
 #[test]
-fn typed_command_prompts_are_translated() {
-    let sources = [
-        include_str!("../../../engine/src/cmd/props/prompts.rs"),
-        include_str!("../../../engine/src/cmd/props/dimstyle.rs"),
-        include_str!("../../../engine/src/cmd/utility/measure.rs"),
-        include_str!("../../../engine/src/cmd/blocks/wblock.rs"),
-        include_str!("../../../engine/src/cmd/layer/prompts.rs"),
-    ];
-    for language in ["uk", "ko"] {
+fn engine_prompts_and_messages_are_translated() {
+    let messages = command_line_messages();
+    assert!(messages.len() > 1000, "the scanner found only {} messages", messages.len());
+    for must in ["Specify first point", "Command: {0}", "Select objects", "*Cancel*", "nothing selected"] {
+        assert!(messages.contains_key(must), "the scanner missed {must:?}");
+    }
+    let mut report = String::new();
+    for language in ["ko", "uk"] {
         let catalog = catalog(language).unwrap();
-        let mut missing = BTreeSet::new();
-        for source in sources {
-            for rest in source.split("Prompt::new(\"").skip(1) {
-                let Some(end) = rest.find('"') else { continue };
-                let key = &rest[..end];
-                if !key.is_empty() && !catalog.contains_key(&("", key)) {
-                    missing.insert(key.to_string());
+        let missing: Vec<_> = messages.iter().filter(|(key, _)| !catalog.contains_key(&("", key.as_str()))).collect();
+        if !missing.is_empty() {
+            report.push_str(&format!("\n{language}.tsv is missing {} row(s):\n", missing.len()));
+            for (key, file) in missing {
+                report.push_str(&format!("\t{key}\t\t# {file}\n"));
+            }
+        }
+    }
+    assert!(report.is_empty(), "command-line text without a translation (add the rows):{report}");
+}
+
+/// English that stays English on the command line: a keyword, a command name, the xref list's
+/// aligned column headings and a plural ending a message inserts.
+const ENGLISH_ONLY: &[&str] = &["Current", "MSPACE", "Xref name", "{0} {1} {2} Path", "s were"];
+
+/// The command-line text in the engine's and the UI's sources, as catalog keys (a `format!`
+/// string with its `{}` numbered `{0}`, `{1}`…, as [`line`] matches it), with a file it is in.
+/// It is what the sources pass to `Prompt::new`, `echo`, `EngineError::Other`, the `other(…)`
+/// helpers and `Err(…)`, and a result's `"message"`; tests are left out.
+fn command_line_messages() -> std::collections::BTreeMap<String, String> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut files = Vec::new();
+    let mut dirs = vec![root.join("engine/src"), root.join("ui-egui/src")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if path.is_dir() {
+                if name != "tests" {
+                    dirs.push(path);
+                }
+            } else if name.ends_with(".rs") && !name.ends_with("tests.rs") {
+                files.push(path);
+            }
+        }
+    }
+    let mut found = std::collections::BTreeMap::new();
+    for path in files {
+        let file = path.strip_prefix(&root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+        let ui = file.starts_with("ui-egui/");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let src = without_tests(&text);
+        let sinks: &[&str] = if ui { &[".echo("] } else { &["Prompt::new(", ".echo(", "EngineError::Other(", "other(", "Err(", "\"message\":"] };
+        for sink in sinks {
+            let mut from = 0;
+            while let Some(at) = src[from..].find(sink).map(|i| i + from) {
+                from = at + sink.len();
+                let before = src[..at].chars().next_back().unwrap_or(' ');
+                let after = src[from..].trim_start();
+                if *sink == "other(" && (before.is_alphanumeric() || "_.:".contains(before)) {
+                    continue;
+                }
+                if *sink == "Err(" && !(after.starts_with('"') || after.starts_with("format!(")) {
+                    continue;
+                }
+                for literal in literals(&src[from..], *sink == "\"message\":") {
+                    for line in literal.split('\n') {
+                        if prose(line) && !ENGLISH_ONLY.contains(&line) {
+                            found.entry(line.to_string()).or_insert_with(|| file.clone());
+                        }
+                    }
                 }
             }
         }
-        assert!(missing.is_empty(), "{language}: prompts without a translation: {missing:?}");
     }
+    found
+}
+
+/// A source file up to its `#[cfg(test)] mod …`.
+fn without_tests(src: &str) -> &str {
+    let lines: Vec<&str> = src.lines().collect();
+    for (i, l) in lines.iter().enumerate() {
+        let module = lines.iter().skip(i + 1).take(2).any(|n| n.trim_start().starts_with("mod ") || n.trim_start().starts_with("pub mod "));
+        if l.trim() == "#[cfg(test)]" && module {
+            let offset = l.as_ptr() as usize - src.as_ptr() as usize;
+            return &src[..offset];
+        }
+    }
+    src
+}
+
+/// Text a user reads: a phrase or a capitalised word, not a key, an id or bare punctuation.
+fn prose(line: &str) -> bool {
+    let mut bare = String::new();
+    let mut inside = false;
+    for c in line.chars() {
+        match c {
+            '{' => inside = true,
+            '}' => inside = false,
+            c if !inside => bare.push(c),
+            _ => {}
+        }
+    }
+    let bare = bare.trim();
+    let letters = bare.chars().collect::<Vec<_>>().windows(2).any(|w| w.iter().all(|c| c.is_ascii_alphabetic()));
+    letters && !line.contains('\t') && (bare.contains(' ') || bare.chars().find(|c| c.is_alphabetic()).is_some_and(|c| c.is_ascii_uppercase()))
+}
+
+/// The string literals of the call argument (or, with `field`, the JSON value) at the start of
+/// `src`, a `format!` string as a catalog key.
+fn literals(src: &str, field: bool) -> Vec<String> {
+    let b = src.as_bytes();
+    let (mut depth, mut i, mut out) = (1usize, 0usize, Vec::new());
+    while let Some(&c) = b.get(i) {
+        let ident = i > 0 && b.get(i - 1).is_some_and(|p| p.is_ascii_alphanumeric() || *p == b'_');
+        let raw = c == b'r' && matches!(b.get(i + 1), Some(b'"' | b'#')) && !ident;
+        if c == b'"' || raw {
+            let Some((value, end)) = literal(&src[i..]) else { break };
+            let format = src[..i].trim_end().ends_with("format!(");
+            out.push(if format { format_key(&value) } else { value });
+            i += end;
+            continue;
+        }
+        match c {
+            b'\'' => {
+                // A char literal ('"', '\'', '{'); a lifetime has no closing quote.
+                let close = if b.get(i + 1) == Some(&b'\\') { src.get(i + 2..).and_then(|s| s.find('\'')).map(|e| e + 2) } else { Some(2) };
+                if let Some(e) = close.filter(|e| b.get(i + e) == Some(&b'\'')) {
+                    i += e;
+                }
+            }
+            b'/' if b.get(i + 1) == Some(&b'/') => i += src[i..].find('\n').unwrap_or(src.len() - i),
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            b',' if field && depth == 1 => break,
+            _ => {}
+        }
+        i += 1;
+    }
+    out
+}
+
+/// A string literal at the start of `src` (`"…"`, `r"…"`, `r#"…"#`): its value and length.
+fn literal(src: &str) -> Option<(String, usize)> {
+    if let Some(raw) = src.strip_prefix('r') {
+        let hashes = raw.len() - raw.trim_start_matches('#').len();
+        let open = 1 + hashes + 1;
+        let close = format!("\"{}", "#".repeat(hashes));
+        let end = src.get(open..)?.find(&close)? + open;
+        return Some((src[open..end].to_string(), end + close.len()));
+    }
+    let mut value = String::new();
+    let mut chars = src.char_indices().skip(1).peekable();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '"' => return Some((value, i + 1)),
+            '\\' => match chars.next()?.1 {
+                'n' => value.push('\n'),
+                't' => value.push('\t'),
+                'r' => value.push('\r'),
+                '0' => value.push('\0'),
+                'u' => {
+                    let hex: String = chars.by_ref().map(|(_, c)| c).skip(1).take_while(|c| *c != '}').collect();
+                    value.extend(u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32));
+                }
+                'x' => {
+                    let hex: String = chars.by_ref().take(2).map(|(_, c)| c).collect();
+                    value.extend(u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32));
+                }
+                '\n' | '\r' => {
+                    // A line continuation drops the next line's indentation.
+                    while chars.peek().is_some_and(|(_, c)| c.is_whitespace()) {
+                        chars.next();
+                    }
+                }
+                other => value.push(other),
+            },
+            c => value.push(c),
+        }
+    }
+    None
+}
+
+/// A `format!` string as a catalog key: `{}` and `{:…}` numbered `{0}`, `{1}`…, a named
+/// argument's format spec dropped, `{{`/`}}` single braces.
+fn format_key(fmt: &str) -> String {
+    let (mut out, mut next, mut rest) = (String::new(), 0, fmt);
+    while let Some(i) = rest.find(['{', '}']) {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i..];
+        if tail.starts_with("{{") || tail.starts_with("}}") {
+            out.push_str(&tail[..1]);
+            rest = &tail[2..];
+        } else if let Some(end) = tail.strip_prefix('{').and_then(|t| t.find('}')) {
+            let name = tail[1..=end].split(':').next().unwrap_or("");
+            if name.is_empty() {
+                out.push_str(&format!("{{{next}}}"));
+                next += 1;
+            } else {
+                out.push_str(&format!("{{{name}}}"));
+            }
+            rest = &tail[end + 2..];
+        } else {
+            out.push_str(&tail[..1]);
+            rest = &tail[1..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+#[test]
+fn the_message_scanner_reads_rust_literals() {
+    assert_eq!(format_key("{} of {n:.2} in {:?} {{x}}"), "{0} of {n} in {1} {x}");
+    assert_eq!(literal("\"a \\\"b\\\" \\u{e9}\\\n        c\" tail"), Some(("a \"b\" éc".to_string(), 27)));
+    assert_eq!(literal("r#\"say \"hi\"\"# x"), Some(("say \"hi\"".to_string(), 13)));
+    let src = "if self.x { \"Specify one\" } else { format!(\"Got {} of {n}\", a.join(\", \")) }, '\"', \"{\"); next(\"no\")";
+    assert_eq!(literals(src, false), ["Specify one", "Got {0} of {n}", ", ", "{"]);
+    assert_eq!(literals(" format!(\"{n} done\"), \"other\": \"x\" }", true), ["{n} done"]);
+    assert!(prose("Specify first point") && prose("Constant?") && prose("{0} object(s) found") && prose("*Cancel*"));
+    assert!(!prose("path") && !prose("{0}") && !prose(", ") && !prose("x\ty"));
+    assert_eq!(without_tests("a\n#[cfg(test)]\nmod tests {\nb"), "a\n");
+}
+
+/// History lines are English in the log and translated as they are drawn: a whole-line row, a
+/// `{placeholder}` row filled in (a reason or a purpose translated in turn, a name kept), and
+/// anything unknown as it is.
+#[test]
+fn history_lines_are_translated_as_drawn() {
+    let cases = [
+        ("Command: LINE", "명령: LINE", "Команда: LINE"),
+        ("*Cancel*", "*취소*", "*Скасовано*"),
+        ("Current osnap modes: End,Mid", "현재 객체 스냅 모드: End,Mid", "Поточні режими об'єктної прив'язки: End,Mid"),
+        ("3 objects changed to layer \"Layer\".", "객체 3개가 도면층 \"Layer\"(으)로 변경되었습니다.", "Переміщено на шар \"Layer\" об'єктів: 3."),
+        (
+            "command `erase` is not available right now: nothing selected",
+            "지금은 `erase` 명령을 사용할 수 없습니다: 선택된 항목 없음",
+            "команда `erase` зараз недоступна: нічого не вибрано",
+        ),
+        ("Enter layer name(s) to freeze", "동결할 도면층 이름 입력", "Введіть назви шарів, які заморозити"),
+        (
+            "Reset Model space limits:\nInvalid point.",
+            "모형 공간 한계 재설정:\n잘못된 점입니다.",
+            "Скинути межі простору моделі:\nНеправильна точка.",
+        ),
+        ("Something no catalog knows", "Something no catalog knows", "Something no catalog knows"),
+        // Names a list echoes (-PLOT ?: layouts, devices; styles) stay, so they can be typed back.
+        ("Model", "Model", "Model"),
+        ("None", "None", "None"),
+        ("Standard", "Standard", "Standard"),
+    ];
+    for (english, ko, uk) in cases {
+        assert_eq!(with_language("ko", || line(english)), ko);
+        assert_eq!(with_language("uk", || line(english)), uk);
+        // A second lookup comes from the cache and agrees.
+        assert_eq!(with_language("ko", || line(english)), ko);
+        assert_eq!(line(english), english);
+    }
+}
+
+/// A Korean user reads the command line's history in Korean while the log, which scripts, the
+/// control channel and the AI read, stays English.
+#[test]
+fn korean_history_is_drawn_translated_and_logged_in_english() {
+    if !crate::theme::can_show("ko") {
+        return;
+    }
+    let mut app = CadApp::new(Session::new(), Services::default());
+    let ctx = egui::Context::default();
+    app.run("ui.language", json!({"lang": "ko"})).unwrap();
+    app.logic(&ctx);
+    app.cmdline("nosuchcommand");
+    app.cmdline("line");
+    app.cmdline("nowhere");
+    let text = render(&mut app, &ctx);
+    for shown in ["알 수 없는 명령 `nosuchcommand`", "명령: LINE", "점 또는 옵션 키워드가 필요합니다."] {
+        assert!(text.contains(shown), "missing {shown}: {text}");
+    }
+    let log = &app.session.log;
+    for logged in ["unknown command `nosuchcommand`", "Command: LINE", "Point or option keyword required."] {
+        assert!(log.iter().any(|l| l == logged), "{logged}: {log:?}");
+    }
+    assert!(crate::control::cmdline_state(&app)["history"].to_string().contains("Command: LINE"));
 }
 
 /// The AI assistant's own messages reach the palette in English with their `{names}` filled in;

@@ -1686,3 +1686,1360 @@
 	Enter new layer name	Введіть нову назву шару
 	Enter old layer name	Введіть стару назву шару
 	Enter transparency value (0-90)	Введіть значення прозорості (0-90)
+# Command-line prompts and messages: engine prompts, echoes, refusals and results (see i18n::line).
+	"{0}" is built in; create a new plotter first.	"{0}" є вбудованим; спершу створіть новий плотер.
+	"{0}" is now the current text style.	"{0}" тепер поточний текстовий стиль.
+	"{key}" is not an xref	"{key}" не є зовнішнім посиланням
+	"{name}" is not a valid view name.	"{name}" не є допустимою назвою виду.
+	"{name}" is not a valid viewport configuration name.	"{name}" не є допустимою назвою конфігурації видових екранів.
+	"{n}" is not a valid group name.	"{n}" не є допустимою назвою групи.
+	"{n}" is not a valid parameter name.	"{n}" не є допустимою назвою параметра.
+	"{t}" is listed twice.	"{t}" зазначено двічі.
+	(need {0})	(потрібно {0})
+	** Command not allowed in Model Tab ** (switch to a layout first)	** Команда недоступна на вкладці «Модель» ** (спершу перейдіть на аркуш)
+	** STRETCH **	** РОЗТЯГНУТИ **
+	******** WARNING ********	******** ПОПЕРЕДЖЕННЯ ********
+	*Invalid selection*	*Неправильний вибір*
+	-LAYER {other} is not available yet.	-LAYER {other} поки що недоступний.
+	0 found	Знайдено 0
+	1 object was on a locked layer.	1 об'єкт був на заблокованому шарі.
+	3D views are available on the Model tab only.	3D-види доступні лише на вкладці «Модель».
+	; error: {0}	; помилка: {0}
+	; error: {msg}	; помилка: {msg}
+	<Isodraft off>	<Ізометричне креслення вимкнено>
+	<Isodraft {0}>	<Ізометричне креслення {0}>
+	<Osnap {0}>	<Об'єктна прив'язка {0}>
+	>> Expression	>> Вираз
+	A closed spline has no end tangents.	Замкнений сплайн не має кінцевих дотичних.
+	A closed spline of degree {p} needs more than {0} control points.	Замкненому сплайну степеня {p} потрібно більше ніж {0} керувальних точок.
+	A curve has no length.	Крива не має довжини.
+	A group named "{n}" already exists.	Група з назвою "{n}" уже існує.
+	A line fillets or chamfers with an end segment of an open polyline.	Відрізок спрягається або сполучається фаскою з кінцевим сегментом незамкненої полілінії.
+	A multileader needs a leader line or content; nothing was drawn.	Мультивиносці потрібна лінія виноски або вміст; нічого не накреслено.
+	A multiline style named {to} already exists.	Стиль мультилінії з назвою {to} уже існує.
+	A polygonal boundary needs at least three points.	Багатокутній межі потрібно щонайменше три точки.
+	A polyline fillets or chamfers with a line, or with another segment of itself.	Полілінія спрягається або сполучається фаскою з відрізком чи з іншим власним сегментом.
+	A profile encloses no area.	Профіль не обмежує жодної площі.
+	A region can't be subtracted from itself.	Область не можна відняти від самої себе.
+	A rotation axis (3D) is not available yet; specify the center point.	Вісь обертання (3D) поки що недоступна; укажіть центр.
+	A scale named "{text}" already exists.	Масштаб з назвою "{text}" уже існує.
+	A solid can't be subtracted from itself.	Тіло не можна відняти від самого себе.
+	A spline has no length.	Сплайн не має довжини.
+	A spline needs at least {min} fit points.	Сплайну потрібно щонайменше {min} точок апроксимації.
+	A spline of degree {p} needs at least {0} control points.	Сплайну степеня {p} потрібно щонайменше {0} керувальних точок.
+	A tag must be non-empty and without spaces.	Тег має бути непорожнім і без пропусків.
+	A transparent command is already in progress.	Прозора команда вже виконується.
+	A vertex is already there.	Там уже є вершина.
+	A viewport configuration needs a viewport.	Конфігурації видових екранів потрібен видовий екран.
+	A wipeout needs three or more points enclosing an area.	Маскуванню потрібно три або більше точок, що обмежують площу.
+	A {0} can't be placed in this construction plane (it stays level); use CPLANE World or a level plane.	{0} не можна розмістити в цій площині побудови (він лишається горизонтальним); використайте CPLANE World або горизонтальну площину.
+	A {0} in a tilted plane can't be scaled unevenly.	{0} у нахиленій площині не можна масштабувати нерівномірно.
+	A {what} can't be stretched in Z (only the vertices of lines, 3D polylines and 3D faces can; other objects move in Z only wholly inside the window, as MOVE moves them). Give the displacement without a Z value.	{what} не можна розтягнути вздовж Z (це можливо лише для вершин відрізків, 3D-поліліній і 3D-граней; інші об'єкти зміщуються вздовж Z, лише якщо цілком у вікні, як під час MOVE). Задайте зміщення без значення Z.
+	ATTACH is not available yet: raster images and PDF/DWF/DGN underlays can't be shown yet	ATTACH поки що недоступна: растрові зображення та підкладки PDF/DWF/DGN поки що не відображаються
+	ATTSYNC block {0}?	ATTSYNC блока {0}?
+	ATTSYNC block {block}: {n} reference{0} synchronized.	ATTSYNC блока {block}: синхронізовано посилань — {n}.
+	ATTSYNC block {name}: {n} reference{0} synchronized.	ATTSYNC блока {name}: синхронізовано посилань — {n}.
+	Active Layout: {current}	Активний аркуш: {current}
+	Align block with object?	Вирівняти блок за об'єктом?
+	All edits have been undone.	Усі зміни скасовано.
+	An array's items can't contain the array itself.	Елементи масиву не можуть містити сам масив.
+	An array's source objects are being edited; enter ARRAYCLOSE first.	Вихідні об'єкти масиву редагуються; спершу введіть ARRAYCLOSE.
+	An ellipse has no size.	Еліпс не має розміру.
+	An object is on a locked layer.	Об'єкт на заблокованому шарі.
+	Analyzing the selected data... {0} loop(s)	Аналіз вибраних даних... контурів: {0}
+	Angle = {ang}°	Кут = {ang}°
+	Angle Override: {0}	Перевизначення кута: {0}
+	Angle options apply to arcs.	Параметри кута стосуються дуг.
+	Animation effects are {shown}	Ефекти анімації: {shown}
+	Animation effects follow the system setting ({shown})	Ефекти анімації відповідають налаштуванню системи ({shown})
+	Answer Yes or No.	Дайте відповідь Yes або No.
+	Arc cannot be full 360 degrees.	Дуга не може мати повні 360 градусів.
+	Associate the hatch with the new boundary?	Пов'язати штрихування з новою межею?
+	Associative dimension priority	Пріоритет асоціативних розмірів
+	At most {MAX_PICKS} picks.	Не більше {MAX_PICKS} вказувань.
+	At most {MAX_TILES} viewports can be shown.	Можна показати не більше {MAX_TILES} видових екранів.
+	At most {MAX_VERTICES} points.	Не більше {MAX_VERTICES} точок.
+	Attribute {0}: enter property to change	Атрибут {0}: введіть властивість для зміни
+	BOUNDARY created {0} polyline(s)	BOUNDARY створила поліліній: {0}
+	Block "{0}" already has an attribute tagged "{t}".	Блок "{0}" уже має атрибут із тегом "{t}".
+	Block "{0}" has no attribute definitions.	Блок "{0}" не має визначень атрибутів.
+	Block "{0}" has no attribute tagged "{1}".	Блок "{0}" не має атрибута з тегом "{1}".
+	Block "{0}" not found.	Блок "{0}" не знайдено.
+	Block "{b}" has no attribute definitions.	Блок "{b}" не має визначень атрибутів.
+	Block "{b}" not found.	Блок "{b}" не знайдено.
+	Block "{name}" already exists. Redefine it?	Блок "{name}" уже існує. Перевизначити його?
+	Block "{name}" can't contain a reference to itself.	Блок "{name}" не може містити посилання на самого себе.
+	Block "{name}" defined with {0} object(s).	Блок "{name}" визначено з об'єктів: {0}.
+	Block "{name}" has no attribute definitions.	Блок "{name}" не має визначень атрибутів.
+	Block "{name}" not found.	Блок "{name}" не знайдено.
+	Block "{name}" saved.	Блок "{name}" збережено.
+	Block "{name}" saved; the Block Editor now edits it.	Блок "{name}" збережено; тепер його редагує редактор блоків.
+	Block "{n}" already exists. Redefine it?	Блок "{n}" уже існує. Перевизначити його?
+	Block Editor: editing "{name}". BSAVE saves it into the drawing; BCLOSE closes the editor.	Редактор блоків: редагується "{name}". BSAVE зберігає його в кресленні; BCLOSE закриває редактор.
+	Block Editor: new block "{name}". BSAVE creates it in the drawing; BCLOSE closes the editor.	Редактор блоків: новий блок "{name}". BSAVE створює його в кресленні; BCLOSE закриває редактор.
+	Block {0}: enter an option	Блок {0}: введіть параметр
+	Block {0}: {n} reference{1} in the drawing.	Блок {0}: посилань у кресленні — {n}.
+	Blocks with attributes: {0}	Блоки з атрибутами: {0}
+	Breaking there would remove the whole polyline.	Розрив у цьому місці видалить усю полілінію.
+	Bring to front	Перемістити на передній план
+	CAL: {m}	CAL: {m}
+	CONSTRAINTINFER = {0}	CONSTRAINTINFER = {0}
+	CV: not available yet	CV: поки що недоступно
+	Calculate rectangle dimensions based on	Обчислювати розміри прямокутника за
+	Can't write {path}: {e}	Не вдалося записати {path}: {e}
+	Cannot add a control point to this spline.	Неможливо додати керувальну точку до цього сплайна.
+	Cannot break a polyline at its end vertex.	Неможливо розірвати полілінію в її кінцевій вершині.
+	Cannot break that object.	Цей об'єкт неможливо розірвати.
+	Cannot convert.	Неможливо перетворити.
+	Cannot delete that control point.	Цю керувальну точку неможливо видалити.
+	Cannot divide/measure that object.	Цей об'єкт неможливо поділити або розмітити.
+	Cannot elevate the order of this spline.	Неможливо підвищити порядок цього сплайна.
+	Cannot extend a closed ellipse.	Неможливо подовжити замкнений еліпс.
+	Cannot extend a closed spline.	Неможливо подовжити замкнений сплайн.
+	Cannot extend that object.	Цей об'єкт неможливо подовжити.
+	Cannot extend that spline.	Цей сплайн неможливо подовжити.
+	Cannot fillet an object to itself.	Неможливо спрягти об'єкт із самим собою.
+	Cannot find layer "{m}".	Не вдалося знайти шар "{m}".
+	Cannot find layer "{name}".	Не вдалося знайти шар "{name}".
+	Cannot find layer "{n}".	Не вдалося знайти шар "{n}".
+	Cannot find layer "{t}".	Не вдалося знайти шар "{t}".
+	Cannot find multiline style "{0}".	Не вдалося знайти стиль мультилінії "{0}".
+	Cannot find multiline style "{name}".	Не вдалося знайти стиль мультилінії "{name}".
+	Cannot find text style "{name}".	Не вдалося знайти текстовий стиль "{name}".
+	Cannot freeze layer "{cur}". It is the CURRENT layer.	Неможливо заморозити шар "{cur}". Це ПОТОЧНИЙ шар.
+	Cannot join these objects into a spline.	Неможливо об'єднати ці об'єкти в сплайн.
+	Cannot join to a closed polyline.	Неможливо приєднати до замкненої полілінії.
+	Cannot join to a closed spline.	Неможливо приєднати до замкненого сплайна.
+	Cannot lengthen a closed ellipse.	Неможливо змінити довжину замкненого еліпса.
+	Cannot lengthen a closed spline.	Неможливо змінити довжину замкненого сплайна.
+	Cannot lengthen that spline.	Неможливо змінити довжину цього сплайна.
+	Cannot measure that object.	Цей об'єкт неможливо виміряти.
+	Cannot merge into xref-dependent layer "{name}".	Неможливо об'єднати із залежним від зовнішнього посилання шаром "{name}".
+	Cannot merge layer "{name}" into itself.	Неможливо об'єднати шар "{name}" із самим собою.
+	Cannot offset that object.	Цей об'єкт неможливо змістити.
+	Cannot set the current layer to frozen layer "{0}".	Неможливо зробити поточним заморожений шар "{0}".
+	Cannot trim that object.	Цей об'єкт неможливо обрізати.
+	Cannot trim that spline.	Цей сплайн неможливо обрізати.
+	Change area {0} of {n}.	Область змін {0} з {n}.
+	Choose one of the options.	Виберіть один із параметрів.
+	Circle does not exist.	Коло не існує.
+	Circle must intersect cutting edges at two or more points.	Коло має перетинати ріжучі кромки у двох або більше точках.
+	Clipboard is empty.	Буфер обміну порожній.
+	Clipping boundary deleted.	Межу підрізання видалено.
+	Close: no drawing to close	Закрити: немає креслення для закриття
+	Color books are not available yet.	Альбоми кольорів поки що недоступні.
+	Combine collinear objects that meet end to end	Об'єднувати колінеарні об'єкти, що стикуються кінцями
+	Combine collinear objects that partially overlap	Об'єднувати колінеарні об'єкти, що частково перекриваються
+	Combine identical rows?	Об'єднати однакові рядки?
+	Combine layer property changes into one undo step?	Об'єднати зміни властивостей шарів в один крок скасування?
+	Combine zooms and pans into one undo step?	Об'єднати масштабування та панорамування в один крок скасування?
+	Command: {0}	Команда: {0}
+	Command: {shown}	Команда: {shown}
+	Constant?	Стала?
+	Construction planes are for the Model tab.	Площини побудови призначені для вкладки «Модель».
+	Continuity = {0}	Неперервність = {0}
+	Corner joints need open multilines.	Для кутових з'єднань потрібні незамкнені мультилінії.
+	Could not find view "{0}".	Не вдалося знайти вид "{0}".
+	Could not find viewport configuration "{0}".	Не вдалося знайти конфігурацію видових екранів "{0}".
+	Could not find viewport configuration "{name}".	Не вдалося знайти конфігурацію видових екранів "{name}".
+	Create associative array	Створити асоціативний масив
+	Current active settings: {text}	Поточні активні параметри: {text}
+	Current layer:  "{cur}"	Поточний шар:  "{cur}"
+	Current length: {l}	Поточна довжина: {l}
+	Current length: {l}, included angle: {0}	Поточна довжина: {l}, центральний кут: {0}
+	Current line-width is {0}	Поточна ширина лінії: {0}
+	Current linetype: "{cur}"	Поточний тип лінії: "{cur}"
+	Current lineweight: {0}	Поточна товщина лінії: {0}
+	Current osnap modes: {0}	Поточні режими об'єктної прив'язки: {0}
+	Current pattern: {0}  Scale: {1}  Angle: {2}	Поточний зразок: {0}  Масштаб: {1}  Кут: {2}
+	Current plot style is "{cur}"	Поточний стиль друку: "{cur}"
+	Current point modes:  PDMODE={m}  PDSIZE={sz}	Поточні режими точок:  PDMODE={m}  PDSIZE={sz}
+	Current setting: Hide layers, Viewports=Off	Поточне налаштування: приховати шари, видові екрани = вимк.
+	Current settings: Erase source={0}  Layer={1}  OFFSETGAPTYPE=0	Поточні параметри: стерти вихідний={0}  шар={1}  OFFSETGAPTYPE=0
+	Current settings: Justification = {0}, Scale = {1}, Style = {2}	Поточні параметри: вирівнювання = {0}, масштаб = {1}, стиль = {2}
+	Current settings: Method=CV   Degree={0}	Поточні параметри: метод=CV   степінь={0}
+	Current settings: Method=Fit   Knots={0}	Поточні параметри: метод=апроксимація   вузли={0}
+	Current settings: Projection={proj}, Edge={0}, Mode={1}	Поточні параметри: проєкція={proj}, кромка={0}, режим={1}
+	Current text style:  "{0}"  Text height:  {1}  Annotative:  {2}	Поточний текстовий стиль:  "{0}"  Висота тексту:  {1}  Анотативний:  {2}
+	Defined blocks: {0}	Визначені блоки: {0}
+	Degree must be 1..10.	Степінь має бути від 1 до 10.
+	Delete old boundary(s)?	Видалити старі межі?
+	Delete source objects?	Видалити вихідні об'єкти?
+	Diameter = {0}	Діаметр = {0}
+	Dimension style "{name}" not found.	Розмірний стиль "{name}" не знайдено.
+	Dimension style: {0}	Розмірний стиль: {0}
+	Dimension text = {0}	Розмірний текст = {0}
+	Distance = {0}	Відстань = {0}
+	Do you wish to continue?	Продовжити?
+	Drafting mode?	Режим креслення?
+	Drawing revision: {rev}	Редакція креслення: {rev}
+	Dynamic grips are dragged in plan: use a level construction plane (CPLANE World, or a UCS turned about Z).	Динамічні ручки перетягуються в плані: використайте горизонтальну площину побудови (CPLANE World або ПСК, повернуту навколо Z).
+	Edge endpoints must differ.	Кінцеві точки ребра мають відрізнятися.
+	Edit attributes one at a time?	Редагувати атрибути по одному?
+	Edit only attributes visible on screen?	Редагувати лише атрибути, видимі на екрані?
+	Edit path for which xref(s)	Для яких зовнішніх посилань змінити шлях
+	Edit the source objects, then enter ARRAYCLOSE to save or discard the changes.	Відредагуйте вихідні об'єкти, потім введіть ARRAYCLOSE, щоб зберегти або відкинути зміни.
+	Editing the array with grips is not available yet; choose an option.	Редагування масиву ручками поки що недоступне; виберіть параметр.
+	Edits recorded: {0}	Записано змін: {0}
+	Ellipse must intersect cutting edges at two or more points.	Еліпс має перетинати ріжучі кромки у двох або більше точках.
+	Enter All, None, One, Combine or Layer.	Введіть All, None, One, Combine або Layer.
+	Enter ON or OFF.	Введіть ON або OFF.
+	Enter Single or Multiple.	Введіть Single або Multiple.
+	Enter Trim mode option	Введіть параметр режиму обрізання
+	Enter UNDO Auto mode	Введіть режим UNDO Auto
+	Enter X scale factor, specify opposite corner	Введіть масштабний коефіцієнт X, укажіть протилежний кут
+	Enter Y scale factor	Введіть масштабний коефіцієнт Y
+	Enter Yes or No.	Введіть Yes або No.
+	Enter a base point option for scaling	Введіть параметр базової точки для масштабування
+	Enter a color name or a number from 0 to 256.	Введіть назву кольору або число від 0 до 256.
+	Enter a configuration option	Введіть параметр конфігурації
+	Enter a default viewport visibility option	Введіть параметр видимості у видових екранах за замовчуванням
+	Enter a group description	Введіть опис групи
+	Enter a group name	Введіть назву групи
+	Enter a group option	Введіть параметр групи
+	Enter a hatch option	Введіть параметр штрихування
+	Enter a justification option	Введіть параметр вирівнювання
+	Enter a layout name or [?]	Введіть назву аркуша або [?]
+	Enter a name for the new plotter	Введіть назву нового плотера
+	Enter a new name for the group	Введіть нову назву групи
+	Enter a page setup name	Введіть назву параметрів сторінки
+	Enter a parameters option	Введіть параметр для параметрів
+	Enter a plotter option	Введіть параметр плотера
+	Enter a projection option	Введіть параметр проєкції
+	Enter a property to turn on or off	Введіть властивість, яку ввімкнути або вимкнути
+	Enter a ratio such as 1:50.	Введіть співвідношення, наприклад 1:50.
+	Enter a scale factor (nX or nXP)	Введіть масштабний коефіцієнт (nX або nXP)
+	Enter a text edit mode option	Введіть параметр режиму редагування тексту
+	Enter an UNDO control option	Введіть параметр керування UNDO
+	Enter an implied edge extension mode	Введіть режим неявного подовження кромки
+	Enter an option [Add/Remove] <Add>	Введіть параметр [Add/Remove] <Add>
+	Enter an option [Distribute/make segments Parallel/Specify spacing/Use current spacing]: type D, P, S or U.	Введіть параметр [Distribute/make segments Parallel/Specify spacing/Use current spacing]: наберіть D, P, S або U.
+	Enter an option to change	Введіть параметр для зміни
+	Enter an output device name or [?]	Введіть назву пристрою виведення або [?]
+	Enter angle tolerance	Введіть допуск кута
+	Enter array type	Введіть тип масиву
+	Enter attribute tag	Введіть тег атрибута
+	Enter attribute tag specification	Введіть специфікацію тегів атрибутів
+	Enter attribute value specification	Введіть специфікацію значень атрибутів
+	Enter attribute visibility setting	Введіть параметр видимості атрибутів
+	Enter block name or select a block reference [?]	Введіть назву блока або виберіть посилання на блок [?]
+	Enter block name specification	Введіть специфікацію назв блоків
+	Enter block names to extract	Введіть назви блоків для видобування
+	Enter block(s) to list	Введіть блоки для переліку
+	Enter cell style name of table style {0}	Введіть назву стилю клітинок табличного стилю {0}
+	Enter clipping option	Введіть параметр підрізання
+	Enter column type	Введіть тип стовпців
+	Enter constraint bar transparency (0-90)	Введіть прозорість панелей обмежень (0-90)
+	Enter datum reference {0}	Введіть базу {0}
+	Enter dependent {t} name(s)	Введіть назви залежних {t}
+	Enter distance tolerance	Введіть допуск відстані
+	Enter drawing orientation	Введіть орієнтацію креслення
+	Enter expression for new parameter	Введіть вираз для нового параметра
+	Enter file format	Введіть формат файлу
+	Enter file name	Введіть назву файлу
+	Enter first angle constraint	Введіть перше обмеження кута
+	Enter first tolerance value	Введіть перше значення допуску
+	Enter fit tolerance	Введіть допуск апроксимації
+	Enter geometric characteristic	Введіть геометричну характеристику
+	Enter group description	Введіть опис групи
+	Enter group name	Введіть назву групи
+	Enter group name(s) to list	Введіть назви груп для переліку
+	Enter inspection rate	Введіть частоту контролю
+	Enter inspection shape	Введіть форму рамки контролю
+	Enter justification	Введіть вирівнювання
+	Enter knot parameterization	Введіть параметризацію вузлів
+	Enter label (press ENTER for none)	Введіть мітку (ENTER — без мітки)
+	Enter layer name(s) to change default viewport visibility	Введіть назви шарів для зміни видимості у видових екранах за замовчуванням
+	Enter layer name(s) {what}	Введіть назви шарів, {what}
+	Enter layer option for offset objects	Введіть параметр шару для зміщених об'єктів
+	Enter layout name for copy	Введіть назву аркуша для копії
+	Enter layout name(s) to list	Введіть назви аркушів для переліку
+	Enter layout option	Введіть параметр аркуша
+	Enter layout to make current	Введіть аркуш, який зробити поточним
+	Enter layout to rename	Введіть аркуш для перейменування
+	Enter line spacing factor or distance	Введіть коефіцієнт або відстань міжрядкового інтервалу
+	Enter line spacing type	Введіть тип міжрядкового інтервалу
+	Enter linetype(s) to load	Введіть типи ліній для завантаження
+	Enter lower left corner of window	Введіть нижній лівий кут вікна
+	Enter magnification or height	Введіть збільшення або висоту
+	Enter maximum part height or	Введіть максимальну висоту частини або
+	Enter mline editing option	Введіть параметр редагування мультилінії
+	Enter mline style name or [?]	Введіть назву стилю мультилінії або [?]
+	Enter name for new parameter	Введіть назву нового параметра
+	Enter name for new scale	Введіть назву нового масштабу
+	Enter name for new viewport configuration	Введіть назву нової конфігурації видових екранів
+	Enter name of LISP file to load	Введіть назву файлу LISP для завантаження
+	Enter name of block to manage	Введіть назву блока для керування
+	Enter name of block to sync	Введіть назву блока для синхронізації
+	Enter name of drawing file to recover	Введіть назву файлу креслення для відновлення
+	Enter name of file to {0}	Введіть назву файлу ({0})
+	Enter name of layout to copy	Введіть назву аркуша для копіювання
+	Enter name of layout to delete	Введіть назву аркуша для видалення
+	Enter name of linetype file	Введіть назву файлу типів ліній
+	Enter name of new layout	Введіть назву нового аркуша
+	Enter name of parameter to delete	Введіть назву параметра для видалення
+	Enter name of parameter to edit	Введіть назву параметра для редагування
+	Enter name of parameter to rename	Введіть назву параметра для перейменування
+	Enter name of scale to delete	Введіть назву масштабу для видалення
+	Enter name of script file	Введіть назву файлу сценарію
+	Enter name of sheet list file	Введіть назву файлу переліку аркушів
+	Enter name of viewport configuration to restore	Введіть назву конфігурації видових екранів для відновлення
+	Enter name(s) of new layers frozen in all viewports	Введіть назви нових шарів, заморожених в усіх видових екранах
+	Enter name(s) of viewport configurations to delete	Введіть назви конфігурацій видових екранів для видалення
+	Enter name(s) of viewport configurations to list	Введіть назви конфігурацій видових екранів для переліку
+	Enter name(s) to purge	Введіть назви для очищення
+	Enter named scale to add	Введіть іменований масштаб для додавання
+	Enter named scale to delete	Введіть іменований масштаб для видалення
+	Enter new attribute value	Введіть нове значення атрибута
+	Enter new color	Введіть новий колір
+	Enter new default value	Введіть нове значення за замовчуванням
+	Enter new dimension text	Введіть новий розмірний текст
+	Enter new expression for parameter	Введіть новий вираз параметра
+	Enter new group name	Введіть нову назву групи
+	Enter new layout name	Введіть нову назву аркуша
+	Enter new name for parameter	Введіть нову назву параметра
+	Enter new or existing layout name to make current	Введіть назву нового або наявного аркуша, який зробити поточним
+	Enter new order	Введіть новий порядок
+	Enter new path for "{0}"	Введіть новий шлях для "{0}"
+	Enter new prompt	Введіть нову підказку
+	Enter new string	Введіть новий рядок
+	Enter new tag	Введіть новий тег
+	Enter new value for CONSTRAINTINFER	Введіть нове значення CONSTRAINTINFER
+	Enter new value for PICKSTYLE	Введіть нове значення PICKSTYLE
+	Enter new value for dimension variable {0}	Введіть нове значення розмірної змінної {0}
+	Enter new value for {n}	Введіть нове значення {n}
+	Enter new weight (current = {w})	Введіть нову вагу (поточна = {w})
+	Enter new {0} name	Введіть нову назву ({0})
+	Enter next line of text (empty line to finish)	Введіть наступний рядок тексту (порожній рядок — завершити)
+	Enter number of actions	Введіть кількість дій
+	Enter number of items in array	Введіть кількість елементів масиву
+	Enter number of items to array	Введіть кількість елементів для масиву
+	Enter object ordering option	Введіть параметр порядку об'єктів
+	Enter object type to rename	Введіть тип об'єкта для перейменування
+	Enter obliquing angle (press ENTER for none)	Введіть кут нахилу (ENTER — без нахилу)
+	Enter old group name	Введіть стару назву групи
+	Enter old {0} name	Введіть стару назву ({0})
+	Enter one of CC OC MC CT OT MT CJ AV DV CS CA WA.	Введіть одне з: CC OC MC CT OT MT CJ AV DV CS CA WA.
+	Enter option	Введіть параметр
+	Enter option [Save/Discard reference changes] <Save>	Введіть параметр [Save/Discard reference changes] <Save>
+	Enter paper size or [?]	Введіть розмір паперу або [?]
+	Enter paper units	Введіть одиниці паперу
+	Enter parameter(s) to list	Введіть параметри для переліку
+	Enter plot area	Введіть область друку
+	Enter plot offset (x,y)	Введіть зміщення друку (x,y)
+	Enter plot scale (Plotted {units}=Drawing Units)	Введіть масштаб друку (надруковані {units} = одиниці креслення)
+	Enter plot style table name or [?] (enter . for none)	Введіть назву таблиці стилів друку або [?] (. — без таблиці)
+	Enter properties to match (SELECTSIMILARMODE bit code)	Введіть властивості для збігу (бітовий код SELECTSIMILARMODE)
+	Enter scale	Введіть масштаб
+	Enter scale ratio (paper units:drawing units)	Введіть масштабне співвідношення (одиниці паперу:одиниці креслення)
+	Enter second angle constraint	Введіть друге обмеження кута
+	Enter second tolerance value	Введіть друге значення допуску
+	Enter shade plot setting	Введіть параметр тонованого друку
+	Enter sketch type	Введіть тип ескізу
+	Enter spline creation method	Введіть спосіб створення сплайна
+	Enter string to change	Введіть рядок для зміни
+	Enter style name	Введіть назву стилю
+	Enter symbol type to bind	Введіть тип символів для прив'язування
+	Enter target layer name	Введіть назву цільового шару
+	Enter text for cell {0} (=formula)	Введіть текст клітинки {0} (=формула)
+	Enter the drawing to compare with (an open drawing's name or a file path)	Введіть креслення для порівняння (назву відкритого креслення або шлях до файлу)
+	Enter the maximum points for leader line	Введіть максимальну кількість точок лінії виноски
+	Enter the number of columns	Введіть кількість стовпців
+	Enter the number of levels	Введіть кількість рівнів
+	Enter the number of operations to undo	Введіть кількість операцій для скасування
+	Enter the number of rows	Введіть кількість рядів
+	Enter the output	Введіть місце виведення
+	Enter the paper name	Введіть назву паперу
+	Enter the paper width,height in mm	Введіть ширину,висоту паперу в мм
+	Enter the plotter to add a paper size to	Введіть плотер, до якого додати розмір паперу
+	Enter the plotter to delete	Введіть плотер для видалення
+	Enter the position of the first object to move (0-{last})	Введіть позицію першого об'єкта для переміщення (0-{last})
+	Enter the position to move it to (0-{last})	Введіть позицію, куди його перемістити (0-{last})
+	Enter the shell offset distance	Введіть відстань зміщення оболонки
+	Enter three values from 0 to 255, separated by commas.	Введіть три значення від 0 до 255 через коми.
+	Enter tolerance location	Введіть розташування допуску
+	Enter trim method	Введіть спосіб обрізання
+	Enter type of dimension editing	Введіть тип редагування розміру
+	Enter type of unused objects to purge	Введіть тип невикористаних об'єктів для очищення
+	Enter type of value modification	Введіть тип зміни значення
+	Enter upper right corner of window	Введіть верхній правий кут вікна
+	Enter value	Введіть значення
+	Enter value for {tag}	Введіть значення для {tag}
+	Enter view name	Введіть назву виду
+	Enter view name to restore	Введіть назву виду для відновлення
+	Enter view name to save	Введіть назву виду для збереження
+	Enter view name(s) to delete	Введіть назви видів для видалення
+	Enter view name(s) to list	Введіть назви видів для переліку
+	Enter viewport arrangement	Введіть компонування видових екранів
+	Enter viewport configuration name	Введіть назву конфігурації видових екранів
+	Enter what to pick	Введіть, що вказати
+	Enter width,height in mm.	Введіть ширину,висоту в мм.
+	Enter xref name(s) to {op}	Введіть назви зовнішніх посилань для дії {op}
+	Enter xref(s) to list	Введіть зовнішні посилання для переліку
+	Erase polyline?	Стерти полілінію?
+	Erase source object after offsetting?	Стерти вихідний об'єкт після зміщення?
+	Erase source objects?	Стерти вихідні об'єкти?
+	Everything has been undone	Усе скасовано
+	Existing style.	Наявний стиль.
+	Exported to {path}	Експортовано до {path}
+	Exported {n} solid(s) to {path}.	Експортовано тіл до {path}: {n}.
+	Fillet and chamfer work on straight polyline segments.	Спряження та фаска працюють на прямих сегментах полілінії.
+	Fillet works on lines, arcs, circles, elliptical arcs and splines (and polylines with the Polyline option).	Спряження працює з відрізками, дугами, колами, еліптичними дугами та сплайнами (і полілініями з параметром Polyline).
+	First point of mid	Перша точка середини
+	First tracking point	Перша точка відстеження
+	Fix any errors detected?	Виправити виявлені помилки?
+	Frames mode must be ON, OFF or Display.	Режим рамок має бути ON, OFF або Display.
+	Get from the drawing or [Point/Distance/Angle/Intersection]	Отримати з креслення або [Point/Distance/Angle/Intersection]
+	Group "{n}" created with {0} object(s).	Групу "{n}" створено з об'єктів: {0}.
+	Group reordered.	Порядок у групі змінено.
+	Group {0} has no objects left and was deleted.	У групі {0} не лишилося об'єктів, її видалено.
+	Group {0} renamed to {1}.	Групу {0} перейменовано на {1}.
+	Group {0} renamed to {new}.	Групу {0} перейменовано на {new}.
+	Group {n} ungrouped.	Групу {n} розгруповано.
+	Guide crosshairs along cloud path	Ведіть перехрестя вздовж контуру хмарки
+	Imported 1 solid from {path}.	Імпортовано 1 тіло з {path}.
+	Indicate dimension point to add	Укажіть розмірну точку для додавання
+	Indicate dimension point to remove	Укажіть розмірну точку для вилучення
+	Insert mode: Copy (nested objects are copied as independent objects).	Режим вставлення: копія (вкладені об'єкти копіюються як незалежні об'єкти).
+	Internal error in {id}: {m}	Внутрішня помилка в {id}: {m}
+	Internal error; press Enter to end the command	Внутрішня помилка; натисніть Enter, щоб завершити команду
+	Invalid X axis.	Неправильна вісь X.
+	Invalid angle.	Неправильний кут.
+	Invalid arc endpoint.	Неправильна кінцева точка дуги.
+	Invalid arc for these values.	Неможлива дуга для цих значень.
+	Invalid arc or circle for these values.	Неможлива дуга або коло для цих значень.
+	Invalid block name.	Неправильна назва блока.
+	Invalid color.	Неправильний колір.
+	Invalid direction.	Неправильний напрямок.
+	Invalid end point.	Неправильна кінцева точка.
+	Invalid group name.	Неправильна назва групи.
+	Invalid input.	Неправильне введення.
+	Invalid input: {0}	Неправильне введення: {0}
+	Invalid lineweight.	Неправильна товщина лінії.
+	Invalid option keyword.	Неправильне ключове слово параметра.
+	Invalid option.	Неправильний параметр.
+	Invalid point.	Неправильна точка.
+	Invalid spline.	Неправильний сплайн.
+	Invalid style name.	Неправильна назва стилю.
+	Invisible?	Невидимий?
+	Island detection style	Стиль виявлення островів
+	Isometric plane?	Ізометрична площина?
+	Keep associative objects	Зберігати асоціативні об'єкти
+	Key points are not available yet; specify a point.	Ключові точки поки що недоступні; укажіть точку.
+	LAYOUT {other} is not available yet.	LAYOUT {other} поки що недоступний.
+	Layer "{0}" not found.	Шар "{0}" не знайдено.
+	Layer "{n}": {0}	Шар "{n}": {0}
+	Layer(s) {0} have been isolated.	Шари {0} ізольовано.
+	Layers currently frozen in viewport {0}:	Шари, наразі заморожені у видовому екрані {0}:
+	Layers not isolated are turned off (Lock and fade is not available yet).	Неізольовані шари вимкнено (блокування з притлумленням поки що недоступне).
+	Layout "{from}" copied to "{to}".	Аркуш "{from}" скопійовано в "{to}".
+	Layout "{gone}" deleted.	Аркуш "{gone}" видалено.
+	Layout "{name}" not found.	Аркуш "{name}" не знайдено.
+	Layout "{n}" not found.	Аркуш "{n}" не знайдено.
+	Layout: {n}	Аркуш: {n}
+	Lengthening would make the object zero length or negative.	Зміна довжини зробить довжину об'єкта нульовою або від'ємною.
+	Lines are parallel.	Відрізки паралельні.
+	Linetype "{t}" is not loaded. Load it with the LINETYPE command.	Тип лінії "{t}" не завантажено. Завантажте його командою LINETYPE.
+	Linetype {name} is already loaded.	Тип лінії {name} уже завантажено.
+	Linetype {name} is already loaded. Reload it?	Тип лінії {name} уже завантажено. Перезавантажити його?
+	Linetype {name} reloaded.	Тип лінії {name} перезавантажено.
+	Linetype {n} loaded.	Тип лінії {n} завантажено.
+	Linetype(s) {name} loaded.	Типи ліній {name} завантажено.
+	Linked {path}: {0} row(s), {1} column(s).	Зв'язано {path}: рядків — {0}, стовпців — {1}.
+	Loaded linetypes:	Завантажені типи ліній:
+	Loaded linetypes: {0}	Завантажені типи ліній: {0}
+	Loaded multiline styles: {0}	Завантажені стилі мультиліній: {0}
+	Lock the view of viewports?	Заблокувати вид видових екранів?
+	Merged tee is not available yet.	Об'єднане T-подібне з'єднання поки що недоступне.
+	Minimum arc length: {0}   Maximum arc length: {0}   Style: Normal   Type: {t}	Мінімальна довжина дуги: {0}   Максимальна довжина дуги: {0}   Стиль: звичайний   Тип: {t}
+	Mirror line points must differ.	Точки осі дзеркального відображення мають відрізнятися.
+	Missed, try again.	Промах, спробуйте ще раз.
+	Model space page setups are not saved yet.	Параметри сторінки простору моделі поки що не зберігаються.
+	Model space page setups are not stored yet; run -PAGESETUP on a layout tab.	Параметри сторінки простору моделі поки що не зберігаються; виконайте -PAGESETUP на вкладці аркуша.
+	Multiline style {0} is in use: its elements and properties can't be changed.	Стиль мультилінії {0} використовується: його елементи та властивості змінити не можна.
+	Multiline style {from} is in use and can't be renamed.	Стиль мультилінії {from} використовується, його не можна перейменувати.
+	Multiline style {st} is in use and can't be deleted.	Стиль мультилінії {st} використовується, його не можна видалити.
+	Named dimension styles:	Іменовані розмірні стилі:
+	Named page setups are not available yet; the layout's own page setup is used.	Іменовані параметри сторінки поки що недоступні; використовуються власні параметри сторінки аркуша.
+	Nested object: {0}	Вкладений об'єкт: {0}
+	New drawings will be saved as version {v}	Нові креслення зберігатимуться у версії {v}
+	New drawings will be saved as {0}	Нові креслення зберігатимуться як {0}
+	New style.	Новий стиль.
+	Next point (Press ENTER to end tracking)	Наступна точка (ENTER — завершити відстеження)
+	No annotative objects selected.	Не вибрано анотативних об'єктів.
+	No array is being edited.	Жоден масив не редагується.
+	No array item there; select an item of the array.	Там немає елемента масиву; виберіть елемент масиву.
+	No array selected.	Масив не вибрано.
+	No block references selected.	Не вибрано посилань на блоки.
+	No blocks to edit.	Немає блоків для редагування.
+	No blocks with attributes match.	Немає відповідних блоків з атрибутами.
+	No blocks with attributes.	Немає блоків з атрибутами.
+	No clip boundary to delete.	Немає межі підрізання для видалення.
+	No clip boundary to set clipping planes on.	Немає межі підрізання, для якої задати площини підрізання.
+	No clip boundary to trace.	Немає межі підрізання для обведення.
+	No closed boundary objects selected.	Не вибрано замкнених об'єктів межі.
+	No color books are available.	Немає доступних альбомів кольорів.
+	No command alias file is loaded; ALIASEDIT {file} loads one.	Файл псевдонімів команд не завантажено; ALIASEDIT {file} завантажує його.
+	No differences.	Відмінностей немає.
+	No dimensions selected.	Не вибрано розмірів.
+	No fillet of that radius fits these objects.	Спряження такого радіуса не вміщується між цими об'єктами.
+	No first corner.	Немає першого кута.
+	No grip of a selected object there.	Там немає ручки вибраного об'єкта.
+	No group named "{0}".	Немає групи з назвою "{0}".
+	No group named "{t}".	Немає групи з назвою "{t}".
+	No hatch selected.	Штрихування не вибрано.
+	No layout matches "{pat}".	Немає аркуша, що відповідає "{pat}".
+	No layout to move objects to.	Немає аркуша, до якого перемістити об'єкти.
+	No leader to remove.	Немає виноски для вилучення.
+	No lengthen mode.	Режим зміни довжини не задано.
+	No line or arc to continue.	Немає відрізка чи дуги для продовження.
+	No line selected.	Відрізок не вибрано.
+	No linear dimension to continue. Create one with DIMLINEAR first.	Немає лінійного розміру для продовження. Спершу створіть його командою DIMLINEAR.
+	No linetype matching {0} in {path}.	У {path} немає типу лінії, що відповідає {0}.
+	No mark: undo everything?	Немає позначки: скасувати все?
+	No matching groups found.	Відповідних груп не знайдено.
+	No matching layer states.	Немає відповідних станів шарів.
+	No matching parameters.	Немає відповідних параметрів.
+	No matching viewport configurations found.	Відповідних конфігурацій видових екранів не знайдено.
+	No matching views found.	Відповідних видів не знайдено.
+	No named plot styles.	Немає іменованих стилів друку.
+	No object found.	Об'єкт не знайдено.
+	No object.	Немає об'єкта.
+	No objects are isolated or hidden.	Немає ізольованих чи прихованих об'єктів.
+	No objects found.	Об'єктів не знайдено.
+	No objects to array (objects on locked layers are left out).	Немає об'єктів для масиву (об'єкти на заблокованих шарах пропущено).
+	No polyline.	Немає полілінії.
+	No previous view saved.	Попередній вид не збережено.
+	No replacement objects.	Немає об'єктів заміни.
+	No saved viewport configurations.	Немає збережених конфігурацій видових екранів.
+	No spline.	Немає сплайна.
+	No such object.	Такого об'єкта немає.
+	No such viewport.	Такого видового екрана немає.
+	No table cell there.	Там немає клітинки таблиці.
+	No table there.	Там немає таблиці.
+	No tangent or perpendicular from the last point.	З останньої точки немає дотичної чи перпендикуляра.
+	No text objects selected.	Не вибрано текстових об'єктів.
+	No vertex.	Немає вершини.
+	No viewport found there.	Там не знайдено видового екрана.
+	No xref matches "{t}".	Немає зовнішнього посилання, що відповідає "{t}".
+	No xrefs are attached.	Зовнішні посилання не приєднано.
+	No {0} found for specified point.	Для вказаної точки не знайдено: {0}.
+	No {noun} named "{name}".	Немає {noun} з назвою "{name}".
+	No {what} line through that point; pick another point.	Через цю точку немає лінії ({what}); укажіть іншу точку.
+	Nothing nested there.	Там немає вкладених об'єктів.
+	Nothing to join.	Нічого об'єднувати.
+	Nothing to redo	Нічого повторювати
+	Nothing to restore: OOPS brings back what the last ERASE removed.	Нічого відновлювати: OOPS повертає те, що стерла остання команда ERASE.
+	Nothing to undo.	Нічого скасовувати.
+	Nothing would be left of the first multiline.	Від першої мультилінії нічого не лишиться.
+	Nothing would be left of the second multiline.	Від другої мультилінії нічого не лишиться.
+	Number of objects to move	Кількість об'єктів для переміщення
+	Number of turns = {0}     Twist=CCW	Кількість витків = {0}     Закручування=CCW
+	OBJECTISOLATIONMODE 1 (isolation saved with the drawing) is not available yet	OBJECTISOLATIONMODE 1 (ізоляція зберігається з кресленням) поки що недоступний
+	OOPS is not available in the Block Editor; use UNDO.	OOPS недоступна в редакторі блоків; використайте UNDO.
+	Object cannot be dimensioned this way.	Цей об'єкт не можна образмірити таким способом.
+	Object does not intersect a cutting edge.	Об'єкт не перетинає ріжучу кромку.
+	Object does not intersect an edge.	Об'єкт не перетинає кромку.
+	Object not converted: {why}.	Об'єкт не перетворено: {why}.
+	Object selected is not a circle or arc.	Вибраний об'єкт не є колом чи дугою.
+	Object selected is not a dimension.	Вибраний об'єкт не є розміром.
+	Object selected is not a polyline.	Вибраний об'єкт не є полілінією.
+	Object selected is not a polyline. Do you want to turn it into one?	Вибраний об'єкт не є полілінією. Перетворити його на полілінію?
+	Object selected is not a spline.	Вибраний об'єкт не є сплайном.
+	Object {0} not converted: {why}.	Об'єкт {0} не перетворено: {why}.
+	Objects are not connected end to end.	Об'єкти не з'єднані кінець до кінця.
+	Objects are not connected.	Об'єкти не з'єднані.
+	Only part of a polyline connects; join it whole or explode it first.	З'єднується лише частина полілінії; приєднайте її цілком або спершу розчленуйте.
+	Optimize segments within polylines	Оптимізувати сегменти в полілініях
+	Paper "{paper}" added to "{dev}".	Папір "{paper}" додано до "{dev}".
+	Parameter "{n}" already exists.	Параметр "{n}" уже існує.
+	Parameter "{n}" not found.	Параметр "{n}" не знайдено.
+	Performing global editing of attribute values.	Виконується глобальне редагування значень атрибутів.
+	Pick a table cell	Укажіть клітинку таблиці
+	Pick internal point	Укажіть внутрішню точку
+	Pick second point	Укажіть другу точку
+	Plot style "{name}" not found.	Стиль друку "{name}" не знайдено.
+	Plot style table "{n}" not found.	Таблицю стилів друку "{n}" не знайдено.
+	Plotted to {0}.	Надруковано до {0}.
+	Plotted to {path}	Надруковано до {path}
+	Plotter "{0}" deleted.	Плотер "{0}" видалено.
+	Plotter "{name}" created.	Плотер "{name}" створено.
+	Plotter "{n}" already exists.	Плотер "{n}" уже існує.
+	Plotter "{n}" not found.	Плотер "{n}" не знайдено.
+	Point or option keyword required.	Потрібна точка або ключове слово параметра.
+	Point or value required.	Потрібна точка або значення.
+	Point required.	Потрібна точка.
+	Polylines with arc segments cannot be used for wipeouts.	Полілінії з дуговими сегментами не можна використати для маскування.
+	Proceed with plot?	Продовжити друк?
+	Property to ignore or compare again (ignored: {0})	Властивість, яку ігнорувати або знову порівнювати (ігнорується: {0})
+	Purge {0} "{n}"?	Очистити {0} "{n}"?
+	QuickCalc: {m}	QuickCalc: {m}
+	Radius = {r}	Радіус = {r}
+	Radius is too large.	Радіус завеликий.
+	Really want layer "{cur}" (the CURRENT layer) off?	Справді вимкнути шар "{cur}" (ПОТОЧНИЙ шар)?
+	Reference changes discarded.	Зміни посилання відкинуто.
+	Reference changes saved.	Зміни посилання збережено.
+	Regenerating all viewports.	Регенерація всіх видових екранів.
+	Regenerating model.	Регенерація моделі.
+	Regions and 3D solids can't be combined: select one kind.	Області й 3D-тіла не можна поєднувати: виберіть один вид.
+	Remove objects	Вилучіть об'єкти
+	Renaming a {noun} is not available yet.	Перейменування ({noun}) поки що недоступне.
+	Replaced items were restored.	Замінені елементи відновлено.
+	Requires Ruled or Smooth.	Потрібно Ruled або Smooth.
+	Requires Top, Front or Right.	Потрібно Top, Front або Right.
+	Requires Yes or No.	Потрібно Yes або No.
+	Requires a count of 1 or more.	Потрібна кількість 1 або більше.
+	Requires a direction.	Потрібен напрямок.
+	Requires a distance of 0 or more.	Потрібна відстань 0 або більше.
+	Requires a distance or Remove.	Потрібна відстань або Remove.
+	Requires a distance.	Потрібна відстань.
+	Requires a factor between 0.25x and 4x, or a distance.	Потрібен коефіцієнт від 0.25x до 4x або відстань.
+	Requires a fill angle between -360 and 360 degrees (not 0).	Потрібен кут заповнення від -360 до 360 градусів (не 0).
+	Requires a geometric characteristic or None.	Потрібна геометрична характеристика або None.
+	Requires a gutter width of 0 or more.	Потрібна ширина проміжку 0 або більше.
+	Requires a layout name.	Потрібна назва аркуша.
+	Requires a name.	Потрібна назва.
+	Requires a non-negative distance.	Потрібна невід'ємна відстань.
+	Requires a non-negative fit tolerance.	Потрібен невід'ємний допуск апроксимації.
+	Requires a non-negative number or Auto.	Потрібне невід'ємне число або Auto.
+	Requires a non-negative number.	Потрібне невід'ємне число.
+	Requires a non-negative value.	Потрібне невід'ємне значення.
+	Requires a non-negative width.	Потрібна невід'ємна ширина.
+	Requires a non-zero number.	Потрібне ненульове число.
+	Requires a nonzero angle.	Потрібен ненульовий кут.
+	Requires a nonzero distance.	Потрібна ненульова відстань.
+	Requires a nonzero radius.	Потрібен ненульовий радіус.
+	Requires a number between {lo} and {hi}.	Потрібне число від {lo} до {hi}.
+	Requires a number or point.	Потрібне число або точка.
+	Requires a number.	Потрібне число.
+	Requires a plot style name.	Потрібна назва стилю друку.
+	Requires a point on a grip.	Потрібна точка на ручці.
+	Requires a point or an angle.	Потрібна точка або кут.
+	Requires a point or an option keyword.	Потрібна точка або ключове слово параметра.
+	Requires a point or option keyword.	Потрібна точка або ключове слово параметра.
+	Requires a point, or Enter to accept the view.	Потрібна точка або Enter, щоб прийняти вид.
+	Requires a point, scale factor or option keyword.	Потрібна точка, масштабний коефіцієнт або ключове слово параметра.
+	Requires a point.	Потрібна точка.
+	Requires a positive distance.	Потрібна додатна відстань.
+	Requires a positive height.	Потрібна додатна висота.
+	Requires a positive integer.	Потрібне додатне ціле число.
+	Requires a positive length.	Потрібна додатна довжина.
+	Requires a positive number or Off.	Потрібне додатне число або Off.
+	Requires a positive number.	Потрібне додатне число.
+	Requires a positive percentage.	Потрібен додатний відсоток.
+	Requires a positive radius.	Потрібен додатний радіус.
+	Requires a positive scale such as 1:50, or Fit.	Потрібен додатний масштаб, наприклад 1:50, або Fit.
+	Requires a positive value.	Потрібне додатне значення.
+	Requires a positive weight.	Потрібна додатна вага.
+	Requires a scale factor (n, nX or nXP).	Потрібен масштабний коефіцієнт (n, nX або nXP).
+	Requires a valid angle in degrees.	Потрібен допустимий кут у градусах.
+	Requires a valid angle.	Потрібен допустимий кут.
+	Requires a valid base point.	Потрібна допустима базова точка.
+	Requires a view name.	Потрібна назва виду.
+	Requires a viewport.	Потрібен видовий екран.
+	Requires a whole number between 0 and {0}.	Потрібне ціле число від 0 до {0}.
+	Requires a whole number between 1 and {0}.	Потрібне ціле число від 1 до {0}.
+	Requires a whole number of columns from 1 to 100.	Потрібна ціла кількість стовпців від 1 до 100.
+	Requires a whole number.	Потрібне ціле число.
+	Requires an angle between 0 and 89.4 degrees.	Потрібен кут від 0 до 89.4 градуса.
+	Requires an angle from 0 to 180 degrees.	Потрібен кут від 0 до 180 градусів.
+	Requires an angle or point.	Потрібен кут або точка.
+	Requires an angle.	Потрібен кут.
+	Requires an integer between 0 and 1.	Потрібне ціле число від 0 до 1.
+	Requires an integer between 0 and 3.	Потрібне ціле число від 0 до 3.
+	Requires an integer between 0 and 99.	Потрібне ціле число від 0 до 99.
+	Requires an integer between 1 and {MAX_COLS}.	Потрібне ціле число від 1 до {MAX_COLS}.
+	Requires an integer between 1 and {MAX_ROWS}.	Потрібне ціле число від 1 до {MAX_ROWS}.
+	Requires an integer between 1 and {max} (MAXARRAY limits the size of the array).	Потрібне ціле число від 1 до {max} (MAXARRAY обмежує розмір масиву).
+	Requires an integer between 2 and 32767.	Потрібне ціле число від 2 до 32767.
+	Requires an integer between 2 and {MAX_LEADER_POINTS}.	Потрібне ціле число від 2 до {MAX_LEADER_POINTS}.
+	Requires an integer between 2 and {max}.	Потрібне ціле число від 2 до {max}.
+	Requires an integer between 3 and 1024.	Потрібне ціле число від 3 до 1024.
+	Requires an integer value.	Потрібне ціле значення.
+	Requires an offset x,y, or Center.	Потрібне зміщення x,y або Center.
+	Requires an option keyword.	Потрібне ключове слово параметра.
+	Requires an order between {current} and {max}.	Потрібен порядок від {current} до {max}.
+	Requires dx,dy or dx,dy,dz.	Потрібно dx,dy або dx,dy,dz.
+	Requires numeric distance or a point.	Потрібна числова відстань або точка.
+	Requires numeric distance or point.	Потрібна числова відстань або точка.
+	Requires numeric distance or second point.	Потрібна числова відстань або друга точка.
+	Requires numeric distance or two points.	Потрібна числова відстань або дві точки.
+	Requires numeric value.	Потрібне числове значення.
+	Requires the name of a block defined in the drawing.	Потрібна назва блока, визначеного в кресленні.
+	Requires the string to change.	Потрібен рядок для зміни.
+	Requires three values from 0 to 255, separated by commas.	Потрібно три значення від 0 до 255 через коми.
+	Requires valid numeric angle or second point.	Потрібен допустимий числовий кут або друга точка.
+	Requires {what}.	Потрібно: {what}.
+	Reset Model space limits:	Скинути межі простору моделі:
+	Reset the scale list to the defaults?	Скинути список масштабів до стандартного?
+	Restored previous layer states.	Відновлено попередні стани шарів.
+	Resuming {0} command.	Відновлення команди {0}.
+	Revision cloud finished.	Хмарку змін завершено.
+	Rotate arrayed items?	Повертати елементи масиву?
+	Rotating/scaling a copy of the selected objects.	Поворот/масштабування копії вибраних об'єктів.
+	Row elevations need an associative array; the copies stay at the same elevation.	Для висот рядів потрібен асоціативний масив; копії лишаються на тій самій висоті.
+	SHARE is not available yet: there is no online service to share through; EXPORT or PUBLISH the drawing and send the file	SHARE поки що недоступна: немає онлайн-сервісу для спільного доступу; виконайте EXPORT або PUBLISH креслення й надішліть файл
+	SPELL is not available yet: Cadino has no spelling dictionary; FIND finds and replaces text	SPELL поки що недоступна: Cadino не має орфографічного словника; FIND знаходить і замінює текст
+	Save changes to array?	Зберегти зміни масиву?
+	Save changes to block "{name}"?	Зберегти зміни блока "{name}"?
+	Save layer settings with views?	Зберігати параметри шарів разом із видами?
+	Scale objects based on alignment points?	Масштабувати об'єкти за точками вирівнювання?
+	Scales of the selected objects: {0}	Масштаби вибраних об'єктів: {0}
+	Second point of mid	Друга точка середини
+	Select 3D solids to subtract.	Виберіть 3D-тіла для віднімання.
+	Select a block	Виберіть блок
+	Select a content type	Виберіть тип вмісту
+	Select a different viewport to join.	Виберіть інший видовий екран для об'єднання.
+	Select a dimension.	Виберіть розмір.
+	Select a leader type	Виберіть тип виноски
+	Select a line, arc, open polyline, elliptical arc or open spline.	Виберіть відрізок, дугу, незамкнену полілінію, еліптичну дугу або незамкнений сплайн.
+	Select a linear or aligned dimension.	Виберіть лінійний або паралельний розмір.
+	Select a multileader	Виберіть мультивиноску
+	Select a multileader.	Виберіть мультивиноску.
+	Select a multiline.	Виберіть мультилінію.
+	Select a polyline segment.	Виберіть сегмент полілінії.
+	Select a text object with the desired height	Виберіть текстовий об'єкт потрібної висоти
+	Select a text object.	Виберіть текстовий об'єкт.
+	Select a viewport	Виберіть видовий екран
+	Select a viewport.	Виберіть видовий екран.
+	Select an arc, circle or line.	Виберіть дугу, коло або відрізок.
+	Select an item in array to replace	Виберіть елемент масиву для заміни
+	Select annotative objects	Виберіть анотативні об'єкти
+	Select array	Виберіть масив
+	Select at least one region.	Виберіть щонайменше одну область.
+	Select at least two 3D solids.	Виберіть щонайменше два 3D-тіла.
+	Select attributes	Виберіть атрибути
+	Select base dimension	Виберіть базовий розмір
+	Select base point of replacement objects	Виберіть базову точку об'єктів заміни
+	Select block reference	Виберіть посилання на блок
+	Select boundary edges ...	Виберіть граничні кромки ...
+	Select boundary objects (Enter finds them)	Виберіть об'єкти межі (Enter — знайти їх)
+	Select clipping object	Виберіть об'єкт підрізання
+	Select closed profile	Виберіть замкнений профіль
+	Select cross sections in lofting order	Виберіть перерізи в порядку лофтингу
+	Select cutting edges ...	Виберіть ріжучі кромки ...
+	Select destination object(s)	Виберіть цільові об'єкти
+	Select dimension to add jog	Виберіть розмір для додавання зламу
+	Select dimension to add/remove break	Виберіть розмір для додавання/вилучення розриву
+	Select dimensions to space	Виберіть розміри для розставлення
+	Select first mline	Виберіть першу мультилінію
+	Select geometry to dimension	Виберіть геометрію для нанесення розмірів
+	Select grip to edit array	Виберіть ручку для редагування масиву
+	Select group	Виберіть групу
+	Select hatch object	Виберіть об'єкт штрихування
+	Select item in array	Виберіть елемент масиву
+	Select jog to remove	Виберіть злам для вилучення
+	Select mline	Виберіть мультилінію
+	Select multileader to align to or [Options]	Виберіть мультивиноску для вирівнювання або [Options]
+	Select new datum point	Виберіть нову базову точку
+	Select object on target layer	Виберіть об'єкт на цільовому шарі
+	Select object to break dimension	Виберіть об'єкт для розриву розміру
+	Select object to clip viewport	Виберіть об'єкт для підрізання видового екрана
+	Select object to count or [List/Spaces]	Виберіть об'єкт для підрахунку або [List/Spaces]
+	Select objects or	Виберіть об'єкти або
+	Select objects other than the array.	Виберіть об'єкти, відмінні від масиву.
+	Select objects to add to the group	Виберіть об'єкти для додавання до групи
+	Select objects to erase or	Виберіть об'єкти для стирання або
+	Select objects to join to the spline.	Виберіть об'єкти для приєднання до сплайна.
+	Select objects to remove from the group	Виберіть об'єкти для вилучення з групи
+	Select objects to sweep	Виберіть об'єкти для зсуву
+	Select one or more regions.	Виберіть одну або кілька областей.
+	Select polyline	Виберіть полілінію
+	Select reference objects	Виберіть опорні об'єкти
+	Select regions to subtract ..	Виберіть області для віднімання ..
+	Select regions to subtract from ..	Виберіть області, від яких відняти ..
+	Select regions to subtract from.	Виберіть області, від яких відняти.
+	Select replacement objects	Виберіть об'єкти заміни
+	Select second mline	Виберіть другу мультилінію
+	Select solids	Виберіть тіла
+	Select source object	Виберіть вихідний об'єкт
+	Select sweep path	Виберіть траєкторію зсуву
+	Select text object to align to	Виберіть текстовий об'єкт, за яким вирівнювати
+	Select text objects to align	Виберіть текстові об'єкти для вирівнювання
+	Select two different multilines.	Виберіть дві різні мультилінії.
+	Select two different segments of the polyline.	Виберіть два різні сегменти полілінії.
+	Select two segments.	Виберіть два сегменти.
+	Select viewport to clip	Виберіть видовий екран для підрізання
+	Select viewports	Виберіть видові екрани
+	Selected layers: {0}.	Вибрані шари: {0}.
+	Separate hatches: off	Окремі штрихування: вимк.
+	Separate hatches: on	Окремі штрихування: увімк.
+	Set current plot style	Задати поточний стиль друку
+	Sheet list files are not available on the web.	Файли переліку аркушів недоступні у вебверсії.
+	Sketch done: {n} object{0} added.	Ескіз завершено: додано об'єктів: {n}.
+	Specify a fit tolerance	Укажіть допуск апроксимації
+	Specify a point away from the vertex.	Укажіть точку на відстані від вершини.
+	Specify a point on desired side	Укажіть точку з потрібного боку
+	Specify a point on the spline <exit>	Укажіть точку на сплайні <вихід>
+	Specify a point on the {name} axis	Укажіть точку на осі {name}
+	Specify a precision	Укажіть точність
+	Specify a view point (x,y,z)	Укажіть точку огляду (x,y,z)
+	Specify angle for dimension text	Укажіть кут розмірного тексту
+	Specify angle of revolution	Укажіть кут обертання
+	Specify axis endpoint	Укажіть кінцеву точку осі
+	Specify axis start point	Укажіть початкову точку осі
+	Specify back clip distance	Укажіть відстань заднього підрізання
+	Specify base point on the profile	Укажіть базову точку на профілі
+	Specify block attachment	Укажіть приєднання блока
+	Specify center location override	Укажіть перевизначення розташування центру
+	Specify center of isocircle	Укажіть центр ізокола
+	Specify center of view box	Укажіть центр рамки виду
+	Specify center point	Укажіть центр
+	Specify chamfer angle from the first line	Укажіть кут фаски від першого відрізка
+	Specify chamfer length on the first line	Укажіть довжину фаски на першому відрізку
+	Specify clipping boundary	Укажіть межу підрізання
+	Specify collected multileader location or [Vertical/Horizontal/Wrap]	Укажіть розташування зібраної мультивиноски або [Vertical/Horizontal/Wrap]
+	Specify column height	Укажіть висоту стовпця
+	Specify column width	Укажіть ширину стовпця
+	Specify control point	Укажіть керувальну точку
+	Specify control point <exit>	Укажіть керувальну точку <вихід>
+	Specify diameter of isocircle	Укажіть діаметр ізокола
+	Specify dimension line position	Укажіть положення розмірної лінії
+	Specify direction	Укажіть напрямок
+	Specify direction (first point)	Укажіть напрямок (перша точка)
+	Specify direction (second point)	Укажіть напрямок (друга точка)
+	Specify direction of chord for arc	Укажіть напрямок хорди дуги
+	Specify direction of vertex tangent	Укажіть напрямок дотичної у вершині
+	Specify displacement	Укажіть зміщення
+	Specify displacement (dx,dy,dz)	Укажіть зміщення (dx,dy,dz)
+	Specify distance	Укажіть відстань
+	Specify distance from boundary	Укажіть відстань від межі
+	Specify end tangent	Укажіть кінцеву дотичну
+	Specify endpoint of the arc	Укажіть кінцеву точку дуги
+	Specify existing fit point <exit>	Укажіть наявну точку апроксимації <вихід>
+	Specify first break point	Укажіть першу точку розриву
+	Specify first corner of the unit cell	Укажіть перший кут елементарної комірки
+	Specify first fence point	Укажіть першу точку лінії вибору
+	Specify first point for arc length dimension	Укажіть першу точку розміру довжини дуги
+	Specify first point of mirror plane (3 points)	Укажіть першу точку площини дзеркального відображення (3 точки)
+	Specify first point on axis	Укажіть першу точку на осі
+	Specify first point on plane	Укажіть першу точку на площині
+	Specify first point or [Options]	Укажіть першу точку або [Options]
+	Specify fit point	Укажіть точку апроксимації
+	Specify front clip distance	Укажіть відстань переднього підрізання
+	Specify gutter width	Укажіть ширину проміжку
+	Specify height of extrusion	Укажіть висоту видавлювання
+	Specify insertion point for the table	Укажіть точку вставлення таблиці
+	Specify insertion point of the table	Укажіть точку вставлення таблиці
+	Specify jog location	Укажіть розташування зламу
+	Specify jog location (or press ENTER)	Укажіть розташування зламу (або натисніть ENTER)
+	Specify leader arrowhead location or [Remove leaders]	Укажіть розташування стрілки виноски або [Remove leaders]
+	Specify leaders to remove	Укажіть виноски для вилучення
+	Specify leaders to remove or [Add leaders]	Укажіть виноски для вилучення або [Add leaders]
+	Specify length of line	Укажіть довжину відрізка
+	Specify linetype name	Укажіть назву типу лінії
+	Specify location of base view	Укажіть розташування базового виду
+	Specify location of the text	Укажіть розташування тексту
+	Specify new angle	Укажіть новий кут
+	Specify new fit point <exit>	Укажіть нову точку апроксимації <вихід>
+	Specify new length	Укажіть нову довжину
+	Specify new location	Укажіть нове розташування
+	Specify new location for dimension text	Укажіть нове розташування розмірного тексту
+	Specify new model height	Укажіть нову висоту в моделі
+	Specify new origin point	Укажіть нову початкову точку
+	Specify new paper height	Укажіть нову висоту на аркуші
+	Specify new point on spline <exit>	Укажіть нову точку на сплайні <вихід>
+	Specify next fence point	Укажіть наступну точку лінії вибору
+	Specify number of columns	Укажіть кількість стовпців
+	Specify orientation	Укажіть орієнтацію
+	Specify other corner	Укажіть інший кут
+	Specify point on X-axis	Укажіть точку на осі X
+	Specify point on the XY plane	Укажіть точку на площині XY
+	Specify point on {name} plane	Укажіть точку на площині {name}
+	Specify quadrant	Укажіть квадрант
+	Specify radius of isocircle	Укажіть радіус ізокола
+	Specify reference angle	Укажіть опорний кут
+	Specify reference length	Укажіть опорну довжину
+	Specify rotation angle about {axis} axis	Укажіть кут повороту навколо осі {axis}
+	Specify rotation around major axis	Укажіть поворот навколо великої осі
+	Specify scale factor for XYZ axes	Укажіть масштабний коефіцієнт для осей XYZ
+	Specify second point for arc length dimension	Укажіть другу точку розміру довжини дуги
+	Specify second point on arc	Укажіть другу точку на дузі
+	Specify second point on axis	Укажіть другу точку на осі
+	Specify second point on mirror plane	Укажіть другу точку на площині дзеркального відображення
+	Specify second point on plane	Укажіть другу точку на площині
+	Specify size of view box	Укажіть розмір рамки виду
+	Specify sketch	Накресліть ескіз
+	Specify sketch record increment	Укажіть крок запису ескізу
+	Specify spacing	Укажіть інтервал
+	Specify spline fit tolerance	Укажіть допуск апроксимації сплайна
+	Specify start tangent	Укажіть початкову дотичну
+	Specify temporary OTRACK point	Укажіть тимчасову точку OTRACK
+	Specify text height	Укажіть висоту тексту
+	Specify the angle between items	Укажіть кут між елементами
+	Specify the angle to fill (+=ccw, -=cw)	Укажіть кут заповнення (+ = проти год. стрілки, - = за год. стрілкою)
+	Specify the incrementing elevation between rows	Укажіть приріст висоти між рядами
+	Specify the new angle	Укажіть новий кут
+	Specify the pattern origin	Укажіть початок зразка
+	Specify the reference angle	Укажіть опорний кут
+	Specify the tangent direction for the start point of arc	Укажіть напрямок дотичної в початковій точці дуги
+	Specify the view point as x,y,z.	Укажіть точку огляду як x,y,z.
+	Specify thickness	Укажіть товщину
+	Specify third point on mirror plane	Укажіть третю точку на площині дзеркального відображення
+	Specify tolerance	Укажіть допуск
+	Specify total width	Укажіть загальну ширину
+	Specify trace width	Укажіть ширину смуги
+	Specify width	Укажіть ширину
+	Specify {which} {unit}	Укажіть {which} {unit}
+	Spline must intersect cutting edges at two or more points.	Сплайн має перетинати ріжучі кромки у двох або більше точках.
+	Table in {0} part(s).	Таблиця на частинах: {0}.
+	Table of {0} block(s) inserted.	Вставлено таблицю блоків: {0}.
+	Text styles:	Текстові стилі:
+	Text styles: {0}	Текстові стилі: {0}
+	That object is not a block reference.	Цей об'єкт не є посиланням на блок.
+	That would make a degenerate object.	Це створить вироджений об'єкт.
+	The Block Editor is already open on "{name}"; close it first (BCLOSE).	Редактор блоків уже відкрито для "{name}"; спершу закрийте його (BCLOSE).
+	The Block Editor is already open on "{open}"; close it first (BCLOSE).	Редактор блоків уже відкрито для "{open}"; спершу закрийте його (BCLOSE).
+	The Block Editor is not open.	Редактор блоків не відкрито.
+	The Block Editor is open on the current drawing; there is no block to save under another name.	Редактор блоків відкрито для поточного креслення; немає блока, який зберегти під іншою назвою.
+	The Block Editor works in the World construction plane.	Редактор блоків працює у світовій площині побудови.
+	The Leader Settings dialog is not available yet: QLEADER draws a straight leader with an arrow and multiline text.	Діалог параметрів виноски поки що недоступний: QLEADER креслить пряму виноску зі стрілкою та багаторядковим текстом.
+	The STANDARD and the current multiline style can't be deleted ({st}).	Стиль STANDARD і поточний стиль мультилінії не можна видалити ({st}).
+	The STANDARD multiline style can't be renamed.	Стиль мультилінії STANDARD не можна перейменувати.
+	The X axis point must differ from the origin.	Точка осі X має відрізнятися від початку координат.
+	The array base point is not a valid point.	Базова точка масиву недопустима.
+	The array has no such item.	У масиві немає такого елемента.
+	The array no longer exists; the edited objects stay in the drawing.	Масиву більше не існує; відредаговані об'єкти лишаються в кресленні.
+	The array parameters are not valid.	Параметри масиву недопустимі.
+	The array would create {total} objects; the limit is {max} (MAXARRAY). Use fewer items or select fewer objects.	Масив створив би {total} об'єктів; межа — {max} (MAXARRAY). Зменште кількість елементів або виберіть менше об'єктів.
+	The array's block is missing.	Блок масиву відсутній.
+	The array's scale is zero.	Масштаб масиву дорівнює нулю.
+	The array's source block is missing.	Вихідний блок масиву відсутній.
+	The axis needs two different points.	Для осі потрібні дві різні точки.
+	The block reference has no nested objects.	Посилання на блок не має вкладених об'єктів.
+	The block reference is in a tilted plane; NCOPY works on references in plan.	Посилання на блок лежить у нахиленій площині; NCOPY працює з посиланнями в плані.
+	The chamfer angle does not fit this corner.	Кут фаски не підходить до цього кута.
+	The chamfer distances are too large.	Відстані фаски завеликі.
+	The changes to the array were discarded.	Зміни масиву відкинуто.
+	The columns and gutters don't fit in the total width.	Стовпці та проміжки не вміщуються в загальну ширину.
+	The corner must not be level with the insertion point.	Кут не має бути на одному рівні з точкою вставлення.
+	The current drawing can't be saved as a block from the Block Editor; use WBLOCK or BLOCK.	Поточне креслення не можна зберегти як блок із редактора блоків; використайте WBLOCK або BLOCK.
+	The current viewport is too small to divide.	Поточний видовий екран замалий для поділу.
+	The cut list does not fit its table.	Список розкрою не вміщується в таблицю.
+	The displacement is too large.	Зміщення завелике.
+	The end segment is an arc; explode the polyline or use an open line end.	Кінцевий сегмент — дуга; розчленуйте полілінію або використайте незамкнений кінець відрізка.
+	The ends coincide.	Кінці збігаються.
+	The feature control frame is empty.	Рамка допуску форми порожня.
+	The fillet radius must be zero or more.	Радіус спряження має бути нульовим або більшим.
+	The first multiline has no segments.	Перша мультилінія не має сегментів.
+	The included angle must be between 0 and 360 degrees.	Центральний кут має бути від 0 до 360 градусів.
+	The items would span more than 360 degrees; enter a smaller angle or fewer items.	Елементи займуть понад 360 градусів; введіть менший кут або менше елементів.
+	The lines do not define a center line.	Відрізки не визначають осьову лінію.
+	The multiline has too few vertices to delete one.	Мультилінія має замало вершин, щоб видалити одну.
+	The multilines are parallel.	Мультилінії паралельні.
+	The new arc would be zero length or a full circle.	Нова дуга мала б нульову довжину або стала б повним колом.
+	The new elliptical arc would be a full ellipse or longer.	Нова еліптична дуга стала б повним еліпсом або довшою.
+	The object can't be edited in this construction plane.	Об'єкт не можна редагувати в цій площині побудови.
+	The object has no area.	Об'єкт не має площі.
+	The object is not a member of any group.	Об'єкт не належить до жодної групи.
+	The object is not a table.	Об'єкт не є таблицею.
+	The object is not an associative array.	Об'єкт не є асоціативним масивом.
+	The object is on a locked layer.	Об'єкт на заблокованому шарі.
+	The objects are on a locked layer.	Об'єкти на заблокованому шарі.
+	The objects can't be edited that way (locked, or the result would be degenerate).	Об'єкти не можна так редагувати (вони заблоковані або результат був би виродженим).
+	The objects do not intersect.	Об'єкти не перетинаються.
+	The objects nest block references too deeply (more than {MAX_BLOCK_DEPTH} levels).	Об'єкти вкладають посилання на блоки надто глибоко (понад {MAX_BLOCK_DEPTH} рівнів).
+	The objects nest block references too deeply to array (more than {MAX_BLOCK_DEPTH} levels).	Об'єкти вкладають посилання на блоки надто глибоко для масиву (понад {MAX_BLOCK_DEPTH} рівнів).
+	The order must list each of the {all} attribute tags once.	Порядок має містити кожен із {all} тегів атрибутів по одному разу.
+	The path has no length.	Траєкторія не має довжини.
+	The plane does not cut the selected solids.	Площина не розрізає вибрані тіла.
+	The plane needs two different points.	Для площини потрібні дві різні точки.
+	The point must be off the X axis.	Точка не має лежати на осі X.
+	The points must be different.	Точки мають бути різними.
+	The polyline must be closed with at least three vertices.	Полілінія має бути замкненою і мати щонайменше три вершини.
+	The rectangle has no area.	Прямокутник не має площі.
+	The result is empty: the regions were erased.	Результат порожній: області стерто.
+	The revision cloud needs at least three points enclosing an area.	Хмарці змін потрібно щонайменше три точки, що обмежують площу.
+	The scale must be a positive number or a ratio such as 1:10.	Масштаб має бути додатним числом або співвідношенням, наприклад 1:10.
+	The second multiline has no segments.	Друга мультилінія не має сегментів.
+	The segments are parallel or in line.	Сегменти паралельні або лежать на одній прямій.
+	The segments are parallel.	Сегменти паралельні.
+	The segments meet at a kept end; nothing to cut.	Сегменти сходяться в збереженому кінці; нічого відтинати.
+	The segments must be adjacent or separated by one segment.	Сегменти мають бути суміжними або розділеними одним сегментом.
+	The selected object has no area.	Вибраний об'єкт не має площі.
+	The selected viewports do not form a rectangle.	Вибрані видові екрани не утворюють прямокутника.
+	The source would have no objects; enter ARRAYCLOSE No to discard the changes, or erase the array.	Вихідних об'єктів не лишиться; введіть ARRAYCLOSE No, щоб відкинути зміни, або зітріть масив.
+	The spline has no control points.	Сплайн не має керувальних точок.
+	The spline has no direction at that end.	Сплайн не має напрямку на цьому кінці.
+	The spline has no fit data.	Сплайн не має даних апроксимації.
+	The spline has no fit data; give `fit` points.	Сплайн не має даних апроксимації; задайте точки `fit`.
+	The spline is invalid.	Сплайн недопустимий.
+	The spline was erased.	Сплайн стерто.
+	The start point of a closed spline can't be deleted.	Початкову точку замкненого сплайна не можна видалити.
+	The tangent needs a point away from the end point.	Для дотичної потрібна точка на відстані від кінцевої точки.
+	The tangent point must differ from the fit point.	Точка дотичної має відрізнятися від точки апроксимації.
+	The text height must be a positive number.	Висота тексту має бути додатним числом.
+	The thickness must be positive.	Товщина має бути додатною.
+	The three points are on one line: specify a third point off it.	Три точки лежать на одній прямій: укажіть третю точку поза нею.
+	The two points must be different.	Дві точки мають бути різними.
+	The two points must differ.	Дві точки мають відрізнятися.
+	The unit cell must have a width and a height.	Елементарна комірка має мати ширину й висоту.
+	The window has no area.	Вікно не має площі.
+	The window needs a width and a height.	Вікну потрібні ширина й висота.
+	The {0} can't be placed in this construction plane.	{0} не можна розмістити в цій площині побудови.
+	The {0} is in a tilted plane, which this command can't edit: it can be moved, rotated, scaled, mirrored, grip-edited, offset or lengthened in plan.	{0} лежить у нахиленій площині, яку ця команда не редагує: його можна переміщувати, повертати, масштабувати, віддзеркалювати, редагувати ручками, зміщувати або змінювати довжину в плані.
+	There are no 3D solids or curves to export{0}.	Немає 3D-тіл або кривих для експорту{0}.
+	There are no 3D solids to export.	Немає 3D-тіл для експорту.
+	There is only one viewport.	Є лише один видовий екран.
+	These regions are too complex to combine.	Ці області надто складні для поєднання.
+	Third pair ignored (2D align).	Третю пару проігноровано (2D-вирівнювання).
+	This is a dynamic block: its parameters and actions are kept but can't be edited in CADCraft yet.	Це динамічний блок: його параметри та дії зберігаються, але в CADCraft їх поки що не можна редагувати.
+	Tiled viewports are for the Model tab; use MVIEW in a layout.	Мозаїчні видові екрани призначені для вкладки «Модель»; на аркуші використайте MVIEW.
+	Too many fit points.	Забагато точок апроксимації.
+	Too many loops.	Забагато контурів.
+	Too many point modifiers.	Забагато модифікаторів точки.
+	Too many vertices.	Забагато вершин.
+	Too much data for a table ({0} rows, {1} columns).	Забагато даних для таблиці (рядків — {0}, стовпців — {1}).
+	Total area = {0}	Загальна площа = {0}
+	Total xref(s): {0}	Усього зовнішніх посилань: {0}
+	Turns must be in (0, 500].	Кількість витків має бути в (0, 500].
+	Type = Path  Associative = No ({n} items)	Тип = траєкторія  Асоціативний = ні (елементів — {n})
+	Type = Polar  Associative = {0}	Тип = круговий  Асоціативний = {0}
+	Type = Rectangular  Associative = {0}	Тип = прямокутний  Асоціативний = {0}
+	Type = {0}  Increment = {1}  Tolerance = {2}	Тип = {0}  Крок = {1}  Допуск = {2}
+	Type of boundary object	Тип об'єкта межі
+	UNDO {mode} needs UNDO Control All.	Для UNDO {mode} потрібно UNDO Control All.
+	Undo is turned off (UNDO Control None); UNDO Control All turns it on.	Скасування вимкнено (UNDO Control None); UNDO Control All вмикає його.
+	Unknown dimension variable "{t}".	Невідома розмірна змінна "{t}".
+	Unknown object snap mode "{name}".	Невідомий режим об'єктної прив'язки "{name}".
+	Unknown pattern {up}.	Невідомий зразок {up}.
+	Unknown pattern {up}. Available: {0}	Невідомий зразок {up}. Доступні: {0}
+	Unknown variable {n}. Type SETVAR ? to list variables.	Невідома змінна {n}. Введіть SETVAR ?, щоб переглянути змінні.
+	Unnamed group {n} created with {0} object(s).	Неіменовану групу {n} створено з об'єктів: {0}.
+	Use landing	Використовувати полицю
+	Valid hatch boundary not found.	Допустиму межу штрихування не знайдено.
+	Value must be between -32768 and 32767.	Значення має бути від -32768 до 32767.
+	Value must be nonzero.	Значення має бути ненульовим.
+	Value must be positive and nonzero.	Значення має бути додатним і ненульовим.
+	Value must be positive.	Значення має бути додатним.
+	Verify each name to be purged?	Підтверджувати кожну назву для очищення?
+	View "{0}" belongs to layout "{target}", which does not exist.	Вид "{0}" належить аркушу "{target}", якого не існує.
+	View "{0}" has no area.	Вид "{0}" не має площі.
+	View "{n}" not found.	Вид "{n}" не знайдено.
+	Viewport configuration "{name}" has no viewports to restore.	Конфігурація видових екранів "{name}" не має видових екранів для відновлення.
+	Viewport configuration "{name}" saved.	Конфігурацію видових екранів "{name}" збережено.
+	Viewport created, zoomed to the model extents.	Видовий екран створено й масштабовано до меж моделі.
+	Volume = {v}	Об'єм = {v}
+	Where should the data go?	Куди помістити дані?
+	Written to {f}.	Записано до {f}.
+	Wrote {n} object(s) to {0}	Записано об'єктів до {0}: {n}
+	Wrote {n} object{0} to {path}.	Записано об'єктів до {path}: {n}.
+	Xref "{n}" bound.	Зовнішнє посилання "{n}" прив'язано.
+	Xref "{n}" detached.	Зовнішнє посилання "{n}" від'єднано.
+	Xref "{n}" unloaded.	Зовнішнє посилання "{n}" вивантажено.
+	You are about to delete {0} and every object on it from this drawing.	Ви збираєтеся видалити з креслення {0} і всі об'єкти на ньому.
+	You are about to merge {0} into layer "{t}".	Ви збираєтеся об'єднати {0} із шаром "{t}".
+	Zero-length end segment.	Кінцевий сегмент нульової довжини.
+	Zero-length line.	Відрізок нульової довжини.
+	`handle` is not a block reference	`handle` не є посиланням на блок
+	`handles` must be an array of object handles, got {v}	`handles` має бути масивом дескрипторів об'єктів, отримано {v}
+	`{a}` can't be an alias	`{a}` не може бути псевдонімом
+	`{key}`: {v} is not an object handle (a hex string such as "1A2")	`{key}`: {v} не є дескриптором об'єкта (шістнадцятковий рядок, наприклад "1A2")
+	`{name}` belongs to a dimensional constraint; delete the constraint instead	`{name}` належить розмірному обмеженню; натомість видаліть обмеження
+	`{name}` is used by `{0}`	`{name}` використовується в `{0}`
+	`{name}` takes {lo}{0} argument(s)	`{name}` приймає аргументів: {lo}{0}
+	`{n}` is not a plotter configuration file name	`{n}` не є назвою файлу конфігурації плотера
+	`{to}` is already a parameter	`{to}` уже є параметром
+	`{used}` is used by `{0}`	`{used}` використовується в `{0}`
+	a LISP routine is already running	процедура LISP уже виконується
+	a list grip is chosen from, not dragged	зі списку ручки вибирають, а не перетягують її
+	bad leader	неправильна виноска
+	blocks are nested too deeply	блоки вкладено надто глибоко
+	can't add or subtract a number and a point	не можна додавати чи віднімати число й точку
+	can't convert `{from}` to `{to}`	не вдається перетворити `{from}` на `{to}`
+	cell ({r}, {c}) is outside the {0}×{1} table	клітинка ({r}, {c}) поза таблицею {0}×{1}
+	column {c} is outside the table	стовпець {c} поза таблицею
+	command `{0}` is not available right now: {reason}	команда `{0}` зараз недоступна: {reason}
+	division by zero	ділення на нуль
+	expected a number	очікувалося число
+	expression too deeply nested	вираз надто глибоко вкладений
+	expression too long	вираз задовгий
+	files are not available on the web	файли недоступні у вебверсії
+	internal error in `{0}` (the drawing was kept as it was): {1}	внутрішня помилка в `{0}` (креслення збережено як було): {1}
+	invalid format {f} (general, decimal, percent, text)	неправильний формат {f} (general, decimal, percent, text)
+	invalid parameter name `{to}`	неправильна назва параметра `{to}`
+	invalid parameters for `{cmd}`: {reason}	неправильні параметри для `{cmd}`: {reason}
+	it has arc segments	має дугові сегменти
+	it has too few or too many vertices	має замало або забагато вершин
+	it has too few vertices to close	має замало вершин, щоб замкнути
+	it is not a polyline	це не полілінія
+	it is not planar	не є плоским
+	merge at least two cells (`rows` / `cols`)	об'єднайте щонайменше дві клітинки (`rows` / `cols`)
+	more than {MAX_XREF_OBJECTS} objects	понад {MAX_XREF_OBJECTS} об'єктів
+	no active document	немає активного документа
+	no block "{name}"	немає блока "{name}"
+	no block reference is being edited (REFEDIT)	жодне посилання на блок не редагується (REFEDIT)
+	no dimension style "{name}"	немає розмірного стилю "{name}"
+	no dimension was made	розмір не створено
+	no grip	немає ручки
+	no layer "{name}"	немає шару "{name}"
+	no linear dimension	немає лінійного розміру
+	no linetype "{name}"	немає типу лінії "{name}"
+	no parameter `{from}`	немає параметра `{from}`
+	no parameter `{name}`	немає параметра `{name}`
+	no reference objects	немає опорних об'єктів
+	no such column (a table keeps at least one column)	немає такого стовпця (таблиця зберігає щонайменше один стовпець)
+	no such grip	немає такої ручки
+	no such object	немає такого об'єкта
+	no such row (a table keeps at least one row)	немає такого рядка (таблиця зберігає щонайменше один рядок)
+	no such space	немає такого простору
+	no symbol "{name}"	немає символу "{name}"
+	no text style "{name}"	немає текстового стилю "{name}"
+	nothing selected	нічого не вибрано
+	only blocks, dimension styles, layers, linetypes and text styles can be bound	прив'язувати можна лише блоки, розмірні стилі, шари, типи ліній і текстові стилі
+	pld of two equal points	pld для двох однакових точок
+	result is not a finite number	результат не є скінченним числом
+	row {r} is outside the table	рядок {r} поза таблицею
+	table style {0} has no cell style {name} (it has {1})	табличний стиль {0} не має стилю клітинок {name} (має {1})
+	the clipboard holds objects from this drawing; Paste to Original Coordinates pastes into another drawing	буфер обміну містить об'єкти цього креслення; вставлення з вихідними координатами вставляє в інше креслення
+	the clipboard is empty	буфер обміну порожній
+	the file is larger than {0} MB	файл більший за {0} МБ
+	the lines are parallel	відрізки паралельні
+	the reference is on a locked layer	посилання на заблокованому шарі
+	the result is a point, not a number	результат — точка, а не число
+	to change color	яким змінити колір
+	to freeze	які заморозити
+	to reset	які скинути
+	to thaw	які розморозити
+	tolerance must be a number from 0 to {MAX_TOL}	допуск має бути числом від 0 до {MAX_TOL}
+	too many arguments to `{name}`	забагато аргументів для `{name}`
+	too many columns	забагато стовпців
+	too many rows	забагато рядків
+	unexpected `{0}`	неочікуване `{0}`
+	unit type must be length, area, volume or angle, got `{k}`	тип одиниць має бути length, area, volume або angle, отримано `{k}`
+	unknown border {k}	невідома межа {k}
+	unknown command `{0}`	невідома команда `{0}`
+	unknown function `{name}`	невідома функція `{name}`
+	vec1 of two equal points	vec1 для двох однакових точок
+	xref "{key}" is not loaded	зовнішнє посилання "{key}" не завантажено
+	{0} ({1}, {kind}, {2} paper sizes)	{0} ({1}, {kind}, розмірів паперу: {2})
+	{0} Specify base point	{0} Укажіть базову точку
+	{0} annotative object(s) synchronized	Синхронізовано анотативних об'єктів: {0}
+	{0} command alias(es) loaded from {path}.	Завантажено псевдонімів команд із {path}: {0}.
+	{0} constraint #{id} applied.	Застосовано обмеження {0} #{id}.
+	{0} constraint(s) applied to {1} object(s)	Застосовано обмежень: {0} до об'єктів: {1}
+	{0} dimension(s) changed.	Змінено розмірів: {0}.
+	{0} dimension(s) spaced.	Розставлено розмірів: {0}.
+	{0} found, {others} not closed	Знайдено {0}, не замкнено {others}
+	{0} leader(s) {1}.	Виносок: {0} — {1}.
+	{0} multileader(s) collected.	Зібрано мультивиносок: {0}.
+	{0} needs {1} object(s)	{0} потребує об'єктів: {1}
+	{0} object(s) in the working set.	У робочому наборі об'єктів: {0}.
+	{0} object(s) joined into the spline	До сплайна приєднано об'єктів: {0}
+	{0} object(s) updated	Оновлено об'єктів: {0}
+	{0} objects cannot be constrained	Не можна обмежити об'єктів: {0}
+	{0} objects imported from {file}	Імпортовано об'єктів із {file}: {0}
+	{0} pattern(s) loaded from {t}: {1}	Завантажено зразків із {t}: {0}: {1}
+	{0} point(s) are needed	Потрібно точок: {0}
+	{0} symbol(s) bound.	Прив'язано символів: {0}.
+	{0} view(s) deleted.	Видалено видів: {0}.
+	{0} viewport configuration(s) deleted.	Видалено конфігурацій видових екранів: {0}.
+	{0} viewport(s) selected.	Вибрано видових екранів: {0}.
+	{0}: a {1} can't take this transform (it would leave the plane it must stay in, or lose its shape).	{0}: {1} не допускає цього перетворення (воно вивело б його з площини, в якій він має лишатися, або спотворило б форму).
+	{0}Select objects	{0}Виберіть об'єкти
+	{a} is a command name; it stays the command	{a} — назва команди; вона лишається командою
+	{k} is not available yet.	{k} поки що недоступно.
+	{k}: not available yet	{k}: поки що недоступно
+	{k}: use SPLINE for fit points.	{k}: для точок апроксимації використайте SPLINE.
+	{l} is now the current layer.	{l} тепер поточний шар.
+	{n} = {0} (read only)	{n} = {0} (лише для читання)
+	{n} attribute{0} changed.	Змінено атрибутів: {n}.
+	{n} attribute{0} selected.	Вибрано атрибутів: {n}.
+	{n} command alias(es) loaded from {path}.	Завантажено псевдонімів команд із {path}: {n}.
+	{n} command alias(es) loaded.	Завантажено псевдонімів команд: {n}.
+	{n} constraint(s) removed	Вилучено обмежень: {n}
+	{n} dimension(s) created.	Створено розмірів: {n}.
+	{n} dimension(s) updated.	Оновлено розмірів: {n}.
+	{n} found, {0} total	Знайдено {n}, усього {0}
+	{n} hatch object(s) sent to back.	На задній план переміщено об'єктів штрихування: {n}.
+	{n} item(s) selected	Вибрано елементів: {n}
+	{n} lines were chamfered	Відрізків із фаскою: {n}
+	{n} lines were filleted	Спряжено відрізків: {n}
+	{n} loop(s) extracted. {n} Region(s) created.	Видобуто контурів: {n}. Створено областей: {n}.
+	{n} object(s) added to group {0}.	До групи {0} додано об'єктів: {n}.
+	{n} object(s) brought to front.	На передній план переміщено об'єктів: {n}.
+	{n} object(s) changed from {0} space to {1} space.	Об'єктів переміщено з простору {0} у простір {1}: {n}.
+	{n} object(s) converted to splines	Перетворено на сплайни об'єктів: {n}
+	{n} object(s) created.	Створено об'єктів: {n}.
+	{n} object(s) direction has been reversed.	Напрямок змінено на протилежний для об'єктів: {n}.
+	{n} object(s) flattened.	Сплющено об'єктів: {n}.
+	{n} object(s) removed from group {0}.	З групи {0} вилучено об'єктів: {n}.
+	{n} objects joined into 1 {what}	Об'єднано об'єктів в 1 {what}: {n}
+	{n} object{0} changed to layer "{layer}".	Переміщено на шар "{layer}" об'єктів: {n}.
+	{n} object{0} changed.	Змінено об'єктів: {n}.
+	{n} of {0} dimension(s) associated.	Пов'язано розмірів: {n} з {0}.
+	{n} row{0} extracted.	Видобуто рядків: {n}.
+	{n} segments added to polyline	До полілінії додано сегментів: {n}
+	{n} text object{0} aligned.	Вирівняно текстових об'єктів: {n}.
+	{n} viewport(s) created, zoomed to the model extents.	Створено видових екранів: {n}, масштабовано до меж моделі.
+	{n} viewport(s) restored from "{name}".	Відновлено видових екранів із "{name}": {n}.
+	{n}: no such file	{n}: немає такого файлу
+	{n}: the plotter configuration file is too large	{n}: файл конфігурації плотера завеликий
+	{path}: files can't be written in the browser	{path}: у браузері не можна записувати файли
+	{path}: the sheet list is empty.	{path}: перелік аркушів порожній.
+	{r} multileader(s) aligned.	Вирівняно мультивиносок: {r}.
+	{shown} successfully loaded.	{shown} успішно завантажено.
+	{typed}: the command-line form isn't available yet; use {id}	{typed}: форма командного рядка поки що недоступна; використайте {id}
+	{what} needs a number, not a point	{what} потребує числа, а не точки
+	{what} needs a point, not a number	{what} потребує точки, а не числа
+	*Cancel*	*Скасовано*
+	<Offset>	<Зміщення>
+	** Command not allowed in Model Tab **	** Команда недоступна на вкладці «Модель» **
+	Change	Змінити
+	Change Properties	Змінити властивості
+	Clear All	Очистити все
+	Clip Xref	Підрізати зовнішнє посилання
+	Color books are not available.	Альбоми кольорів недоступні.
+	Enable paper space?	Увімкнути простір аркуша?
+	Enter layout number to load	Введіть номер компонування для завантаження
+	Enter new linetype name	Введіть назву нового типу лінії
+	Enter new lineweight	Введіть нову товщину лінії
+	Enter new text style	Введіть новий текстовий стиль
+	Enter number of viewports in X direction	Введіть кількість видових екранів у напрямку X
+	Enter number of viewports in Y direction	Введіть кількість видових екранів у напрямку Y
+	Enter plot style	Введіть стиль друку
+	Enter property to change	Введіть властивість для зміни
+	Enter the number of model space units	Введіть кількість одиниць простору моделі
+	Enter the number of paper space units	Введіть кількість одиниць простору аркуша
+	Justify Text	Вирівняти текст
+	MVSETUP in model space (units, scale and a paper border) is not available yet.	MVSETUP у просторі моделі (одиниці, масштаб і рамка аркуша) поки що недоступна.
+	Make annotative?	Зробити анотативним?
+	Materials are not available yet.	Матеріали поки що недоступні.
+	Meshes	Сітки
+	Minimize Viewport	Згорнути видовий екран
+	No viewports selected.	Не вибрано видових екранів.
+	Object Snap Settings...	Параметри об'єктної прив'язки...
+	Object Snap Tracking On (F11)	Відстеження об'єктної прив'язки увімкнено (F11)
+	Oops	Відновити стерте
+	Scale Text	Масштабувати текст
+	Select a viewport to maximize	Виберіть видовий екран для розгортання
+	Select objects to copy	Виберіть об'єкти для копіювання
+	Select the viewports to scale...	Виберіть видові екрани для масштабування...
+	Set Up Viewports	Налаштувати видові екрани
+	Set zoom scale factors for viewports	Задайте масштабні коефіцієнти видових екранів
+	Sketch	Ескіз
+	Specify basepoint	Укажіть базову точку
+	Specify change point	Укажіть точку зміни
+	Specify distance between viewports in X direction	Укажіть відстань між видовими екранами в напрямку X
+	Specify distance between viewports in Y direction	Укажіть відстань між видовими екранами в напрямку Y
+	Specify first corner of bounding area for viewport(s)	Укажіть перший кут обмежувальної області для видових екранів
+	Specify new block insertion point	Укажіть нову точку вставлення блока
+	Specify new block rotation angle	Укажіть новий кут повороту блока
+	Specify new circle radius	Укажіть новий радіус кола
+	Specify new elevation	Укажіть нову висоту розташування
+	Specify new height	Укажіть нову висоту
+	Specify new linetype scale	Укажіть новий масштаб типу лінії
+	Specify new rotation angle	Укажіть новий кут повороту
+	Specify new text insertion point	Укажіть нову точку вставлення тексту
+	Specify new thickness	Укажіть нову товщину
+	Specify point in viewport to be panned	Укажіть точку у видовому екрані для панорамування
+	Specify second point of displacement or <use first point as displacement>	Укажіть другу точку зміщення або <використати першу точку як зміщення>
+	Spelling	Перевірка орфографії
+	Text Align	Вирівнювання тексту
+	The drawing has no layout.	Креслення не має аркуша.
+	Xref	Зовнішнє посилання
+	{locked} object{0} on a locked layer.	Об'єктів на заблокованому шарі: {locked}.
+	A template has at most {MAX_FIELDS} fields.	Шаблон має не більше {MAX_FIELDS} полів.
+	DXF (DXX) extract files are not available yet; choose Cdf or Sdf.	Файли видобування DXF (DXX) поки що недоступні; виберіть Cdf або Sdf.
+	Enter extract file name	Введіть назву файлу видобування
+	Enter extraction type or enable object selection	Введіть тип видобування або ввімкніть вибір об'єктів
+	Enter new value for {tag}	Введіть нове значення для {tag}
+	Enter template file name	Введіть назву файлу шаблону
+	Select a block reference with attributes.	Виберіть посилання на блок з атрибутами.
+	Select attribute to edit	Виберіть атрибут для редагування
+	Template line {0}: "{line}" is not NAME Cwwwddd or NAME Nwwwddd.	Рядок шаблону {0}: "{line}" не має вигляду NAME Cwwwddd або NAME Nwwwddd.
+	Template line {0}: {name} needs a character.	Рядок шаблону {0}: {name} потребує символу.
+	The template lays out no fields.	Шаблон не розміщує жодного поля.
+	The text could not be pasted.	Не вдалося вставити текст.
+	{n} record{0} in extract file.	Записів у файлі видобування: {n}.
+	Attribute Extraction	Видобування атрибутів
+	CAD Standards	Стандарти САПР
+	Copy Objects to New Layer	Копіювати об'єкти на новий шар
+	Do you want fast zooms?	Використовувати швидке масштабування?
+	Drawing Properties...	Властивості креслення...
+	Edit Attribute In Place	Редагувати атрибут на місці
+	Enter circle zoom percent (1-20000)	Введіть відсоток масштабування кіл (1-20000)
+	Enter custom property name	Введіть назву користувацької властивості
+	Enter value for {n}	Введіть значення для {n}
+	Enter {label}	Введіть {label}
+	Invalid custom property name.	Неправильна назва користувацької властивості.
+	Layer Translator...	Перекладач шарів...
+	Layer Walk...	Перегляд шарів...
+	Object Selection Filters...	Фільтри вибору об'єктів...
+	Paste Special...	Спеціальне вставлення...
+	Requires an integer between 1 and 20000.	Потрібне ціле число від 1 до 20000.
+	Update Associative Dimensions	Оновити асоціативні розміри
+	View Resolution	Роздільність виду
+	{n} associative dimension{0} updated.	Оновлено асоціативних розмірів: {n}.
+	Enter extraction type	Введіть тип видобування
+	The extract file would be larger than {0} MB; extract fewer objects or fields.	Файл видобування перевищив би {0} МБ; видобувайте менше об'єктів або полів.
+	Two custom properties have the same name.	Дві користувацькі властивості мають однакову назву.
+	Drawing template	Шаблон креслення
+	Not saved yet	Ще не збережено
+	Summary	Зведення
+	Statistics	Статистика
+	Custom properties	Користувацькі властивості
+	Add...	Додати...
+	{name} Properties	Властивості {name}
+	The clipboard holds no drawing objects.	У буфері обміну немає об'єктів креслення.
+	Objects from another Cadino window	Об'єкти з іншого вікна Cadino
+	Objects from this drawing	Об'єкти з цього креслення
+	Objects from another drawing	Об'єкти з іншого креслення
+	Paste Special	Спеціальне вставлення
+	Source:	Джерело:
+	Paste Link	Вставити зв'язок
+	As:	Як:
+	Cadino Drawing Objects	Об'єкти креслення Cadino
+	Cadino Drawing Objects as a Block	Об'єкти креслення Cadino як блок
+	Paste the text here (Ctrl+V)	Вставте текст сюди (Ctrl+V)
+	Result	Результат
+	Pastes the objects; you then pick the insertion point.	Вставляє об'єкти; потім ви вказуєте точку вставлення.
+	Pastes the objects as one block reference; you then pick the insertion point.	Вставляє об'єкти як одне входження блока; потім ви вказуєте точку вставлення.
+	Pastes the text as multiline text; you then pick the insertion point.	Вставляє текст як багаторядковий текст; потім ви вказуєте точку вставлення.
+	Object Selection Filters	Фільтри вибору об'єктів
+	No conditions yet: add one below.	Умов ще немає: додайте умову нижче.
+	Edit Item	Змінити елемент
+	Clear List	Очистити список
+	Select Filter	Фільтр вибору
+	Add to List	Додати до списку
+	Substitute	Замінити
+	Add Selected Object	Додати вибраний об'єкт
+	Add the type, layer, colour and linetype of the first selected object	Додати тип, шар, колір і тип лінії першого вибраного об'єкта
+	Named Filters	Іменовані фільтри
+	Current:	Поточний:
+	*unnamed	*без назви
+	Delete Current Filter List	Видалити поточний список фільтрів
+	Save As:	Зберегти як:
+	Within the current selection only	Лише в поточному виборі
+	Select layers to show only them. Ctrl+click adds, Shift+click adds a range.	Виберіть шари, щоб показати лише їх. Ctrl+клацання додає шар, Shift+клацання додає діапазон.
+	Restore on exit	Відновити під час виходу
+	LayerWalk - Layers: {n}	Перегляд шарів — шарів: {n}
+	Layer Translator	Перекладач шарів
+	Translate From	Перекласти з
+	Map	Зіставити
+	Map same	Зіставити однакові
+	Map every layer to the target layer of the same name	Зіставити кожен шар із цільовим шаром з такою самою назвою
+	Translate To	Перекласти в
+	Load a drawing's layers or make new ones.	Завантажте шари креслення або створіть нові.
+	Use the layers of another drawing	Використати шари іншого креслення
+	New...	Створити...
+	Name:	Назва:
+	Linetype:	Тип лінії:
+	Lineweight:	Товщина лінії:
+	Layer Translation Mappings	Зіставлення для перекладу шарів
+	Old Layer Name	Стара назва шару
+	New Layer Name	Нова назва шару
+	Translate	Перекласти
+	Title:	Заголовок:
+	Subject:	Тема:
+	Author:	Автор:
+	Keywords:	Ключові слова:
+	Comments:	Коментарі:
+	Hyperlink base:	База гіперпосилань:
+	Last saved by:	Останнє збереження:
+	Revision number:	Номер редакції:
+	Type:	Тип:
+	Location:	Розташування:
+	Size:	Розмір:
+	Created:	Створено:
+	Modified:	Змінено:

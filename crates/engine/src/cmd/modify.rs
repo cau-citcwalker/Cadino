@@ -166,14 +166,8 @@ fn transform_with(s: &mut Session, hs: &[Handle], m: &Mat3, in_3d: Option<Mat4>,
 }
 
 fn erase(s: &mut Session, hs: &[Handle]) -> Result<usize> {
-    let d = s.doc_mut()?;
-    let mut n = 0;
-    for h in hs {
-        let locked = d.entity(*h).and_then(|e| d.layer(&e.common.layer)).is_some_and(|l| l.locked);
-        if !locked && d.remove_entity(*h).is_some() {
-            n += 1;
-        }
-    }
+    // Locked objects stay; OOPS brings the others back.
+    let n = super::oops::erase(s, hs)?;
     s.set_selection(Vec::new());
     Ok(n)
 }
@@ -479,7 +473,9 @@ impl StretchM {
         if let Some(mut m) = self.mode.take() {
             match &i {
                 Input::Point(p) => {
-                    if m.push(*p) {
+                    // STRETCH's windows are areas of the construction plane whose vertices move:
+                    // its typed modes select in the plane.
+                    if m.push(*p, None) {
                         self.finish_mode(s, m)?;
                     } else {
                         self.mode = Some(m);
@@ -487,7 +483,7 @@ impl StretchM {
                     return Ok(Step::Continue);
                 }
                 Input::Text(t) | Input::Keyword(t) if matches!(t.trim().to_ascii_lowercase().as_str(), "u" | "undo") => {
-                    m.pts.pop();
+                    m.undo();
                     self.mode = Some(m);
                     return Ok(Step::Continue);
                 }
@@ -513,8 +509,8 @@ impl StretchM {
                 }
                 None => {
                     let aperture = s.pixel_size() * s.settings.pickbox.max(1.0) * 1.5;
-                    let space = s.space();
-                    match crate::select::pick(&*s.pick_doc()?, &space, p, aperture) {
+                    // A 3D view's pick comes as a point on the object ([`Session::input_view_pick`]).
+                    match super::curves::pick_in(s, &*s.pick_doc()?, p, aperture) {
                         Some(h) => self.add(s, vec![h], true),
                         None => self.corner = Some(p),
                     }
@@ -994,6 +990,16 @@ fn prim_to_segments(p: &Prim) -> Vec<Segment> {
     }
 }
 
+/// `k`, made in plan from `e`, at `e`'s height: what TRIM, EXTEND, BREAK, FILLET, CHAMFER and
+/// JOIN make of a raised object stays at its elevation (a sloped line's pieces come out flat, as
+/// they always did).
+pub(crate) fn at_height_of(e: &Entity, mut k: EntityKind) -> EntityKind {
+    if let Some(z) = e.plane().map(|_| e.kind.elevation()).filter(|z| *z != 0.0) {
+        k.set_elevation(z);
+    }
+    k
+}
+
 /// Trim `h` at the piece containing `pick`. Returns the handles that replace it.
 pub(crate) fn trim(s: &mut Session, h: Handle, pick: Vec2, edges: Edges) -> Result<Vec<Handle>> {
     if super::curves::is_locked(s, h) {
@@ -1082,7 +1088,7 @@ pub(crate) fn trim(s: &mut Session, h: Handle, pick: Vec2, edges: Edges) -> Resu
     for k in pieces {
         let nh = d.new_handle();
         if let Some(st) = d.space_mut(&space) {
-            st.push(Entity { handle: nh, common: common.clone(), kind: k });
+            st.push(Entity { handle: nh, common: common.clone(), kind: at_height_of(&e, k) });
             out.push(nh);
         }
     }
@@ -1246,6 +1252,7 @@ pub(crate) fn extend(s: &mut Session, h: Handle, pick: Vec2, edges: Edges) -> Re
         }
         k => super::modify2::extend_other(k, &cut, pick)?,
     };
+    let new_kind = at_height_of(&e, new_kind);
     s.doc_mut()?.modify_entity(h, |e| e.kind = new_kind)?;
     Ok(())
 }
@@ -1319,8 +1326,8 @@ pub(crate) fn fillet_lines(
     };
     let common = e1.common.clone();
     let doc = s.doc_mut()?;
-    doc.modify_entity(h1, |e| e.kind = line(k1, t1))?;
-    doc.modify_entity(h2, |e| e.kind = line(k2, t2))?;
+    doc.modify_entity(h1, |e| e.kind = at_height_of(&e1, line(k1, t1)))?;
+    doc.modify_entity(h2, |e| e.kind = at_height_of(&e2, line(k2, t2)))?;
     let space = s.space();
     let doc = s.doc_mut()?;
     let extra = match (chamfer, new_arc) {
@@ -1331,7 +1338,7 @@ pub(crate) fn fillet_lines(
     if let Some(k) = extra {
         let nh = doc.new_handle();
         if let Some(st) = doc.space_mut(&space) {
-            st.push(Entity { handle: nh, common, kind: k });
+            st.push(Entity { handle: nh, common, kind: at_height_of(&e1, k) });
         }
         return Ok(Some(nh));
     }
@@ -1662,7 +1669,7 @@ pub(crate) fn break_entity(s: &mut Session, h: Handle, p1: Vec2, p2: Vec2) -> Re
     for k in pieces {
         let nh = d.new_handle();
         if let Some(st) = d.space_mut(&space) {
-            st.push(Entity { handle: nh, common: common.clone(), kind: k });
+            st.push(Entity { handle: nh, common: common.clone(), kind: at_height_of(&e, k) });
             out.push(nh);
         }
     }
@@ -1701,10 +1708,10 @@ pub(crate) fn join(s: &mut Session, hs: &[Handle]) -> Result<Option<Handle>> {
     let mut segs: Vec<Segment> = Vec::new();
     // Source entity of each segment in `segs`, so only entities that end up in the chain are removed.
     let mut owners: Vec<Handle> = Vec::new();
-    let mut common = None;
+    let mut first = None;
     for h in hs {
         let Some(e) = d.entity(*h) else { continue };
-        common.get_or_insert_with(|| e.common.clone());
+        first.get_or_insert_with(|| (**e).clone());
         match &e.kind {
             EntityKind::Line(l) => segs.push(Segment::Line(Line::new(l.a.xy(), l.b.xy()))),
             EntityKind::Arc(a) => segs.push(Segment::Arc { arc: Arc::new(a.center.xy(), a.radius, a.start, a.end), ccw: true }),
@@ -1765,7 +1772,11 @@ pub(crate) fn join(s: &mut Session, hs: &[Handle]) -> Result<Option<Handle>> {
     }
     let nh = doc.new_handle();
     if let Some(st) = doc.space_mut(&space) {
-        st.push(Entity { handle: nh, common: common.unwrap_or_default(), kind: lwpoly(vs, closed) });
+        let (common, kind) = match &first {
+            Some(f) => (f.common.clone(), at_height_of(f, lwpoly(vs, closed))),
+            None => (Default::default(), lwpoly(vs, closed)),
+        };
+        st.push(Entity { handle: nh, common, kind });
     }
     s.set_selection(Vec::new());
     Ok(Some(nh))
@@ -2440,8 +2451,7 @@ impl Interactive for OffsetM {
             }
             (None, Input::Point(p)) => {
                 let ap = s.pixel_size() * s.settings.pickbox.max(1.0) * 1.5;
-                let space = s.space();
-                match crate::select::pick(s.doc()?, &space, p, ap) {
+                match super::curves::pick_in(s, s.doc()?, p, ap) {
                     Some(h) => {
                         self.picked = Some(h);
                         s.set_selection(vec![h]);
@@ -2706,8 +2716,7 @@ impl Interactive for FilletM {
             }
             Input::Point(p) => {
                 let ap = s.pixel_size() * s.settings.pickbox.max(1.0) * 1.5;
-                let space = s.space();
-                let Some(h) = crate::select::pick(s.doc()?, &space, p, ap) else {
+                let Some(h) = super::curves::pick_in(s, s.doc()?, p, ap) else {
                     s.echo("*Invalid selection*");
                     return Ok(Step::Continue);
                 };
@@ -2971,8 +2980,7 @@ impl Interactive for BreakM {
         match (self.obj, i) {
             (None, Input::Point(p)) => {
                 let ap = s.pixel_size() * s.settings.pickbox.max(1.0) * 1.5;
-                let space = s.space();
-                match crate::select::pick(s.doc()?, &space, p, ap) {
+                match super::curves::pick_in(s, s.doc()?, p, ap) {
                     Some(h) => {
                         self.obj = Some((h, p));
                         s.set_selection(vec![h]);

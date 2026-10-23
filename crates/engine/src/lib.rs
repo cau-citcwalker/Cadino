@@ -157,6 +157,17 @@ pub struct ModelTile {
     pub cplane: cadcraft_geom::Mat4,
 }
 
+/// A layout viewport VPMAX maximized: VPMIN brings back the sheet's view and the viewport's.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VpMax {
+    pub layout: String,
+    pub viewport: Handle,
+    /// The paper view before maximizing.
+    pub paper: View,
+    /// The viewport's model view (centre and height) before maximizing.
+    pub view: View,
+}
+
 #[derive(Clone, Debug)]
 pub struct Snapshot {
     pub label: String,
@@ -183,6 +194,8 @@ pub struct DocState {
     pub tiles: ModelTiles,
     /// MSPACE: the layout viewport whose model space is being edited (None = paper space).
     pub mspace: Option<Handle>,
+    /// VPMAX: the layout viewport maximized for editing and the views VPMIN restores.
+    pub vpmax: Option<VpMax>,
     pub views: Vec<(Space, View)>,
     /// Views for ZOOM Previous, with the model space view direction each was seen along.
     pub view_history: Vec<(View, ViewDir)>,
@@ -205,6 +218,9 @@ pub struct DocState {
     /// The point the last orbit kept at the centre of the screen (cleared by other changes of
     /// direction): the UI shows the old list about it until the new one is built.
     pub orbit_target: Option<cadcraft_geom::Vec3>,
+    /// What the last ERASE (or BLOCK's and WBLOCK's Delete) removed, with its space: OOPS puts
+    /// it back ([`cmd::oops`]).
+    pub oops: Vec<(Space, Arc<Entity>)>,
 }
 
 static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -226,6 +242,7 @@ impl DocState {
             space: Space::Model,
             tiles: ModelTiles::default(),
             mspace: None,
+            vpmax: None,
             views: Vec::new(),
             view_history: Vec::new(),
             uid: NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -236,6 +253,7 @@ impl DocState {
             shaded_edges: false,
             orbit_center: None,
             orbit_target: None,
+            oops: Vec::new(),
         }
     }
     /// The current tile's look: the model view's direction and visual style.
@@ -802,6 +820,15 @@ pub struct Session {
     /// A plan-only command is running in a level construction plane: it works in World
     /// ([`Session::cplane`] is World while it runs; see [`cplane::PLAN_ONLY`]).
     pub(crate) plan_world: std::sync::atomic::AtomicBool,
+    /// Where the click being given was made, when the UI made it in a view that picks what is
+    /// drawn (a 3D view, or plan with a tilted construction plane): that view's direction and the
+    /// view-plane point under the cursor. A pick at a point-only object prompt then comes as a
+    /// point on the object ([`Session::input_view_pick`]), and typed selection modes (W, C, F,
+    /// WP, CP) select as that view shows the drawing. The UI sets it around each click.
+    pub view_at: Option<(ViewDir, Vec2)>,
+    /// The object a view pick gave a point-only prompt and the world point it was picked at,
+    /// while that point is fed ([`cmd::curves::pick_in`] picks it there).
+    pub(crate) view_pick: Option<(Handle, cadcraft_geom::Vec3)>,
 }
 
 impl Default for Session {
@@ -854,6 +881,8 @@ impl Session {
             point_z: None,
             last_point_z: None,
             plan_world: std::sync::atomic::AtomicBool::new(false),
+            view_at: None,
+            view_pick: None,
         }
     }
     pub fn new_drawing(&mut self, metric: bool) -> usize {
@@ -1350,13 +1379,11 @@ impl Session {
         }
         match input {
             Input::Point(p) => {
-                if mode.push(p) {
+                if mode.push(p, self.view_at) {
                     return Ok(self.select_by_mode(&mode)?.map(Input::Pick));
                 }
             }
-            Input::Keyword(k) if k == "Undo" => {
-                mode.pts.pop();
-            }
+            Input::Keyword(k) if k == "Undo" => mode.undo(),
             // Enter ends a fence or polygon; with too few points the mode is dropped.
             Input::Enter => return Ok(self.select_by_mode(&mode)?.map(Input::Pick)),
             Input::Cancel | Input::Pick(_) => return Ok(Some(input)),
@@ -1854,8 +1881,23 @@ impl Session {
     }
 
     /// Objects the UI picked from what it draws (3D views) at a command's object prompt: they
-    /// bring their groups as a picked point does, then go to the command as a pick.
+    /// bring their groups as a picked point does, then go to the command as a pick. A prompt that
+    /// takes a point to pick one object ("Select object to offset") is given the point of the
+    /// object drawn under the cursor ([`Session::view_at`]) in CPlane coordinates, as a click on
+    /// it in plan would be, and the object is what is picked there.
     pub fn input_view_pick(&mut self, hs: Vec<Handle>) -> Result<()> {
+        if let (Some(&h), Some((dir, v))) = (hs.first(), self.view_at)
+            && self.select_mode.is_none()
+            && self.current_prompt().is_some_and(|p| p.accept.point && !p.accept.select)
+            && let Some(w) = cmd::curves::drawn_point(self, h, dir, v)
+            && let Some(local) = self.cplane().inverse().map(|ci| ci.apply(w))
+        {
+            self.point_z = None;
+            self.view_pick = Some((h, w));
+            let r = self.input(Input::Point(local.xy()));
+            self.view_pick = None;
+            return r;
+        }
         let hs = cmd::groups::expand(self, hs);
         self.input(Input::Pick(hs))
     }

@@ -62,6 +62,11 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("ui.dialog.layers", "Layer Properties Manager", &["Window", "Layers"], None),
     ("ui.dialog.blocks", "Blocks", &["Window", "Blocks"], None),
     ("ui.dialog.qselect", "Quick Select...", &[], None),
+    // Dialogs over other commands (`managers::route`): typed, or from these menus.
+    ("pastespec", "Paste Special...", &["Edit", "Paste Special..."], None),
+    ("filter", "Object Selection Filters...", &[], None),
+    ("laywalk", "Layer Walk...", &["Format", "Layer Tools", "Layer Walk..."], None),
+    ("laytrans", "Layer Translator...", &["Tools", "CAD Standards", "Layer Translator..."], None),
     ("ui.dialog.parameters", "Parameters Manager", &["Window", "Parameters Manager"], None),
     ("ui.dialog.dsettings", "Drafting Settings...", &[], None),
     ("ui.dialog.about", "About Cadino", &["Help", "About Cadino"], None),
@@ -443,6 +448,12 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
         }
         "dsettings" | "ds" | "se" if params.is_null() => {
             app.ui.dialog = Some("dsettings".into());
+            Ok(Value::Null)
+        }
+        // OSNAP typed (OS, DDOSNAP) opens Drafting Settings on its Object Snap tab. F3 and the
+        // status bar button toggle the running snaps (`{}`); -OSNAP asks on the command line.
+        "osnap" | "os" | "ddosnap" if params.is_null() => {
+            app.ui.dialog = Some("dsettings:osnap".into());
             Ok(Value::Null)
         }
         // Typed or from a menu (no parameters): the Hatch and Gradient dialog (HPDLGMODE 1) and the

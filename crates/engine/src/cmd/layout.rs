@@ -13,9 +13,14 @@ use super::*;
 use crate::{Accept, Input, Interactive, Prompt, Result, Session, Step};
 use viewports::MviewM;
 
+/// MVSETUP.
+mod mvsetup;
+mod plotprompts;
 mod plotstyle;
 mod prompts;
 mod viewports;
+/// VPMAX / VPMIN.
+mod vpmax;
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -74,14 +79,16 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("pagesetup", "Page Setup Manager...", run_pagesetup)
             .menu(&["File", "Page Setup Manager..."])
             .params(
-                "{layout?: current, device?: plotter name (PLOTTERMANAGER) | \"None\", paper?: the device's paper | \"A4\"|\"A3\"|\"Letter\"|\"ANSI B\"|…, width?, height? (mm), landscape?, margins?: [l,b,r,t] mm, lineweights?, plotArea?, scale?, scaleToFit?, center?, plotStyleTable?: \"monochrome.ctb\"|\"grayscale.ctb\"|\"default.ctb\"|\"None\"|…, displayPlotStyles?: bool, plotTransparency?: bool}",
-            ),
+                "{layout?: current, device?: plotter name (PLOTTERMANAGER) | \"None\", paper?: the device's paper | \"A4\"|\"A3\"|\"Letter\"|\"ANSI B\"|…, width?, height? (mm), landscape?, margins?: [l,b,r,t] mm, lineweights?, plotArea?, scale?, scaleToFit?, center?, plotStyleTable?: \"monochrome.ctb\"|\"grayscale.ctb\"|\"default.ctb\"|\"None\"|…, displayPlotStyles?: bool, plotTransparency?: bool} (typed -PAGESETUP: the page setup questions for the current layout)",
+            )
+            .interactive(|_| Ok(Box::new(plotprompts::PlotM::pagesetup()))),
         CommandSpec::new("plot", "Print...", |s, p| run_plot(s, &super::plotters::plot_options(s, p, "plot")?, "plot"))
             .menu(&["File", "Print..."])
             .key("Cmd+P")
             .alias(&["print"])
-            .params("{path? (else returns base64 `data`), layout?: current|\"Model\", paper?, landscape?, fit?: bool, scale?: number | \"1:50\", center?: bool (Model, default true), offset?: [x,y] mm (Model, when center is false; each within ±100000), lineweights?: bool, plotTransparency?: bool (default: the page setup's; PLOTTRANSPARENCYOVERRIDE 0/2 overrides it), plotArea?: extents|display|limits|window (Model) | layout, window?: [[x1,y1],[x2,y2]]} (typed or from the menu: the Plot dialog)")
-            .noundo(),
+            .params("{path? (else returns base64 `data`), layout?: current|\"Model\", paper?, landscape?, fit?: bool, scale?: number | \"1:50\", center?: bool (Model, default true), offset?: [x,y] mm (Model, when center is false; each within ±100000), lineweights?: bool, plotTransparency?: bool (default: the page setup's; PLOTTRANSPARENCYOVERRIDE 0/2 overrides it), plotArea?: extents|display|limits|window (Model) | layout, window?: [[x1,y1],[x2,y2]]} (typed or from the menu: the Plot dialog; typed -PLOT: the plot questions, ending in this form)")
+            .noundo()
+            .interactive(|_| Ok(Box::new(plotprompts::PlotM::plot()))),
         CommandSpec::new("exportpdf", "Export to PDF...", |s, p| run_plot(s, &super::plotters::plot_options(s, p, "exportpdf")?, "exportpdf"))
             .menu(&["File", "Export to PDF..."])
             .params("{path? (else returns base64 `data`), layout?, paper?, landscape?, fit?, scale?, center?: bool (Model, default true), offset?: [x,y] mm (Model, when center is false; each within ±100000), lineweights?, plotTransparency?, plotArea?, window?} (as PLOT)")
@@ -94,6 +101,8 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
     .into_iter()
     .chain(plotstyle::specs())
+    .chain(mvsetup::specs())
+    .chain(vpmax::specs())
     .chain(super::plotters::specs())
     .collect()
 }
@@ -657,8 +666,21 @@ fn run_pagesetup(s: &mut Session, p: &Value) -> Result<Value> {
         }));
     };
     let mut page = s.doc()?.layout(&name).map(|l| l.page.clone()).unwrap_or_default();
+    apply_page(cmd, p, &mut page)?;
+    if changes {
+        if let Some(l) = s.doc_mut()?.layouts.iter_mut().find(|l| l.name == name) {
+            l.page = page.clone();
+        }
+        s.touch();
+    }
+    Ok(json!({ "layout": name, "page": serde_json::to_value(&page).unwrap_or(Value::Null) }))
+}
+
+/// PAGESETUP's settings in `p` applied to `page`, validated as the JSON form validates them
+/// (the -PLOT and -PAGESETUP prompts apply each answer through it).
+fn apply_page(cmd: &str, p: &Value, page: &mut PageSetup) -> Result<()> {
     // A plotter's own papers (with their printable areas) come first.
-    let device_paper = super::plotters::page_device(cmd, p, &mut page)?;
+    let device_paper = super::plotters::page_device(cmd, p, page)?;
     if let Some(paper) = p.get("paper").filter(|_| !device_paper) {
         let n = paper.as_str().ok_or_else(|| bad(cmd, "`paper` must be a paper name"))?;
         let ps = cadcraft_render::paper_size(n).ok_or_else(|| {
@@ -721,13 +743,7 @@ fn run_pagesetup(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(v) = p.get("plotTransparency").and_then(Value::as_bool) {
         page.plot_transparency = v;
     }
-    if changes {
-        if let Some(l) = s.doc_mut()?.layouts.iter_mut().find(|l| l.name == name) {
-            l.page = page.clone();
-        }
-        s.touch();
-    }
-    Ok(json!({ "layout": name, "page": serde_json::to_value(&page).unwrap_or(Value::Null) }))
+    Ok(())
 }
 
 // ---------- plotting ----------

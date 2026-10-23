@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-17 · **Change:** minor (AutoComplete runs the highlighted command; commands typed bare prompt or open their dialog) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-23 · **Change:** minor (command-line forms of PLOT, CHANGE, CHPROP and the text tools; 3D view picks and snaps; the history in Korean and Ukrainian) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
 
 How CADCraft's interaction compares with AutoCAD's: point entry, object snaps, tracking, dynamic
 input, grips, selection, the command line, chrome and navigation. A drafter's speed in AutoCAD
@@ -75,9 +75,9 @@ ignored; there are no context menus. Remaining: **≈ 110–170 Opus 5.5 hours**
 | Parallel | yes, with parallel path | yes: rest on a line, then a path parallel to it runs through the base point (`snap/tracking.rs`) |
 | Temporary overrides typed at a prompt (`END`, `MID`, `INT` …) | yes | **no**: the text arrives as plain input |
 | Shift/Ctrl+right-click snap menu | yes | yes: From, Mid Between 2 Points, Point Filters, the snap modes, None, Osnap Settings; no Temporary track point yet (`context_menu.rs`) |
-| Tab to cycle candidate snaps | yes | yes, through the closest snap of each running mode under the cursor (`pointmod::snap_candidates`) |
+| Tab to cycle candidate snaps | yes | yes, through the closest snap of each running mode under the cursor (`pointmod::snap_candidates`); in a 3D view also every 3D snap there, a vertex hidden behind another included (`canvas/snap3d.rs`) |
 | AutoSnap marker, tooltip, magnet, aperture box | yes | marker per mode and name label; aperture from APERTURE; no magnet, no aperture box |
-| OSNAPZ, 3D object snaps | yes | no |
+| OSNAPZ, 3D object snaps | yes | 3D views snap END, MID, CEN, QUA, NEA, PER, INT and APP where objects are drawn (`canvas/snap3d.rs`; crossings look at the first 1,000 curve pieces under the cursor); no OSNAPZ, no 3D Object Snap tab |
 
 ## Tracking, polar, ortho, grid and snap (≈ 70%)
 
@@ -91,7 +91,7 @@ ignored; there are no context menus. Remaining: **≈ 110–170 Opus 5.5 hours**
 | Grid (rectangular, major lines, adaptive, limits) | yes | rectangular and isometric (30°, 90° and 150° lines), major lines, adaptive display |
 | Snap (rectangular, isometric, polar snap) | yes | rectangular and isometric (SNAPSTYL 1: the snap Y spacing along the isometric axes), from SNAPBASE turned by SNAPANG |
 | Isometric drafting (ISODRAFT, isoplanes F5) | yes | yes (#556): ISODRAFT and the status-bar toggle set SNAPSTYL and the plane; ISOPLANE / F5 / Ctrl+E cycle Left, Top, Right (SNAPISOPAIR); ortho, direct distance entry and the crosshair follow the plane's axes; ELLIPSE Isocircle (radius or Diameter, also for elliptical arcs); Drafting Settings snap style radio. Engine: `snap/iso.rs`, `cmd/settings/iso.rs` |
-| Drafting Settings dialog | yes | yes (`dialogs.rs:36-80`) |
+| Drafting Settings dialog | yes | yes: Snap and Grid, Polar Tracking, Object Snap (modes with their markers, Select All, Clear All; OSNAP/OS/DDOSNAP and the status bar button's right-click open it) and Dynamic Input tabs, through SETVAR (`dialogs.rs`) |
 | Hatch and Gradient / Hatch Edit dialogs | yes | yes (`hatchdlg.rs`): pattern swatches, gradient colours and shapes, origin, pick points or objects, associative, separate, island detection; opened by HATCH, GRADIENT (HPDLGMODE), HATCHEDIT, right-click or double-clicking a hatch; no Preview or Inherit Properties |
 
 ## Dynamic input (≈ 45%)
@@ -132,7 +132,7 @@ down-arrow options menu (DYNPROMPT), and DYNDIM.
 | Selection cycling (SELECTIONCYCLING) | yes | toggle nothing reads |
 | Selection preview, hover highlight | yes | selected and hovered objects redrawn in the selection colour, fills half see-through (SELECTIONEFFECT 1; 0 dashed), selection effect color; HIGHLIGHT (not saved), SELECTIONPREVIEW, PREVIEWEFFECT, PREVIEWFILTER (Visual Effect Settings) |
 | PICKADD, PICKFIRST, PICKAUTO | yes | PICKADD (Shift), PICKFIRST |
-| QSELECT, SELECTSIMILAR, FILTER | yes | QSELECT dialog; SELECTSIMILAR with SELECTSIMILARMODE (#428, SEttings asks for the bit code; no dialog); no FILTER |
+| QSELECT, SELECTSIMILAR, FILTER | yes | QSELECT dialog; SELECTSIMILAR with SELECTSIMILARMODE (#428, SEttings asks for the bit code; no dialog); FILTER/FI: Object Selection Filters (conditions joined with AND, named filters for the session, Apply selects through QSELECT from the drawing or the current selection; no OR/NOT groups, no "Select objects" after Apply) |
 | Object isolate/hide (ISOLATEOBJECTS, HIDEOBJECTS) | yes | yes, temporary (OBJECTISOLATIONMODE 0; #428): Tools > Isolate, UNISOLATEOBJECTS; no status-bar button |
 | Groups selectable as one (PICKSTYLE) | yes | yes (PICKSTYLE 1, #417), Object grouping on Options ▸ Selection; associative hatch selection (bit 2) is stored, not used |
 
@@ -141,10 +141,10 @@ down-arrow options menu (DYNPROMPT), and DYNDIM.
 | Feature | AutoCAD | CADCraft |
 |---|---|---|
 | AutoComplete (commands, sysvars, mid-string, synonyms) | yes | command list with Tab to accept; Enter or Space at `Command:` runs the highlighted (first) suggestion when the name doesn't run as typed (DIMST runs DIMSTYLE; AI still opens the assistant) (`cmdline.rs` `submit`); no sysvar or mid-string search |
-| A command typed bare starts its prompts or opens its dialog | yes | yes: DIMSTYLE, COLOR, LWEIGHT, FIND, WBLOCK, LAYERSTATE and MLSTYLE open their dialogs; LIMITS, LTSCALE, LEADER, QLEADER/LE, BASE, GETVAR, MEASUREGEOM, LAYMCUR, LAYMCH, LAYISO, REGION and the file commands prompt. With answers on the line (`color red`, scripts) the command-line form runs. Dash forms (-DIMSTYLE, -STYLE, -COLOR, -LWEIGHT, -UNITS, -WBLOCK, -OSNAP, -LAYERSTATE) prompt; -PLOT, -PUBLISH, -PAGESETUP, -PLOTSTYLE, -EXPORT, -PARAMETERS and -CONSTRAINTSETTINGS say their command-line form isn't available yet |
+| A command typed bare starts its prompts or opens its dialog | yes | yes: DIMSTYLE, COLOR, LWEIGHT, FIND, WBLOCK, LAYERSTATE, MLSTYLE, DWGPROPS, PASTESPEC/PA, FILTER/FI, LAYWALK and LAYTRANS open their dialogs; MVSETUP, XCLIP/XC and VPMAX prompt; CHANGE/-CH, CHPROP, SCALETEXT, JUSTIFYTEXT, TEXTALIGN/TA, COPYTOLAYER, SKETCH, TRACE, SOLID/SO, 3DFACE/3F, ATTIPEDIT/ATI, -ATTEXT and VIEWRES prompt, OOPS brings back the last erase; LIMITS, LTSCALE, LEADER, QLEADER/LE, BASE, GETVAR, MEASUREGEOM, LAYMCUR, LAYMCH, LAYISO, REGION and the file commands prompt. With answers on the line (`color red`, scripts) the command-line form runs. Dash forms (-DIMSTYLE, -STYLE, -COLOR, -LWEIGHT, -UNITS, -WBLOCK, -OSNAP, -LAYERSTATE, -PLOT, -PAGESETUP, -PLOTSTYLE, -EXPORT, -PUBLISH, -PARAMETERS, -CONSTRAINTSETTINGS) prompt |
 | File prompts open the file dialog (FILEDIA 1) | yes | yes: STLOUT, DATALINK, STEPIN/STEPOUT and IGESIN/IGESOUT file prompts; cancelling cancels the command; FILEDIA 0 keeps them on the command line |
 | Aliases | about 250 in `acad.pgp` | 144 aliases across the commands, plus AutoCAD's other aliases and legacy DD… names (`ACAD_NAMES` in `cmd/mod.rs`: DIMSTY, MO, MEA, DDCOLOR, DDOSNAP, VP…) and TH/TI for THICKNESS/TILEMODE |
-| History (F2), Up/Down recall | yes | yes |
+| History (F2), Up/Down recall | yes | yes; in Korean and Ukrainian the history, the prompt and the Dynamic Input tooltip read translated (listed names such as `Model` stay as typed) while the log scripts and the AI read stays English (`i18n::line`) |
 | Transparent commands (`'zoom`, `'pan`, `'osnap`) | yes | yes (`lib.rs:496-503`) |
 | Enter/Space repeats last command | yes | yes |
 | Clickable keywords in the prompt | yes | yes (`cmdline.rs:253-267`) |
@@ -204,6 +204,7 @@ down-arrow options menu (DYNPROMPT), and DYNDIM.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-23 | minor | -PLOT, -PAGESETUP, -PLOTSTYLE, -EXPORT, -PUBLISH, -PARAMETERS, -CONSTRAINTSETTINGS, CHANGE, CHPROP, SCALETEXT, JUSTIFYTEXT, TEXTALIGN, COPYTOLAYER, SKETCH, TRACE, SOLID, 3DFACE, ATTIPEDIT and -ATTEXT at the command line, OOPS; Drafting Settings tabs (Object Snap); DWGPROPS, PASTESPEC, FILTER, LAYWALK and LAYTRANS dialogs; picks and typed selection windows in 3D views pick what is drawn; NEA, PER, INT and APP in 3D; history translated |
 | 2026-10-17 | minor | AutoComplete: Enter/Space runs the highlighted suggestion; commands typed bare prompt or open their dialog (DIMSTYLE, COLOR, LWEIGHT, FIND, WBLOCK, Layer States, MLSTYLE dialogs); AutoCAD aliases and DD… names; file prompts use the file dialog (FILEDIA); -OSNAP, -LAYERSTATE, QLEADER, FILL, QTEXT, UCSICON; option prompts read "Enter an option [..]" without "or" |
 | 2026-10-12 | minor | Selected and hovered objects redrawn in the selection colour (text and arrowheads included); Options ▸ Selection laid out as AutoCAD's: Object grouping, Show grips, grip object limit, selection preview, Visual Effect Settings (selection area, preview filter) |
 | 2026-10-12 | minor | Animation effects (dialog and menu fades, smoothed wheel scrolling and ⌘/Ctrl+wheel zoom) follow the operating system's setting; View ▸ Accessibility ▸ Animation Effects chooses System, On or Off |

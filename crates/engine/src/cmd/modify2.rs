@@ -1806,16 +1806,18 @@ pub(crate) fn fillet_curves(s: &mut Session, h1: Handle, p1: Vec2, h2: Handle, p
         };
         if ccw { Arc::new(c.center, c.radius, a1, a2) } else { Arc::new(c.center, c.radius, a2, a1) }
     });
+    // Raised objects stay at their elevation.
+    let lift = super::modify::at_height_of;
     if let Some(k) = n1 {
-        set_kind(s, h1, k)?;
+        set_kind(s, h1, lift(&e1, k))?;
     }
     if let Some(k) = n2 {
-        set_kind(s, h2, k)?;
+        set_kind(s, h2, lift(&e2, k))?;
     }
     match new_arc {
         Some(a) => {
             let space = s.doc()?.space_of(h1).unwrap_or_else(|| s.space());
-            Ok(Some(push_entity(s, &space, e1.common.clone(), arc(&a))?))
+            Ok(Some(push_entity(s, &space, e1.common.clone(), lift(&e1, arc(&a)))?))
         }
         None => Ok(None),
     }

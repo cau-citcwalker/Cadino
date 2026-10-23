@@ -4,13 +4,19 @@
 pub(crate) mod annoscale;
 mod annotate;
 mod array;
+mod attext;
 mod audit;
 pub(crate) mod blocks;
+mod change;
 pub mod clipboard;
 pub mod constraints;
+mod copytolayer;
+mod display;
 mod draw;
 mod draw2;
+mod draw_legacy;
 mod draworder;
+mod dwgprops;
 mod edit;
 mod exchange;
 pub mod file;
@@ -27,6 +33,7 @@ mod mleader_edit;
 mod modify;
 mod modify2;
 mod mtext_opts;
+pub(crate) mod oops;
 mod overkill;
 mod pline_opts;
 pub mod plotters;
@@ -41,6 +48,7 @@ mod solids;
 mod solids2;
 mod spline_opts;
 mod table;
+mod text_tools;
 mod tolerance;
 mod trimextend;
 mod utility;
@@ -217,6 +225,14 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(tolerance::specs());
         v.extend(constraints::specs());
         v.extend(lisp::specs());
+        v.extend(oops::specs());
+        v.extend(draw_legacy::specs());
+        v.extend(text_tools::specs());
+        v.extend(change::specs());
+        v.extend(copytolayer::specs());
+        v.extend(attext::specs());
+        v.extend(dwgprops::specs());
+        v.extend(display::specs());
         v
     })
 }
@@ -290,6 +306,7 @@ const ACAD_NAMES: &[(&str, &str)] = &[
     ("ddmodify", "properties"),
     ("ddrename", "rename"),
     ("ddstyle", "style"),
+    ("ddattext", "attext"),
     // AutoCAD's Object Snap tab of Drafting Settings.
     ("ddosnap", "dsettings"),
     // The Viewpoint Presets dialog and the Visual Styles Manager: their command-line forms here.
@@ -413,6 +430,12 @@ pub(crate) fn targets(s: &Session, p: &Value) -> Result<Vec<Handle>> {
 pub(crate) fn ok() -> Result<Value> {
     Ok(Value::Null)
 }
+/// Run command `id`'s body (its JSON form) from inside another command, which records the undo
+/// step.
+pub(crate) fn run_body(s: &mut Session, id: &str, p: &Value) -> Result<Value> {
+    let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.into()))?;
+    (spec.run)(s, p)
+}
 
 #[cfg(test)]
 mod rhino_name_tests {
@@ -445,6 +468,10 @@ mod rhino_name_tests {
         assert_eq!(resolve_alias("ddosnap"), "dsettings");
         assert_eq!(resolve_alias("VP"), "vpoint");
         assert_eq!(resolve_alias("vsm"), "vscurrent");
+        assert_eq!(resolve_alias("DDATTEXT"), "attext");
+        for (name, id) in [("-ch", "change"), ("so", "solid"), ("3F", "3dface"), ("ta", "textalign"), ("ati", "attipedit"), ("sp", "spell")] {
+            assert_eq!(resolve_alias(name), id, "{name}");
+        }
         assert_eq!(super::sysvar_name("th"), "THICKNESS");
         assert_eq!(super::sysvar_name("ThickNess"), "THICKNESS");
         // Command ids and their own aliases still win.
@@ -473,7 +500,7 @@ mod rhino_name_tests {
     #[test]
     fn dash_forms_without_prompts_are_refused_not_run_with_defaults() {
         let mut s = crate::Session::new();
-        for name in ["-PLOT", "-publish", "-CH", "-EXPORT"] {
+        for name in ["-properties", "-PR"] {
             let e = s.cmdline(name).unwrap_err().to_string();
             assert!(e.contains("command-line form isn't available yet"), "{name}: {e}");
             assert!(s.running.is_none());

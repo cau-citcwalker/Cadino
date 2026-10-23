@@ -15,8 +15,9 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("plotstyle", "Plot Style...", run_plotstyle)
             .menu(&["Format", "Plot Style..."])
             .params(
-                "{name?: \"ByLayer\"|\"ByBlock\"|style name, handles?|handle? (default: the selection; nothing selected sets the current plot style for new objects, CPLOTSTYLE)} (no name: reports the current style and the named styles)",
-            ),
+                "{name?: \"ByLayer\"|\"ByBlock\"|style name, handles?|handle? (default: the selection; nothing selected sets the current plot style for new objects, CPLOTSTYLE)} (no name: reports the current style and the named styles; typed -PLOTSTYLE: ?/Current prompts)",
+            )
+            .interactive(|_| Ok(Box::new(PlotStyleM::default()))),
         CommandSpec::new("stylesmanager", "Plot Style Manager...", run_stylesmanager)
             .menu(&["File", "Plot Styles..."])
             .params(
@@ -88,6 +89,63 @@ fn run_plotstyle(s: &mut Session, p: &Value) -> Result<Value> {
         changed += 1;
     }
     Ok(json!({ "changed": changed, "plotStyle": name }))
+}
+
+/// -PLOTSTYLE: list the named plot styles (`?`) or set the current one for new objects.
+#[derive(Default)]
+struct PlotStyleM {
+    set: bool,
+}
+
+impl Interactive for PlotStyleM {
+    fn name(&self) -> &'static str {
+        "-PLOTSTYLE"
+    }
+    fn begin(&mut self, s: &mut Session) -> Result<Step> {
+        let cur = s.doc()?.header.str("CPLOTSTYLE", "ByLayer").to_string();
+        s.echo(format!("Current plot style is \"{cur}\""));
+        Ok(Step::Continue)
+    }
+    fn prompt(&self, s: &Session) -> Prompt {
+        if self.set {
+            let cur = s.doc().map(|d| d.header.str("CPLOTSTYLE", "ByLayer").to_string()).unwrap_or_default();
+            return Prompt::new("Set current plot style", Accept::TEXT).default(cur);
+        }
+        Prompt::new("Enter an option", super::super::curves::KW).kw(&["?", "Current"]).default("Current")
+    }
+    fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        match (self.set, i) {
+            (_, Input::Cancel) => Ok(Step::Cancel),
+            (false, Input::Keyword(k)) if k == "?" => {
+                let names = named_styles(s.doc()?);
+                if names.is_empty() {
+                    s.echo("No named plot styles.");
+                }
+                for n in names.into_iter().take(1000) {
+                    s.echo(n);
+                }
+                Ok(Step::Continue)
+            }
+            (false, Input::Keyword(_) | Input::Enter) => {
+                self.set = true;
+                Ok(Step::Continue)
+            }
+            (true, Input::Enter) => Ok(Step::Done),
+            (true, Input::Text(t) | Input::Keyword(t)) => {
+                let name = style_value("plotstyle", &t).map_err(|_| EngineError::Other("Requires a plot style name.".into()))?;
+                let names = named_styles(s.doc()?);
+                // With named tables to hand, a name must be one of their styles (as written there).
+                let name = match names.iter().find(|n| n.eq_ignore_ascii_case(&name)) {
+                    Some(n) => n.clone(),
+                    None if matches!(name.as_str(), "ByLayer" | "ByBlock") || names.is_empty() => name,
+                    None => return Err(EngineError::Other(format!("Plot style \"{name}\" not found."))),
+                };
+                run_plotstyle(s, &json!({ "name": name, "handles": [] }))?;
+                Ok(Step::Done)
+            }
+            _ => Err(EngineError::Other("Invalid option keyword.".into())),
+        }
+    }
 }
 
 // ---------- STYLESMANAGER ----------

@@ -38,6 +38,8 @@ pub use tables::*;
 /// File data CADCraft doesn't model, kept for saving (#528).
 pub mod dynblock;
 pub mod foreign;
+/// XCLIP boundaries of block references.
+pub mod xclip;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DocError {

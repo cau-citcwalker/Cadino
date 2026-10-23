@@ -112,7 +112,7 @@ impl CadApp {
 }
 
 /// `secs` since 1970 as `YYYY-MM-DD HH:MM` (UTC).
-fn utc(secs: u64) -> String {
+pub(crate) fn utc(secs: u64) -> String {
     let days = (secs / 86_400) as i64;
     let (h, m) = ((secs % 86_400) / 3600, (secs % 3600) / 60);
     // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).

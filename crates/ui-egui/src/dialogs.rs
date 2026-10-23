@@ -11,6 +11,7 @@ use crate::theme::Tokens;
 pub fn show(app: &mut CadApp, ctx: &egui::Context) {
     crate::mtext_editor::show(app, ctx);
     crate::quick::quick_properties(app, ctx);
+    crate::managers::end_hidden(app, ctx);
     let Some(d) = app.ui.dialog.clone() else { return };
     let mut open = true;
     match d.as_str() {
@@ -19,7 +20,7 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
         "layers" => crate::layers::dialog(app, ctx, &mut open),
         "qselect" => crate::quick::qselect_dialog(app, ctx, &mut open),
         "parameters" => crate::parametric::parameters_dialog(app, ctx, &mut open),
-        "dsettings" => dsettings(app, ctx, &mut open),
+        o if o == "dsettings" || o.starts_with("dsettings:") => dsettings(app, ctx, o, &mut open),
         "units" => units(app, ctx, &mut open),
         "hatch" => crate::hatchdlg::dialog(app, ctx, &mut open),
         "about" => about(ctx, &mut open),
@@ -38,108 +39,198 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
     }
 }
 
-fn dsettings(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
+/// The Drafting Settings tabs: (id in the dialog name, label). The open tab is part of the
+/// dialog name (`"dsettings:osnap"`): DSETTINGS opens the first, OSNAP the Object Snap tab.
+const DSETTINGS_TABS: [(&str, &str); 4] =
+    [("snap", "Snap and Grid"), ("polar", "Polar Tracking"), ("osnap", "Object Snap"), ("dyn", "Dynamic Input")];
+
+/// Drafting Settings (`name` is `"dsettings"` or `"dsettings:<tab>"`). The tabs edit a copy of
+/// the settings; every change goes through SETVAR ([`drafting_vars`]), as typed.
+fn dsettings(app: &mut CadApp, ctx: &egui::Context, name: &str, open: &mut bool) {
+    let tab = name.strip_prefix("dsettings:").and_then(|t| DSETTINGS_TABS.iter().find(|(id, _)| *id == t)).map_or("snap", |(id, _)| *id);
     let settings = app.session.drafting_settings();
     let (mut snapunit, mut gridunit) = (settings.snapunit, settings.gridunit);
+    let before = app.session.settings.clone();
+    let mut s = before.clone();
+    let mut next_tab = None;
     egui::Window::new(crate::tl!("Drafting Settings")).id(egui::Id::new("Drafting Settings")).open(open).resizable(false).show(ctx, |ui| {
-        let s = &mut app.session.settings;
-        ui.heading(crate::tl!("Snap and Grid"));
-        ui.checkbox(&mut s.snapmode, crate::tl!("Snap On (F9)"));
-        // SNAPSTYL: the isometric snap and grid (ISODRAFT).
-        ui.horizontal(|ui| {
-            ui.radio_value(&mut s.isodraft, false, crate::tl!("Rectangular snap"));
-            ui.radio_value(&mut s.isodraft, true, crate::tl!("Isometric snap"));
-        });
-        ui.horizontal(|ui| {
-            ui.label(crate::tl!("Snap X spacing"));
-            ui.add(egui::DragValue::new(&mut snapunit.x).speed(0.05).range(0.0001..=1e6).clamp_existing_to_range(false));
-            ui.label(crate::tl!("Y"));
-            ui.add(egui::DragValue::new(&mut snapunit.y).speed(0.05).range(0.0001..=1e6).clamp_existing_to_range(false));
-        });
-        // SNAPTYPE and POLARDIST.
-        ui.horizontal(|ui| {
-            ui.label(crate::tl!("Snap type"));
-            ui.radio_value(&mut s.polarsnap, false, crate::tl!("Grid snap"));
-            ui.radio_value(&mut s.polarsnap, true, crate::tl!("PolarSnap"));
-        });
-        ui.add_enabled_ui(s.polarsnap, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(crate::tl!("Polar distance"));
-                ui.add(egui::DragValue::new(&mut s.polardist).speed(0.05).range(0.0..=1e6));
-            });
-        });
-        ui.checkbox(&mut s.gridmode, crate::tl!("Grid On (F7)"));
-        ui.horizontal(|ui| {
-            ui.label(crate::tl!("Grid spacing"));
-            ui.add(egui::DragValue::new(&mut gridunit.x).speed(0.05).range(0.0..=1e6).clamp_existing_to_range(false));
-            ui.label(crate::tl!("Major line every"));
-            ui.add(egui::DragValue::new(&mut s.gridmajor).range(1..=100));
-        });
-        ui.separator();
-        ui.heading(crate::tl!("Polar Tracking"));
-        ui.checkbox(&mut s.polarmode, crate::tl!("Polar Tracking On (F10)"));
-        let mut deg = s.polarang.to_degrees();
-        ui.horizontal(|ui| {
-            ui.label(crate::tl!("Increment angle"));
-            egui::ComboBox::from_id_salt("polarang").selected_text(format!("{deg}")).show_ui(ui, |ui| {
-                for a in [90.0, 45.0, 30.0, 22.5, 18.0, 15.0, 10.0, 5.0] {
-                    ui.selectable_value(&mut deg, a, format!("{a}"));
+        ui.set_min_width(440.0);
+        ui.horizontal_wrapped(|ui| {
+            for (id, label) in DSETTINGS_TABS {
+                if ui.selectable_label(tab == id, crate::i18n::t(label)).clicked() {
+                    next_tab = Some(id);
                 }
-            });
-        });
-        s.polarang = deg.to_radians();
-        tracking_options(ui, s);
-        ui.separator();
-        ui.heading(crate::tl!("Object Snap"));
-        let mut on = s.osmode & cadcraft_engine::snap::mode::OFF == 0;
-        if ui.checkbox(&mut on, crate::tl!("Object Snap On (F3)")).changed() {
-            if on {
-                s.osmode &= !cadcraft_engine::snap::mode::OFF;
-            } else {
-                s.osmode |= cadcraft_engine::snap::mode::OFF;
             }
+        });
+        ui.separator();
+        match tab {
+            "polar" => polar_tab(ui, &mut s),
+            "osnap" => osnap_tab(ui, &mut s),
+            "dyn" => dyn_tab(ui, &mut s),
+            _ => snap_tab(ui, &mut s, &mut snapunit, &mut gridunit),
         }
-        egui::Grid::new("osnap_grid").num_columns(2).show(ui, |ui| {
-            for (i, (bit, name)) in cadcraft_engine::snap::mode::ALL.iter().enumerate() {
-                let mut v = s.osmode & bit != 0;
-                if ui.checkbox(&mut v, crate::i18n::t(name)).changed() {
-                    if v {
-                        s.osmode |= bit;
-                    } else {
-                        s.osmode &= !bit;
-                    }
-                }
-                if i % 2 == 1 {
-                    ui.end_row();
-                }
-            }
-        });
-        ui.separator();
-        ui.checkbox(&mut s.dynmode, crate::tl!("Enable Dynamic Input (F12)"));
-        // Pointer input format for second and next points (DYNPIFORMAT, DYNPICOORDS).
-        ui.indent("dynpi", |ui| {
-            ui.add_enabled_ui(s.dynmode, |ui| {
-                ui.label(crate::tl!("Second and next points:"));
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut s.dynpi_cartesian, false, crate::tl!("Polar (distance < angle)"));
-                    ui.radio_value(&mut s.dynpi_cartesian, true, crate::tl!("Cartesian (x, y)"));
-                });
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut s.dynpi_absolute, false, crate::tl!("Relative"));
-                    ui.radio_value(&mut s.dynpi_absolute, true, crate::tl!("Absolute"));
-                });
-                // DYNPROMPT: the prompt and its options (Down Arrow) beside the cursor.
-                ui.checkbox(&mut s.dynprompt, crate::tl!("Show command prompting near the crosshairs"));
-            });
-        });
-        ui.checkbox(&mut s.orthomode, crate::tl!("Ortho (F8)"));
     });
+    for ((name, was), (_, now)) in drafting_vars(&before).into_iter().zip(drafting_vars(&s)) {
+        if was != now {
+            let _ = app.run("setvar", json!({ "name": name, "value": now }));
+        }
+    }
     // Drawing edits go through the same command as the CLI, including dirty state and undo.
     for (name, before, after) in [("SNAPUNIT", settings.snapunit, snapunit), ("GRIDUNIT", settings.gridunit, gridunit)] {
         if before != after {
             let _ = app.run("setvar", json!({ "name": name, "value": [after.x, after.y] }));
         }
     }
+    if let Some(t) = next_tab {
+        app.ui.dialog = Some(format!("dsettings:{t}"));
+    }
+}
+
+/// The system variables Drafting Settings edits, with their values in `s`.
+fn drafting_vars(s: &cadcraft_engine::Settings) -> [(&'static str, serde_json::Value); 16] {
+    let on = |b: bool| json!(i32::from(b));
+    [
+        ("SNAPMODE", on(s.snapmode)),
+        ("SNAPSTYL", on(s.isodraft)),
+        ("SNAPTYPE", on(s.polarsnap)),
+        ("POLARDIST", json!(s.polardist)),
+        ("GRIDMODE", on(s.gridmode)),
+        ("GRIDMAJOR", json!(s.gridmajor)),
+        ("ORTHOMODE", on(s.orthomode)),
+        // Polar tracking (8) and object snap tracking (16); the marker bits are always on.
+        ("AUTOSNAP", json!(37 + 8 * u32::from(s.polarmode) + 16 * u32::from(s.otrack))),
+        ("POLARANG", json!(s.polarang.to_degrees())),
+        ("POLARMODE", json!(s.polar_flags)),
+        ("POLARADDANG", json!(cadcraft_engine::sysvars::format_angle_list(&s.polaraddang))),
+        ("OSMODE", json!(s.osmode)),
+        ("DYNMODE", on(s.dynmode)),
+        ("DYNPIFORMAT", on(s.dynpi_cartesian)),
+        ("DYNPICOORDS", on(s.dynpi_absolute)),
+        ("DYNPROMPT", on(s.dynprompt)),
+    ]
+}
+
+fn snap_tab(
+    ui: &mut egui::Ui,
+    s: &mut cadcraft_engine::Settings,
+    snapunit: &mut cadcraft_engine::geom::Vec2,
+    gridunit: &mut cadcraft_engine::geom::Vec2,
+) {
+    ui.checkbox(&mut s.snapmode, crate::tl!("Snap On (F9)"));
+    // SNAPSTYL: the isometric snap and grid (ISODRAFT).
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut s.isodraft, false, crate::tl!("Rectangular snap"));
+        ui.radio_value(&mut s.isodraft, true, crate::tl!("Isometric snap"));
+    });
+    ui.horizontal(|ui| {
+        ui.label(crate::tl!("Snap X spacing"));
+        ui.add(egui::DragValue::new(&mut snapunit.x).speed(0.05).range(0.0001..=1e6).clamp_existing_to_range(false));
+        ui.label(crate::tl!("Y"));
+        ui.add(egui::DragValue::new(&mut snapunit.y).speed(0.05).range(0.0001..=1e6).clamp_existing_to_range(false));
+    });
+    // SNAPTYPE and POLARDIST.
+    ui.horizontal(|ui| {
+        ui.label(crate::tl!("Snap type"));
+        ui.radio_value(&mut s.polarsnap, false, crate::tl!("Grid snap"));
+        ui.radio_value(&mut s.polarsnap, true, crate::tl!("PolarSnap"));
+    });
+    ui.add_enabled_ui(s.polarsnap, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(crate::tl!("Polar distance"));
+            ui.add(egui::DragValue::new(&mut s.polardist).speed(0.05).range(0.0..=1e6));
+        });
+    });
+    ui.separator();
+    ui.checkbox(&mut s.gridmode, crate::tl!("Grid On (F7)"));
+    ui.horizontal(|ui| {
+        ui.label(crate::tl!("Grid spacing"));
+        ui.add(egui::DragValue::new(&mut gridunit.x).speed(0.05).range(0.0..=1e6).clamp_existing_to_range(false));
+        ui.label(crate::tl!("Major line every"));
+        ui.add(egui::DragValue::new(&mut s.gridmajor).range(1..=100));
+    });
+    ui.separator();
+    ui.checkbox(&mut s.orthomode, crate::tl!("Ortho (F8)"));
+}
+
+fn polar_tab(ui: &mut egui::Ui, s: &mut cadcraft_engine::Settings) {
+    ui.checkbox(&mut s.polarmode, crate::tl!("Polar Tracking On (F10)"));
+    let was = (s.polarang.to_degrees() * 1e6).round() / 1e6;
+    let mut deg = was;
+    ui.horizontal(|ui| {
+        ui.label(crate::tl!("Increment angle"));
+        egui::ComboBox::from_id_salt("polarang").selected_text(format!("{deg}")).show_ui(ui, |ui| {
+            for a in [90.0, 45.0, 30.0, 22.5, 18.0, 15.0, 10.0, 5.0] {
+                ui.selectable_value(&mut deg, a, format!("{a}"));
+            }
+        });
+    });
+    // Only a pick changes it: radians to degrees and back would drift.
+    if deg != was {
+        s.polarang = deg.to_radians();
+    }
+    tracking_options(ui, s);
+}
+
+/// The Object Snap tab: running snaps on (F3: OSMODE's 16384 bit clear), object snap tracking
+/// (F11) and the OSMODE modes, each beside its marker, in AutoCAD's two columns.
+fn osnap_tab(ui: &mut egui::Ui, s: &mut cadcraft_engine::Settings) {
+    use cadcraft_engine::snap::mode;
+    let modes = mode::ALL.iter().fold(0, |a, (b, _)| a | b);
+    ui.horizontal(|ui| {
+        let mut on = s.osmode & mode::OFF == 0;
+        if ui.checkbox(&mut on, crate::tl!("Object Snap On (F3)")).changed() {
+            s.osmode ^= mode::OFF;
+        }
+        ui.add_space(24.0);
+        ui.checkbox(&mut s.otrack, crate::tl!("Object Snap Tracking On (F11)"));
+    });
+    ui.separator();
+    ui.horizontal_top(|ui| {
+        let (left, right) = mode::ALL.split_at(8);
+        for column in [left, right] {
+            ui.vertical(|ui| {
+                ui.set_min_width(170.0);
+                for (bit, name) in column {
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(vec2(16.0, 16.0), egui::Sense::hover());
+                        crate::canvas::snap_glyph(ui.painter(), r.center(), *bit, 5.0, egui::Stroke::new(1.5, Tokens::get().snap));
+                        let mut v = s.osmode & bit != 0;
+                        if ui.checkbox(&mut v, crate::i18n::t(name)).changed() {
+                            s.osmode ^= bit;
+                        }
+                    });
+                }
+            });
+        }
+        ui.vertical(|ui| {
+            if ui.button(crate::tl!("Select All")).clicked() {
+                s.osmode |= modes;
+            }
+            if ui.button(crate::tl!("Clear All")).clicked() {
+                s.osmode &= !modes;
+            }
+        });
+    });
+}
+
+fn dyn_tab(ui: &mut egui::Ui, s: &mut cadcraft_engine::Settings) {
+    ui.checkbox(&mut s.dynmode, crate::tl!("Enable Dynamic Input (F12)"));
+    // Pointer input format for second and next points (DYNPIFORMAT, DYNPICOORDS).
+    ui.indent("dynpi", |ui| {
+        ui.add_enabled_ui(s.dynmode, |ui| {
+            ui.label(crate::tl!("Second and next points:"));
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut s.dynpi_cartesian, false, crate::tl!("Polar (distance < angle)"));
+                ui.radio_value(&mut s.dynpi_cartesian, true, crate::tl!("Cartesian (x, y)"));
+            });
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut s.dynpi_absolute, false, crate::tl!("Relative"));
+                ui.radio_value(&mut s.dynpi_absolute, true, crate::tl!("Absolute"));
+            });
+            // DYNPROMPT: the prompt and its options (Down Arrow) beside the cursor.
+            ui.checkbox(&mut s.dynprompt, crate::tl!("Show command prompting near the crosshairs"));
+        });
+    });
 }
 
 /// The polar and object snap tracking options of Drafting Settings: additional angles
@@ -464,5 +555,115 @@ mod tests {
         super::insert_block(&mut app, "Nope");
         assert!(app.session.running.as_ref().is_some_and(|r| r.id == "insert"));
         assert_eq!(app.session.current_prompt().map(|p| p.message), Some("Enter block name".to_string()));
+    }
+
+    /// One frame of the app in a 1600×1000 window with `events`; the text painted, with where.
+    fn frame(app: &mut CadApp, ctx: &egui::Context, events: Vec<egui::Event>) -> Vec<(String, egui::Rect)> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+            match shape {
+                egui::Shape::Text(s) => out.push((s.galley.text().to_string(), s.visual_bounding_rect())),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| collect(s, out)),
+                _ => {}
+            }
+        }
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0))),
+            events,
+            ..Default::default()
+        };
+        app.logic(ctx);
+        let mut output = ctx.run_ui(input, |ui| app.ui(ui));
+        output.textures_delta.clear();
+        let mut out = Vec::new();
+        output.shapes.iter().for_each(|s| collect(&s.shape, &mut out));
+        out
+    }
+
+    /// Click the text `label` painted in the window.
+    fn click(app: &mut CadApp, ctx: &egui::Context, label: &str) {
+        let shown = frame(app, ctx, Vec::new());
+        let at = shown.iter().find(|(t, _)| t == label).map(|(_, r)| r.center()).unwrap_or_else(|| panic!("no {label} in {shown:?}"));
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        frame(app, ctx, vec![egui::Event::PointerMoved(at)]);
+        frame(app, ctx, vec![button(true)]);
+        frame(app, ctx, vec![button(false)]);
+    }
+
+    /// OSNAP typed (OS, DDOSNAP, the snap menu's Osnap Settings) opens Drafting Settings on the
+    /// Object Snap tab; -OSNAP asks on the command line, and the JSON form (F3, the status bar
+    /// button) toggles the running snaps without a dialog.
+    #[test]
+    fn typed_osnap_opens_the_object_snap_tab_and_f3_toggles() {
+        use cadcraft_engine::snap::mode::OFF;
+        let mut app = CadApp::new(Session::new(), Services::default());
+        for typed in ["osnap", "OS", "ddosnap"] {
+            app.ui.dialog = None;
+            assert_eq!(app.cmdline(typed), None);
+            assert_eq!(app.ui.dialog.as_deref(), Some("dsettings:osnap"), "{typed}");
+        }
+        app.ui.dialog = None;
+        crate::context_menu::choose_snap(&mut app, "osnap");
+        assert_eq!(app.ui.dialog.as_deref(), Some("dsettings:osnap"));
+        app.ui.dialog = None;
+        app.cmdline("-osnap");
+        assert!(app.ui.dialog.is_none() && app.session.running.as_ref().is_some_and(|r| r.id == "-osnap"));
+        app.session.cancel();
+        let on = app.session.settings.osmode & OFF == 0;
+        app.run("osnap", json!({})).unwrap();
+        assert_eq!((app.ui.dialog.as_deref(), app.session.settings.osmode & OFF == 0), (None, !on));
+        // DSETTINGS keeps its first tab.
+        assert_eq!(app.cmdline("ds"), None);
+        assert_eq!(app.ui.dialog.as_deref(), Some("dsettings"));
+    }
+
+    /// The Object Snap tab sets OSMODE and AUTOSNAP through SETVAR: Clear All, a mode, Select All,
+    /// Object Snap Tracking; its tabs switch by name.
+    #[test]
+    fn the_object_snap_tab_sets_osmode_and_tracking() {
+        use cadcraft_engine::snap::mode;
+        let mut app = CadApp::new(Session::new(), Services::default());
+        app.session.settings.osmode = mode::END | mode::OFF;
+        app.session.settings.otrack = false;
+        app.ui.dialog = Some("dsettings:osnap".into());
+        let ctx = egui::Context::default();
+        // A window lays itself out on its first frame and shows on the next.
+        frame(&mut app, &ctx, Vec::new());
+        let shown: Vec<String> = frame(&mut app, &ctx, Vec::new()).into_iter().map(|(t, _)| t).collect();
+        for label in ["Object Snap On (F3)", "Object Snap Tracking On (F11)", "Apparent Intersection", "Parallel", "Select All", "Clear All"] {
+            assert!(shown.iter().any(|t| t == label), "no {label} in {shown:?}");
+        }
+        click(&mut app, &ctx, "Clear All");
+        assert_eq!(app.session.settings.osmode, mode::OFF);
+        click(&mut app, &ctx, "Nearest");
+        click(&mut app, &ctx, "Object Snap On (F3)");
+        assert_eq!(app.session.settings.osmode, mode::NEA);
+        click(&mut app, &ctx, "Select All");
+        assert_eq!(app.session.settings.osmode, mode::ALL.iter().fold(0, |a, (b, _)| a | b));
+        click(&mut app, &ctx, "Object Snap Tracking On (F11)");
+        assert!(app.session.settings.otrack);
+        assert_eq!(cadcraft_engine::sysvars::get(&app.session, "AUTOSNAP"), Some(json!(37 + 16 + 8 * u32::from(app.session.settings.polarmode))));
+        click(&mut app, &ctx, "Polar Tracking");
+        assert_eq!(app.ui.dialog.as_deref(), Some("dsettings:polar"));
+        let shown: Vec<String> = frame(&mut app, &ctx, Vec::new()).into_iter().map(|(t, _)| t).collect();
+        assert!(shown.iter().any(|t| t == "Polar Tracking On (F10)"), "{shown:?}");
+    }
+
+    /// Showing a tab changes nothing (no SETVAR per frame from rounding), and each variable the
+    /// dialog edits is SETVAR's.
+    #[test]
+    fn drafting_settings_variables_round_trip_through_setvar() {
+        let mut app = CadApp::new(Session::new(), Services::default());
+        app.session.settings.polarang = 7.0_f64.to_radians();
+        let before = app.session.settings.clone();
+        let ctx = egui::Context::default();
+        for tab in ["dsettings", "dsettings:polar", "dsettings:osnap", "dsettings:dyn"] {
+            app.ui.dialog = Some(tab.into());
+            frame(&mut app, &ctx, Vec::new());
+            frame(&mut app, &ctx, Vec::new());
+            assert_eq!(super::drafting_vars(&app.session.settings), super::drafting_vars(&before), "{tab}");
+        }
+        for (name, value) in super::drafting_vars(&before) {
+            assert_eq!(cadcraft_engine::sysvars::get(&app.session, name), Some(value), "{name}");
+        }
     }
 }

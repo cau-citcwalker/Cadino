@@ -39,11 +39,11 @@ const MODELLED_KEYS: &[&str] = &[
 /// Extension dictionary entries not kept raw: dimension associativity (CADCraft reads and
 /// rewrites it), draw order and annotation scale contexts (written from their own models by the
 /// changes that model them; stale copies would contradict the drawing).
-const MODELLED_XDICT_KEYS: &[&str] = &["ACAD_DIMASSOC", "ACAD_SORTENTS", "ACDBCONTEXTDATAMANAGER"];
+const MODELLED_XDICT_KEYS: &[&str] = &["ACAD_DIMASSOC", "ACAD_SORTENTS", "ACDBCONTEXTDATAMANAGER", "ACAD_FILTER"];
 
 /// Applications whose xdata CADCraft reads and writes itself. `ACAD` holds dimension overrides
 /// (DSTYLE) on dimensions and dimension styles; elsewhere it is kept.
-const OWN_APPS: &[&str] = &["CADCRAFT", "ACADANNOTATIVE", "ACCMTRANSPARENCY", "ACAECLAYERSTANDARD"];
+const OWN_APPS: &[&str] = &["CADCRAFT", "ACADANNOTATIVE", "ACCMTRANSPARENCY", "ACAECLAYERSTANDARD", cadcraft_doc::xclip::APP];
 
 /// Most objects kept from one file.
 const MAX_OBJECTS: usize = 1_000_000;
@@ -362,7 +362,17 @@ pub(crate) fn read(secs: &[Section], d: &mut Drawing) {
         let (Some(h), Some(o)) = (hd.handle, hd.owner) else { return false };
         !by_handle.contains_key(&o) && xdict_of.get(&o) == Some(&h) && (ents.contains_key(&o) || ids.contains_key(&o))
     };
-    let modelled_entry = |t: &[Tag], h: &str| entries(t).iter().any(|(k, eh)| eh == h && MODELLED_XDICT_KEYS.contains(&up(k).as_str()));
+    // References whose XCLIP was read: their ACAD_FILTER is modelled. One that didn't read is
+    // kept raw, so the clip isn't lost.
+    let clipped: HashSet<String> = all_entities(d).filter(|e| cadcraft_doc::xclip::XClip::of(&e.common).is_some()).map(|e| e.handle.hex()).collect();
+    let modelled = |key: &str, owner: Option<&str>| {
+        let k = up(key);
+        MODELLED_XDICT_KEYS.contains(&k.as_str()) && (k != "ACAD_FILTER" || owner.is_some_and(|o| clipped.contains(o)))
+    };
+    let modelled_entry = |t: &[Tag], h: &str| {
+        let owner = head(t).owner;
+        entries(t).iter().any(|(k, eh)| eh == h && modelled(k, owner.as_deref()))
+    };
     // Which objects to keep: those under a named object dictionary entry CADCraft doesn't model,
     // under the extension dictionary of an entity or record (minus modelled entries; one left
     // empty goes), or owned by an entity of a type CADCraft doesn't model. Memoized along each
@@ -396,7 +406,7 @@ pub(crate) fn read(secs: &[Section], d: &mut Drawing) {
                 continue;
             }
             if is_xdict(cur) {
-                break entries(t).iter().any(|(k, _)| !MODELLED_XDICT_KEYS.contains(&up(k).as_str()));
+                break entries(t).iter().any(|(k, _)| !modelled(k, Some(o.as_str())));
             }
             break ents.get(&o) == Some(&true);
         };
@@ -413,7 +423,8 @@ pub(crate) fn read(secs: &[Section], d: &mut Drawing) {
         let Some(h) = head(t).handle.and_then(|h| handle(&h)) else { continue };
         let mut tags: Vec<RawTag> = t.iter().map(raw).collect();
         if is_xdict(i) {
-            strip_entries(&mut tags);
+            let owner = head(t).owner;
+            strip_entries(&mut tags, |k| modelled(k, owner.as_deref()));
         }
         if head(t).owner == root
             && let Some(key) = root_key(&h.hex())
@@ -532,11 +543,11 @@ pub(crate) fn data_store(tags: &mut Vec<Tag>, d: &Drawing, modern: bool) {
 }
 
 /// Drop a dictionary's modelled entries (key and handle) from its groups.
-fn strip_entries(tags: &mut Vec<RawTag>) {
+fn strip_entries(tags: &mut Vec<RawTag>, modelled: impl Fn(&str) -> bool) {
     let mut out = Vec::with_capacity(tags.len());
     let mut i = 0;
     while let Some(t) = tags.get(i) {
-        if t.code == 3 && MODELLED_XDICT_KEYS.contains(&up(&t.value).as_str()) && tags.get(i + 1).is_some_and(|n| matches!(n.code, 350 | 360)) {
+        if t.code == 3 && modelled(&t.value) && tags.get(i + 1).is_some_and(|n| matches!(n.code, 350 | 360)) {
             i += 2;
             continue;
         }
@@ -786,18 +797,23 @@ pub(crate) fn finish(tags: &mut Vec<Tag>, d: &Drawing) {
     let root = objects.first().filter(|(k, _, _)| is_dictionary(k)).map(|(_, s, _)| *s);
     let root_keys: HashSet<String> =
         objects.iter().find(|(_, s, _)| Some(*s) == root).map(|(_, _, t)| entries(t).into_iter().map(|(k, _)| up(&k)).collect()).unwrap_or_default();
-    // Extension dictionaries that go on a written record (one without its own).
+    // Extension dictionaries that go on a written record. One whose record has its own now (an
+    // XCLIP's, a dimension's associativity) is merged into that one: its entries are listed there
+    // and its objects owned by it (kept → written dictionary).
     let mut block = String::new();
     let mut attached: HashSet<String> = HashSet::new();
+    let mut merged: HashMap<String, String> = HashMap::new();
     for r in &recs {
         if r.kind == "BLOCK" {
             block = up(&val(body(r), 2).unwrap_or_default());
         }
         if let Some(x) = extra_for(f, &xd, r, body(r), &block)
-            && let Some(xd) = x.xdict
-            && head(body(r)).xdict.is_none()
+            && let Some(kept) = x.xdict
         {
-            attached.insert(xd.hex());
+            attached.insert(kept.hex());
+            if let Some(own) = head(body(r)).xdict {
+                merged.insert(kept.hex(), own);
+            }
         }
     }
     for (_, t) in planned.values().flatten() {
@@ -846,9 +862,16 @@ pub(crate) fn finish(tags: &mut Vec<Tag>, d: &Drawing) {
     let mut next = seed(tags).max(max_handle(tags).saturating_add(1));
     let mut alive: HashMap<String, String> = HashMap::new();
     for o in f.objects.iter().filter(|o| alive_memo.get(&o.handle.hex()) == Some(&true)) {
-        alive.insert(o.handle.hex(), format!("{next:X}"));
+        let h = merged.get(&o.handle.hex()).cloned().unwrap_or_else(|| format!("{next:X}"));
+        alive.insert(o.handle.hex(), h);
         next = next.saturating_add(1);
     }
+    // The written dictionaries kept ones merge into: written → kept.
+    let merged_into: HashMap<&str, &ForeignObject> = merged
+        .iter()
+        .filter_map(|(kept, own)| Some((own.as_str(), *objs.get(kept)?)))
+        .filter(|(_, o)| alive_memo.get(&o.handle.hex()) == Some(&true))
+        .collect();
     let entities: HashSet<String> = all_entities(d).map(|e| e.handle.hex()).filter(|h| written.contains(h)).collect();
     let map = Map { f, alive, raw: objs.keys().cloned().collect(), roles, entities };
     let class_names: HashSet<String> = recs.iter().filter(|r| r.kind == "CLASS").filter_map(|r| val(body(r), 1)).map(|n| up(&n)).collect();
@@ -866,7 +889,7 @@ pub(crate) fn finish(tags: &mut Vec<Tag>, d: &Drawing) {
             }
         }
         if r.kind == "ENDSEC" && r.sec == "OBJECTS" {
-            for o in f.objects.iter().filter(|o| map.alive.contains_key(&o.handle.hex())) {
+            for o in f.objects.iter().filter(|o| map.alive.contains_key(&o.handle.hex()) && !merged.contains_key(&o.handle.hex())) {
                 map.object(o, &mut out);
             }
         }
@@ -878,6 +901,13 @@ pub(crate) fn finish(tags: &mut Vec<Tag>, d: &Drawing) {
             record(&map, &ur, ub, x.as_deref(), true, false, &mut out);
         }
         out.extend(tags.get(r.start).cloned());
+        if r.sec == "OBJECTS"
+            && let Some(kept) = head(b).handle.and_then(|h| merged_into.get(h.as_str()).copied())
+        {
+            out.extend(b.iter().cloned());
+            merge_entries(&map, kept, b, &mut out);
+            continue;
+        }
         let x = extra_for(f, &xd, r, b, &block);
         if x.is_none() && Some(r.start) != root {
             out.extend(b.iter().cloned());
@@ -1045,12 +1075,30 @@ fn record(map: &Map, r: &Rec, b: &[Tag], x: Option<&ForeignExtra>, unknown: bool
     }
 }
 
+/// The entries of kept extension dictionary `kept` that written dictionary `have` lacks,
+/// remapped (a gone target drops its entry).
+fn merge_entries(map: &Map, kept: &ForeignObject, have: &[Tag], out: &mut Vec<Tag>) {
+    let have: HashSet<String> = entries(have).into_iter().map(|(k, _)| up(&k)).collect();
+    for w in kept.tags.windows(2) {
+        if let [k, v] = w
+            && k.code == 3
+            && matches!(v.code, 350 | 360)
+            && !have.contains(&up(&k.value))
+            && let Some(h) = map.get(&v.value).filter(|h| h != "0")
+        {
+            out.push(tag(k));
+            out.push(Tag::s(v.code, h));
+        }
+    }
+}
+
 /// Kept xdata of applications the record doesn't already carry, handles remapped.
 fn xdata(map: &Map, x: &ForeignExtra, own: &HashSet<String>, out: &mut Vec<Tag>) {
     let mut skip = false;
     for r in &x.xdata {
         if r.code == 1001 {
-            skip = own.contains(&up(&r.value));
+            // An XCLIP travels as its SPATIAL_FILTER, not as xdata.
+            skip = own.contains(&up(&r.value)) || up(&r.value) == cadcraft_doc::xclip::APP;
         }
         if !skip {
             out.push(map.group(r));

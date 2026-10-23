@@ -2,7 +2,7 @@
 //! English strings remain lookup keys; command IDs, drawing data and automation stay unchanged.
 //! Add a catalog, a `LANGUAGES` row and a preference variant to introduce another language.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -281,6 +281,111 @@ pub fn format(source: &str, values: &[(&str, String)]) -> String {
     }
     result.push_str(rest);
     result
+}
+
+/// The values of `template`'s `{names}` in `msg`, when `msg` is `template` filled in.
+pub(crate) fn filled<'t>(template: &'t str, msg: &str) -> Option<Vec<(&'t str, String)>> {
+    let mut parts = template.split('{').peekable();
+    let mut rest = msg.strip_prefix(parts.next()?)?;
+    let mut values = Vec::new();
+    while let Some(part) = parts.next() {
+        let (name, literal) = part.split_once('}')?;
+        // The last value runs to the end; one before a literal, to its first occurrence.
+        let end = match parts.peek() {
+            None => rest.strip_suffix(literal)?.len(),
+            Some(_) if literal.is_empty() => return None,
+            Some(_) => rest.find(literal)?,
+        };
+        values.push((name, rest.get(..end)?.to_string()));
+        rest = rest.get(end + literal.len()..)?;
+    }
+    rest.is_empty().then_some(values)
+}
+
+/// The command-line history's translations, for one language at a time.
+#[derive(Default)]
+struct Lines {
+    language: &'static str,
+    /// The catalog's `{placeholder}` rows, the most literal text first (the most specific wins).
+    templates: Vec<&'static str>,
+    done: HashMap<String, String>,
+}
+
+thread_local! {
+    static LINES: RefCell<Lines> = RefCell::new(Lines::default());
+}
+
+/// A command-line history line (or prompt) in the interface language. The log itself stays
+/// English: scripts, the control channel, the AI and tests read it. A line is translated as it is
+/// drawn, by the catalog row for the whole line or a row whose `{placeholders}` it fills (an
+/// engine `format!` string is a row with its `{}` numbered `{0}`, `{1}`…). The values of
+/// [`NESTED`] placeholders are English text of their own and are translated in turn. Each line is
+/// matched once per language and cached, so drawing the history costs a hash lookup per line.
+pub fn line(text: &str) -> String {
+    let language = CURRENT.get();
+    let Some(catalog) = catalog(language) else { return text.to_string() };
+    LINES.with_borrow_mut(|cache| {
+        if cache.language != language {
+            let mut templates: Vec<_> = catalog.keys().filter(|(c, k)| c.is_empty() && literal_letters(k) > 1).map(|(_, k)| *k).collect();
+            templates.sort_by_key(|k| (std::cmp::Reverse(literal_letters(k)), *k));
+            *cache = Lines { language, templates, done: HashMap::new() };
+        }
+        if let Some(s) = cache.done.get(text) {
+            return s.clone();
+        }
+        if cache.done.len() > 10_000 {
+            cache.done.clear();
+        }
+        let s = text.split('\n').map(|l| line_in(catalog, &cache.templates, l, true)).collect::<Vec<_>>().join("\n");
+        cache.done.insert(text.to_string(), s.clone());
+        s
+    })
+}
+
+/// Letters outside a template's `{placeholders}`; 0 for a row that isn't a template.
+fn literal_letters(key: &str) -> usize {
+    if !key.contains('{') {
+        return 0;
+    }
+    let mut inside = false;
+    key.chars()
+        .filter(|c| {
+            match c {
+                '{' => inside = true,
+                '}' => inside = false,
+                _ => {}
+            }
+            !inside && c.is_alphabetic()
+        })
+        .count()
+}
+
+/// Placeholders whose values are messages or phrases, not names: a refusal's reason ("command
+/// `x` is not available right now: nothing selected"), a conversion's cause, a prompt's purpose
+/// ("Enter layer name(s) to freeze") and an xref operation. Any other value (a layer, a block,
+/// a file) is shown as it is.
+const NESTED: [&str; 4] = ["reason", "why", "what", "op"];
+
+fn line_in(catalog: &Catalog<'static>, templates: &[&'static str], text: &str, nested: bool) -> String {
+    // A bare word is a name a list echoes (a layout "Model", a device "None", a style
+    // "Standard"), never a message: shown as it is, it can be typed back.
+    if !text.is_empty() && text.chars().all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '$')) {
+        return text.to_string();
+    }
+    if let Some(v) = catalog.get(&("", text)) {
+        return v.to_string();
+    }
+    for template in templates {
+        if let Some(mut values) = filled(template, text) {
+            for (name, value) in &mut values {
+                if nested && NESTED.contains(name) {
+                    *value = line_in(catalog, templates, value, false);
+                }
+            }
+            return format(template, &values);
+        }
+    }
+    text.to_string()
 }
 
 /// Ukrainian integer plurals: one (1, 21), few (2–4, 22–24), many (0, 5–20, 25…).

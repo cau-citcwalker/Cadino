@@ -491,7 +491,7 @@ pub fn status_bar(app: &mut CadApp, ui: &mut egui::Ui) {
                 ui.interact(rect, ui.id().with("status_readout"), Sense::hover()).on_hover_text(text);
             }
         }
-        let mut toggle_cmd = None;
+        let (mut toggle_cmd, mut osmode, mut osnap_settings) = (None, None, false);
         for (icon, on, cmd, tip) in toggles {
             let br = Rect::from_min_size(pos2(rx, r.center().y - size / 2.0), vec2(size, size));
             let resp = ui.interact(br, ui.id().with(("tg", tip)), Sense::click());
@@ -506,13 +506,41 @@ pub fn status_bar(app: &mut CadApp, ui: &mut egui::Ui) {
                 p.hline(br.x_range().shrink(4.0), br.bottom() - 1.0, Stroke::new(1.5, t.toggle_on));
             }
             icons::describe_control(ui, &resp, tip, Some(on), false);
-            if resp.on_hover_text(crate::i18n::t(tip)).clicked() {
+            let resp = resp.on_hover_text(crate::i18n::t(tip));
+            if resp.clicked() {
                 toggle_cmd = Some(cmd);
+            }
+            // Right-click on Object Snap: the running modes and the Object Snap tab.
+            if cmd == "osnap" {
+                resp.context_menu(|ui| {
+                    for (bit, name) in mode::ALL {
+                        let mut v = s.osmode & bit != 0;
+                        if ui.checkbox(&mut v, crate::i18n::t(name)).clicked() {
+                            osmode = Some(s.osmode ^ bit);
+                        }
+                    }
+                    ui.separator();
+                    if ui.button(crate::tl!("Object Snap Settings...")).clicked() {
+                        osnap_settings = true;
+                        ui.close();
+                    }
+                });
             }
             rx += size + 4.0;
         }
-        if let Some(c) = toggle_cmd {
-            app.start(c);
+        match toggle_cmd {
+            // Typed OSNAP opens Drafting Settings; the button toggles the running snaps, as F3.
+            Some("osnap") => {
+                let _ = app.run("osnap", json!({}));
+            }
+            Some(c) => app.start(c),
+            None => {}
+        }
+        if let Some(m) = osmode {
+            let _ = app.run("setvar", json!({ "name": "OSMODE", "value": m }));
+        }
+        if osnap_settings {
+            crate::menus::activate(app, "osnap");
         }
     });
 }

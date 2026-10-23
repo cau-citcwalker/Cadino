@@ -17,6 +17,9 @@ use super::machines::{SelOutcome, SelectPhase};
 use super::*;
 use crate::{Accept, EngineError, Input, Interactive, Prompt, Result, Session, Step};
 
+#[path = "constraints_prompts.rs"]
+mod prompts;
+
 macro_rules! gc {
     ($id:literal, $label:literal, $kind:expr, $menu:literal) => {
         CommandSpec::new($id, $label, |s, p| run_gc(s, p, $kind))
@@ -93,11 +96,13 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("parameters", "Parameters Manager", run_parameters)
             .menu(&["Tools", "Parametric", "Parameters Manager"])
             .alias(&["par", "parametersclose"])
-            .params("{} lists; {name, expr | value, description?} sets (new name = user parameter) and re-solves; {delete: name}"),
+            .params("{} lists; {name, expr | value, description?} sets (new name = user parameter) and re-solves; {delete: name}; {rename: name, to} (and in every expression) (typed -PARAMETERS / -PAR: New/Edit/Rename/Delete/? prompts)")
+            .interactive(|_| Ok(Box::<prompts::ParametersM>::default())),
         CommandSpec::new("constraintsettings", "Constraint Settings", run_constraintsettings)
             .menu(&["Tools", "Parametric", "Constraint Settings"])
             .alias(&["csettings"])
-            .params("{infer?, distanceTolerance?, angleTolerance?, autoTypes?: [names], barsVisible?, barTransparency?, dimsVisible?}"),
+            .params("{infer?, distanceTolerance?, angleTolerance?, autoTypes?: [names], barsVisible?, barTransparency?, dimsVisible?} (typed -CONSTRAINTSETTINGS: Geometric/Dimensional/Autoconstrain prompts)")
+            .interactive(|_| Ok(Box::<prompts::SettingsM>::default())),
         CommandSpec::new("constraintinfer", "Infer Constraints", run_constraintinfer)
             .params("{value?: 0|1} sets CONSTRAINTINFER (no value: reports it)")
             .interactive(|_| Ok(Box::new(InferM))),
@@ -459,8 +464,7 @@ impl Interactive for GcM {
                 Ok(Step::Continue)
             }
             Input::Point(p) => {
-                let space = s.space();
-                let Some(h) = crate::select::pick(s.doc()?, &space, p, aperture(s)) else {
+                let Some(h) = super::curves::pick_in(s, s.doc()?, p, aperture(s)) else {
                     s.echo("*Invalid selection*");
                     return Ok(Step::Continue);
                 };
@@ -703,10 +707,9 @@ impl Interactive for DcM {
                 Ok(Step::Continue)
             }
             Input::Point(p) => {
-                let space = s.space();
                 let ap = aperture(s);
                 let d = s.doc()?;
-                let Some(h) = crate::select::pick(d, &space, p, ap) else {
+                let Some(h) = super::curves::pick_in(s, d, p, ap) else {
                     s.echo("*Invalid selection*");
                     return Ok(Step::Continue);
                 };
@@ -873,6 +876,11 @@ fn run_parameters(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(EngineError::Other(format!("`{name}` is used by `{}`", row.name)));
         }
         *s.doc_mut()? = d;
+    } else if let Some(from) = str_param(p, "rename") {
+        let to = str_param(p, "to").ok_or_else(|| bad("parameters", "`to` (the new name) is required"))?;
+        let mut d = s.doc()?.clone();
+        rename_parameter(&mut d, from.trim(), to.trim())?;
+        *s.doc_mut()? = d;
     } else if let Some(name) = str_param(p, "name") {
         let expr = match (str_param(p, "expr"), p.get("value").and_then(Value::as_f64)) {
             (Some(e), _) => e.to_string(),
@@ -893,6 +901,58 @@ fn run_parameters(s: &mut Session, p: &Value) -> Result<Value> {
         rows.iter().map(|r| format!("{} = {} ({})", r.name, r.expr, r.value.map(cs::format_value).unwrap_or_else(|| "error".into()))).collect();
     let message = if text.is_empty() { "No parameters.".to_string() } else { text.join("; ") };
     Ok(json!({ "parameters": rows, "message": message }))
+}
+
+/// Rename parameter `from` (a dimensional constraint's or a user parameter) to `to`, and every
+/// expression's references to it.
+fn rename_parameter(d: &mut Drawing, from: &str, to: &str) -> Result<()> {
+    if !cs::name_in_use(d, from) {
+        return Err(EngineError::Other(format!("no parameter `{from}`")));
+    }
+    if !cs::expr::valid_name(to) {
+        return Err(EngineError::Other(format!("invalid parameter name `{to}`")));
+    }
+    if from != to && cs::name_in_use(d, to) {
+        return Err(EngineError::Other(format!("`{to}` is already a parameter")));
+    }
+    for c in &mut d.constraints {
+        if c.name == from {
+            c.name = to.into();
+        }
+        c.expr = rename_in_expr(&c.expr, from, to);
+    }
+    for q in &mut d.parametric.parameters {
+        if q.name == from {
+            q.name = to.into();
+        }
+        q.expr = rename_in_expr(&q.expr, from, to);
+    }
+    Ok(())
+}
+
+/// `e` with the name `from` written `to`: whole names only, not inside numbers (`1e5`) or
+/// function calls (`sin(`).
+fn rename_in_expr(e: &str, from: &str, to: &str) -> String {
+    let mut out = String::with_capacity(e.len());
+    let mut in_word = false;
+    let mut chars = e.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if (c.is_ascii_alphabetic() || c == '_') && !in_word {
+            let mut end = i + c.len_utf8();
+            while let Some(&(j, d)) = chars.peek().filter(|(_, d)| d.is_ascii_alphanumeric() || *d == '_') {
+                end = j + d.len_utf8();
+                chars.next();
+            }
+            let word = e.get(i..end).unwrap_or_default();
+            let call = e.get(end..).is_some_and(|r| r.trim_start().starts_with('('));
+            out.push_str(if word == from && !call { to } else { word });
+            in_word = true;
+        } else {
+            out.push(c);
+            in_word = c.is_ascii_alphanumeric() || c == '_' || c == '.';
+        }
+    }
+    out
 }
 
 /// Show/hide constraint bars (`dims` = false) or dynamic dimensional constraints.

@@ -20,6 +20,8 @@ mod dyngrip;
 mod extract;
 pub(crate) mod refedit;
 mod wblock;
+/// XCLIP.
+mod xclip;
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -47,7 +49,7 @@ pub fn specs() -> Vec<CommandSpec> {
         attedit::dash_attedit_spec(),
         CommandSpec::new("wblock", "Write Block", run_wblock)
             .alias(&["w"])
-            .params("{path, name? | handles?, base?}")
+            .params("{path, name? | handles?, base?, keep?: \"retain\"|\"delete\" (objects: \"delete\" erases them from the drawing once written, OOPS brings them back; default \"retain\")}")
             .interactive(|_| Ok(Box::new(wblock::WblockM::default()))),
         CommandSpec::new("base", "Base", run_base)
             .menu(&["Draw", "Block", "Base"])
@@ -84,6 +86,7 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
     .into_iter()
     .chain(xref::specs())
+    .chain(xclip::specs())
     .chain(refedit::specs())
     .chain(bedit::specs())
     .collect()
@@ -143,9 +146,16 @@ pub(crate) fn make_block(s: &mut Session, name: &str, base: Vec2, hs: &[Handle],
         b.entities.push(e);
     }
     doc.blocks.insert(name.to_string(), Arc::new(b));
-    if keep != "retain" {
-        for h in hs {
-            doc.remove_entity(*h);
+    match keep {
+        "retain" => {}
+        // Deleted from the drawing: OOPS brings them back, as after AutoCAD's BLOCK.
+        "delete" => {
+            super::oops::erase(s, hs)?;
+        }
+        _ => {
+            for h in hs {
+                doc.remove_entity(*h);
+            }
         }
     }
     s.set_selection(Vec::new());
@@ -318,6 +328,16 @@ fn run_wblock(s: &mut Session, p: &Value) -> Result<Value> {
     let base = point_param(p, "base");
     d.header.set("INSBASE", cadcraft_doc::HVal::Point(Vec3::ZERO));
     let m = Mat3::translate(-base.unwrap_or(Vec2::ZERO));
+    let delete = match str_param(p, "keep") {
+        None | Some("retain") => false,
+        Some("delete") => str_param(p, "name").is_none(),
+        Some(k) => return Err(bad("wblock", format!("`keep` must be \"retain\" or \"delete\", not \"{k}\""))),
+    };
+    if delete && cfg!(target_arch = "wasm32") {
+        // Nothing is written in the browser, so nothing may be erased as written.
+        return Err(bad("wblock", "files can't be written in the browser"));
+    }
+    let written: Vec<Handle> = if delete { targets(s, p)? } else { Vec::new() };
     let ents: Vec<Entity> = if let Some(name) = str_param(p, "name") {
         let b = src.block(name).ok_or_else(|| bad("wblock", format!("no block `{name}`")))?;
         let m = Mat3::translate(-base.unwrap_or(b.base.xy()));
@@ -351,6 +371,8 @@ fn run_wblock(s: &mut Session, p: &Value) -> Result<Value> {
     crate::limits::files("wblock")?;
     #[cfg(not(target_arch = "wasm32"))]
     std::fs::write(&path, &bytes).map_err(|e| bad("wblock", format!("{path}: {e}")))?;
+    // Written objects deleted from the drawing, as -WBLOCK does: OOPS brings them back.
+    super::oops::erase(s, &written)?;
     Ok(json!({ "path": path, "entities": d.model.len(), "bytes": bytes.len() }))
 }
 

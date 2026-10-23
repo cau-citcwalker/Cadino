@@ -240,14 +240,20 @@ impl Session {
         Ok(crate::select::select_window(&d, &space, Bounds2::new(a, b), b.x < a.x))
     }
 
-    /// What a typed selection mode (W, C, Box, F, WP, CP) takes once its points are in: in a level
-    /// plane its points in the world on the drawing itself, so boxes are the screen's.
+    /// What a typed selection mode (W, C, Box, F, WP, CP) takes once its points are in: clicked in
+    /// a view that picks what is drawn (a 3D view, plan with a tilted plane), what that view shows
+    /// in it ([`crate::select::select_in_view`]); in a level plane its points in the world on the
+    /// drawing itself, so boxes are the screen's.
     pub(crate) fn select_by_mode(&self, mode: &crate::select::SelectMode) -> Result<Option<Vec<Handle>>> {
         let (c, space) = (self.cplane(), self.space());
+        if let Some((dir, pts)) = mode.seen() {
+            let seen = crate::select::SelectMode { pts, seen: Vec::new(), ..mode.clone() };
+            return Ok(crate::select::select_in_view(&seen, self.doc()?, &space, dir, self.pixel_size() / 2.0));
+        }
         if tilted(&c) {
             return Ok(mode.select(&*self.pick_doc()?, &space));
         }
-        let world = crate::select::SelectMode { kind: mode.kind, pts: mode.pts.iter().map(|p| plane_to_plan(&c, *p)).collect() };
+        let world = crate::select::SelectMode { pts: mode.pts.iter().map(|p| plane_to_plan(&c, *p)).collect(), ..mode.clone() };
         Ok(world.select(self.doc()?, &space))
     }
 

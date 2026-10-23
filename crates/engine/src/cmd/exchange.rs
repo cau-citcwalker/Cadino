@@ -21,6 +21,8 @@ use super::file::{base64_decode, base64_encode, io};
 use super::*;
 use crate::{EngineError, Result, Session};
 
+mod prompts;
+
 /// Formats EXPORT writes (the io layer picks the writer from the extension).
 pub const EXPORT_FORMATS: &[&str] = &["dxf", "dwg", "svg", "png", "pdf"];
 /// Default and largest plot preview width, in pixels.
@@ -38,8 +40,9 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("export", "Export...", run_export)
             .menu(&["File", "Export..."])
             .alias(&["exp"])
-            .params("{path? (else returns base64 `data`), format?: dxf|dwg|svg|png|pdf (default: the path's extension)} → {format, bytes, path? | data}")
-            .noundo(),
+            .params("{path? (else returns base64 `data`), format?: dxf|dwg|svg|png|pdf (default: the path's extension)} → {format, bytes, path? | data} (typed -EXPORT: format, then file name)")
+            .noundo()
+            .interactive(|_| Ok(Box::new(prompts::ExportM::default()))),
         CommandSpec::new("preview", "Plot Preview", run_preview)
             .menu(&["File", "Plot Preview"])
             .alias(&["pre"])
@@ -47,8 +50,9 @@ pub fn specs() -> Vec<CommandSpec> {
             .noundo(),
         CommandSpec::new("publish", "Batch Publish...", run_publish)
             .menu(&["File", "Batch Publish..."])
-            .params("{path?: \"NAME.pdf\" (writes NAME-<sheet>.pdf per sheet; else returns base64 `data` per sheet), layouts?: [name | \"Model\"] (default: Model if it has objects, then every layout in tab order)} → {sheets: [{layout, bytes, path? | data}]}")
-            .noundo(),
+            .params("{path?: \"NAME.pdf\" (writes NAME-<sheet>.pdf per sheet; else returns base64 `data` per sheet), layouts?: [name | \"Model\"] (default: Model if it has objects, then every layout in tab order)} → {sheets: [{layout, bytes, path? | data}]} (typed -PUBLISH: a sheet list file or the current sheets, then the output file)")
+            .noundo()
+            .interactive(|_| Ok(Box::new(prompts::PublishM::default()))),
         CommandSpec::new("pdfbook", "Sheet Books to PDF...", run_pdfbook)
             .menu(&["File", "Sheet Books to PDF..."])
             .alias(&["printpdf", "pdfb"])
