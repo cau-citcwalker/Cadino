@@ -1,42 +1,45 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  CADCraft MSI (WiX Toolset v5: `dotnet tool install -g wix`, plus the WixUI extension:
+  Cadino MSI (WiX Toolset v5: `dotnet tool install -g wix`, plus the WixUI extension:
   `wix extension add -g WixToolset.UI.wixext/5.0.2`). Built by package.ps1:
 
     wix build cadcraft.wxs -arch x64 -ext WixToolset.UI.wixext -d Version=1.2.3 -d BinDir=... -d IconPath=... -o out.msi
 
-  Per-machine install into Program Files, a Start Menu shortcut, an optional desktop shortcut, and
-  CADCraft offered under "Open with" for .dxf and .dwg drawings (without taking over the user's
-  default app).
+  BinDir holds Cadino.exe, cadcraft-cli.exe, README-Cadino.txt, THIRD-PARTY-NOTICES.txt,
+  LICENSE-MIT, LICENSE-APACHE and NOTICE.
+
+  Per-machine install into Program Files\Cadino, a Start Menu shortcut, an optional desktop
+  shortcut, and Cadino offered under "Open with" for .dxf and .dwg drawings (without taking over the
+  user's default app).
+
+  Its own identity (UpgradeCode, component GUIDs, ProgID, registry keys): it never upgrades,
+  replaces or removes a CADCraft install.
 
   Desktop shortcut: the setup wizard asks (unchecked by default). Silent installs leave it out
-  unless asked: `msiexec /i cadcraft.msi /qn DESKTOPSHORTCUT=1`. Upgrades keep the previous choice
+  unless asked: `msiexec /i Cadino.msi /qn DESKTOPSHORTCUT=1`. Upgrades keep the previous choice
   unless DESKTOPSHORTCUT=1 or DESKTOPSHORTCUT=0 is given.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package
-      Name="CADCraft"
-      Manufacturer="Learning Machines LLC"
+      Name="Cadino"
+      Manufacturer="Cadino"
       Version="$(var.Version)"
-      UpgradeCode="119D7D76-0167-4A9E-8F37-09DA0235F68E"
+      UpgradeCode="63081016-8F52-4054-9985-719FA0964FC3"
       Scope="perMachine"
       Compressed="yes"
       Language="1033">
-    <SummaryInformation Description="CADCraft computer-aided design" Manufacturer="Learning Machines LLC" />
+    <SummaryInformation Description="Cadino computer-aided design" Manufacturer="Cadino" />
     <!-- Same-version upgrades let successive pre-releases of one X.Y.Z replace each other
          (MSI versions are numeric, so 1.2.3-rc.1 and 1.2.3-rc.2 are both 1.2.3). -->
     <MajorUpgrade AllowSameVersionUpgrades="yes"
-        DowngradeErrorMessage="A newer version of CADCraft is already installed." />
+        DowngradeErrorMessage="A newer version of Cadino is already installed." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
-    <Icon Id="CadcraftIcon.ico" SourceFile="$(var.IconPath)" />
-    <Property Id="ARPPRODUCTICON" Value="CadcraftIcon.ico" />
-    <Property Id="ARPURLINFOABOUT" Value="https://getartcraft.com/apps/cadcraft" />
-    <Property Id="ARPURLUPDATEINFO" Value="https://getartcraft.com/apps/cadcraft" />
-    <Property Id="ARPHELPLINK" Value="https://discord.gg/artcraft" />
+    <Icon Id="CadinoIcon.ico" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="CadinoIcon.ico" />
 
     <StandardDirectory Id="ProgramFiles6432Folder">
-      <Directory Id="INSTALLFOLDER" Name="CADCraft" />
+      <Directory Id="INSTALLFOLDER" Name="Cadino" />
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder" />
     <!-- Per-machine (ALLUSERS=1), so this is the all-users (Public) desktop, like the Start Menu above. -->
@@ -48,7 +51,7 @@
     <!-- The previous install's choice (the shortcut component's HKCU key path, so the installing
          user's), so upgrades keep the desktop shortcut without asking again. -->
     <Property Id="PREVIOUSDESKTOPSHORTCUT">
-      <RegistrySearch Id="PreviousDesktopShortcut" Root="HKCU" Key="Software\Learning Machines LLC\CADCraft"
+      <RegistrySearch Id="PreviousDesktopShortcut" Root="HKCU" Key="Software\Cadino"
           Name="DesktopShortcut" Type="raw" />
     </Property>
     <!-- Only when DESKTOPSHORTCUT wasn't given; "first" runs it once (in the UI sequence when there
@@ -56,54 +59,70 @@
     <SetProperty Id="DESKTOPSHORTCUT" Value="1" After="AppSearch" Sequence="first"
         Condition="NOT DESKTOPSHORTCUT AND PREVIOUSDESKTOPSHORTCUT = &quot;1&quot;" />
 
-    <UIRef Id="CadcraftUI" />
+    <UIRef Id="CadinoUI" />
 
-    <Feature Id="Main" Title="CADCraft" Level="1">
-      <ComponentGroupRef Id="CadcraftFiles" />
+    <Feature Id="Main" Title="Cadino" Level="1">
+      <ComponentGroupRef Id="CadinoFiles" />
+    </Feature>
+    <!-- Its own (hidden) feature: the advertised Start Menu shortcut health-checks its feature,
+         Main, and the desktop shortcut's key path is in the installing user's HKCU. Were it in
+         Main, any other user starting Cadino from the Start Menu would trigger a self-repair. -->
+    <Feature Id="DesktopShortcutFeature" Title="Desktop shortcut" Level="1" Display="hidden">
+      <ComponentRef Id="DesktopShortcut" />
     </Feature>
   </Package>
 
   <Fragment>
-    <ComponentGroup Id="CadcraftFiles" Directory="INSTALLFOLDER">
-      <Component Id="CadcraftApp" Guid="2AC18056-48DE-4079-AB79-4FDEF4FBB075">
-        <File Id="CadcraftExe" Source="$(var.BinDir)\cadcraft.exe" KeyPath="yes">
-          <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="CADCraft"
-              Description="CADCraft computer-aided design" WorkingDirectory="INSTALLFOLDER" Advertise="yes"
-              Icon="CadcraftIcon.ico" IconIndex="0" />
+    <ComponentGroup Id="CadinoFiles" Directory="INSTALLFOLDER">
+      <Component Id="CadinoApp" Guid="65D5D06B-5BD7-44D4-8781-8A06338D33F6">
+        <File Id="CadinoExe" Source="$(var.BinDir)\Cadino.exe" KeyPath="yes">
+          <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Cadino"
+              Description="Cadino computer-aided design" WorkingDirectory="INSTALLFOLDER" Advertise="yes"
+              Icon="CadinoIcon.ico" IconIndex="0" />
         </File>
 
-        <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\cadcraft.exe" Value="[#CadcraftExe]" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\cadcraft.exe\shell\open\command" Value="&quot;[#CadcraftExe]&quot; &quot;%1&quot;" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\.dxf\OpenWithProgids" Name="CADCraft.Drawing" Value="" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\.dwg\OpenWithProgids" Name="CADCraft.Drawing" Value="" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\CADCraft.Drawing\shell\open\command" Value="&quot;[#CadcraftExe]&quot; &quot;%1&quot;" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\Cadino.exe" Value="[#CadinoExe]" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\Cadino.exe\shell\open\command" Value="&quot;[#CadinoExe]&quot; &quot;%1&quot;" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.dxf\OpenWithProgids" Name="Cadino.Drawing" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.dwg\OpenWithProgids" Name="Cadino.Drawing" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Cadino.Drawing" Value="Cadino drawing" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Cadino.Drawing\shell\open\command" Value="&quot;[#CadinoExe]&quot; &quot;%1&quot;" Type="string" />
       </Component>
 
-      <Component Id="CadcraftCli">
-        <File Id="CadcraftCliExe" Source="$(var.BinDir)\cadcraft-cli.exe" KeyPath="yes" />
+      <Component Id="CadinoCli">
+        <File Id="CadinoCliExe" Source="$(var.BinDir)\cadcraft-cli.exe" KeyPath="yes" />
       </Component>
 
-      <!-- Optional desktop shortcut, removed on uninstall. A non-advertised shortcut needs a registry
-           key path, and one in a profile folder (DesktopFolder, even though ALLUSERS=1 makes it the
-           Public desktop) must be under HKCU (ICE38, ICE43, ICE57). -->
-      <Component Id="DesktopShortcut" Directory="DesktopFolder" Guid="76029CD7-EBDB-420F-AC34-FF0E82A99E32"
-          Condition="DESKTOPSHORTCUT = &quot;1&quot;">
-        <Shortcut Id="DesktopShortcut" Name="CADCraft" Description="CADCraft computer-aided design"
-            Target="[INSTALLFOLDER]cadcraft.exe" WorkingDirectory="INSTALLFOLDER" Icon="CadcraftIcon.ico" IconIndex="0" />
-        <RegistryValue Root="HKCU" Key="Software\Learning Machines LLC\CADCraft" Name="DesktopShortcut"
-            Value="1" Type="string" KeyPath="yes" />
-      </Component>
+      <!-- Read-me and the licences and notices the MIT/Apache terms of the upstream code and the
+           dependencies require to travel with the binaries. -->
+      <Component Id="ReadMe"><File Source="$(var.BinDir)\README-Cadino.txt" KeyPath="yes" /></Component>
+      <Component Id="ThirdPartyNotices"><File Source="$(var.BinDir)\THIRD-PARTY-NOTICES.txt" KeyPath="yes" /></Component>
+      <Component Id="LicenseMit"><File Source="$(var.BinDir)\LICENSE-MIT" KeyPath="yes" /></Component>
+      <Component Id="LicenseApache"><File Source="$(var.BinDir)\LICENSE-APACHE" KeyPath="yes" /></Component>
+      <Component Id="Notice"><File Source="$(var.BinDir)\NOTICE" KeyPath="yes" /></Component>
     </ComponentGroup>
+
+    <!-- Optional desktop shortcut, removed on uninstall. A non-advertised shortcut needs a registry
+         key path, and one in a profile folder (DesktopFolder, even though ALLUSERS=1 makes it the
+         Public desktop) must be under HKCU (ICE38, ICE43, ICE57). -->
+    <Component Id="DesktopShortcut" Directory="DesktopFolder" Guid="3C7343E3-703E-408C-BA55-685300794DC4"
+        Condition="DESKTOPSHORTCUT = &quot;1&quot;">
+      <Shortcut Id="DesktopShortcut" Name="Cadino" Description="Cadino computer-aided design"
+          Target="[INSTALLFOLDER]Cadino.exe" WorkingDirectory="INSTALLFOLDER" Icon="CadinoIcon.ico" IconIndex="0" />
+      <RegistryValue Root="HKCU" Key="Software\Cadino" Name="DesktopShortcut"
+          Value="1" Type="string" KeyPath="yes" />
+    </Component>
   </Fragment>
 
   <!--
     Setup wizard: WixUI_InstallDir's flow (WiX v5, ext/UI/wixlib/WixUI_InstallDir.wxs) without the
-    licence and folder pages, plus a Shortcuts page:
+    licence and folder pages, plus a Shortcuts page. The stock dialogs name the product through
+    [ProductName] ("Cadino"):
       install:     Welcome > Shortcuts > Ready to install > Progress > Finish
       maintenance: Maintenance welcome > Repair/Remove > Ready > Progress > Finish
   -->
   <Fragment>
-    <UI Id="CadcraftUI">
+    <UI Id="CadinoUI">
       <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
       <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
       <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
@@ -158,7 +177,7 @@
       <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg" />
       <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
 
-      <!-- No "Change" in Apps & features: there is a single feature. -->
+      <!-- No "Change" in Apps & features: there is a single visible feature. -->
       <Property Id="ARPNOMODIFY" Value="1" />
     </UI>
 

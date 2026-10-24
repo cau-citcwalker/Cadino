@@ -160,7 +160,7 @@
 	Commits	Коміти
 	Company	Компанія
 	Compare Drawings...	Порівняти креслення...
-	Computer-aided design and drafting: an open-source, clean-room CAD application written in pure Rust.	Автоматизоване проєктування та креслення: CAD-програма з відкритим кодом, незалежно розроблена мовою Rust.
+	Computer-aided design and drafting: an open-source, clean-room CAD application written in Rust.	Автоматизоване проєктування та креслення: CAD-програма з відкритим кодом, незалежно розроблена мовою Rust.
 	Concentric	Концентричність
 	Cone	Конус
 	Constraint Bars	Панелі обмежень
@@ -442,8 +442,9 @@
 	Jogged	Зі зламом
 	Jogged Linear	Лінійний зі зламом
 	Join	Об'єднати
-	Join the ArtCraft Discord…	Приєднатися до Discord ArtCraft…
-	Join us on Discord	Приєднуйтеся до нас у Discord
+	Licences	Ліцензії
+	Based on CADCraft by the CADCraft contributors (MIT OR Apache-2.0).	На основі CADCraft від учасників проєкту CADCraft (MIT OR Apache-2.0).
+	Third-party licences are listed in THIRD-PARTY-NOTICES.txt next to the program.	Ліцензії сторонніх компонентів наведено у файлі THIRD-PARTY-NOTICES.txt поруч із програмою.
 	Isometric Plane	Ізометрична площина
 	Isometric snap	Ізометрична крокова прив'язка
 	Language	Мова
@@ -584,7 +585,6 @@
 	Offset	Зміщення
 	On	Увімкнено
 	On/Off	Увімкнути/вимкнути
-	One of the Crafting Apps by the ArtCraft team and community.	Одна з програм Crafting Apps від команди та спільноти ArtCraft.
 	Only in this drawing: {n}	Лише в цьому кресленні: {n}
 	Only in {name}: {n}	Лише в {name}: {n}
 	Open (⌘O)	Відкрити (⌘O)
@@ -2682,7 +2682,6 @@
 	There is only one viewport.	Є лише один видовий екран.
 	These regions are too complex to combine.	Ці області надто складні для поєднання.
 	Third pair ignored (2D align).	Третю пару проігноровано (2D-вирівнювання).
-	This is a dynamic block: its parameters and actions are kept but can't be edited in CADCraft yet.	Це динамічний блок: його параметри та дії зберігаються, але в CADCraft їх поки що не можна редагувати.
 	Tiled viewports are for the Model tab; use MVIEW in a layout.	Мозаїчні видові екрани призначені для вкладки «Модель»; на аркуші використайте MVIEW.
 	Too many fit points.	Забагато точок апроксимації.
 	Too many loops.	Забагато контурів.

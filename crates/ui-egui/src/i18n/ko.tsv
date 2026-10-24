@@ -158,7 +158,7 @@
 	Commits	커밋
 	Company	회사
 	Compare Drawings...	도면 비교...
-	Computer-aided design and drafting: an open-source, clean-room CAD application written in pure Rust.	컴퓨터 지원 설계 및 제도를 위한 순수 Rust 기반 오픈 소스 CAD 프로그램입니다. 독립적으로 개발되었습니다.
+	Computer-aided design and drafting: an open-source, clean-room CAD application written in Rust.	컴퓨터 지원 설계 및 제도를 위한 Rust 기반 오픈 소스 CAD 프로그램입니다. 독립적으로 개발되었습니다.
 	Concentric	동심
 	Cone	원뿔
 	Constraint Bars	구속조건 막대
@@ -435,8 +435,9 @@
 	Jogged	꺾어진 반지름
 	Jogged Linear	꺾어진 선형
 	Join	결합
-	Join the ArtCraft Discord…	ArtCraft Discord 참여하기…
-	Join us on Discord	Discord에서 함께하기
+	Licences	라이선스
+	Based on CADCraft by the CADCraft contributors (MIT OR Apache-2.0).	CADCraft 기여자들이 만든 CADCraft를 기반으로 합니다(MIT OR Apache-2.0).
+	Third-party licences are listed in THIRD-PARTY-NOTICES.txt next to the program.	타사 라이선스는 프로그램과 같은 폴더의 THIRD-PARTY-NOTICES.txt에 있습니다.
 	Isometric Plane	등각 평면
 	Isometric snap	등각 스냅
 	Language	언어
@@ -576,7 +577,6 @@
 	Offset	간격띄우기
 	On	켜기
 	On/Off	켜기/끄기
-	One of the Crafting Apps by the ArtCraft team and community.	ArtCraft 팀과 커뮤니티가 만드는 Crafting Apps 제품군의 하나입니다.
 	Only in this drawing: {n}	이 도면에만 있음: {n}개
 	Only in {name}: {n}	{name}에만 있음: {n}개
 	Open (⌘O)	열기(⌘O)
@@ -2586,7 +2586,6 @@ menu	Modify	수정
 	There is only one viewport.	뷰포트가 하나뿐입니다.
 	These regions are too complex to combine.	이 영역은 너무 복잡해서 결합할 수 없습니다.
 	Third pair ignored (2D align).	세 번째 쌍은 무시되었습니다(2D 정렬).
-	This is a dynamic block: its parameters and actions are kept but can't be edited in CADCraft yet.	동적 블록입니다. 매개변수와 동작은 유지되지만 CADCraft에서는 아직 편집할 수 없습니다.
 	Tiled viewports are for the Model tab; use MVIEW in a layout.	타일 뷰포트는 모형 탭용입니다. 배치에서는 MVIEW를 사용하십시오.
 	Too many fit points.	맞춤점이 너무 많습니다.
 	Too many loops.	루프가 너무 많습니다.

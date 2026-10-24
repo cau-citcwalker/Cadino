@@ -120,7 +120,7 @@
 	Command Reference	Справочник команд
 	Commits	Коммиты
 	Company	Организация
-	Computer-aided design and drafting: an open-source, clean-room CAD application written in pure Rust.	Автоматизированное проектирование и черчение: CAD-приложение с открытым кодом, независимо разработанное на Rust.
+	Computer-aided design and drafting: an open-source, clean-room CAD application written in Rust.	Автоматизированное проектирование и черчение: CAD-приложение с открытым кодом, независимо разработанное на Rust.
 	Concentric	Концентричность
 	Cone	Конус
 	Constraint Bars	Панели ограничений
@@ -355,8 +355,6 @@
 	Isolate Layer	Изолировать слой
 	Isometric Drafting	Изометрическое черчение
 	Join	Объединить
-	Join the ArtCraft Discord…	Присоединяйтесь к Discord ArtCraft…
-	Join us on Discord	Присоединяйтесь к нам в Discord
 	Language	Язык
 	Last	Последний
 	Last commit	Последний коммит
@@ -484,7 +482,6 @@
 	Offset	Смещение
 	On	Включено
 	On/Off	Включить/выключить
-	One of the Crafting Apps by the ArtCraft team and community.	Одна из программ Crafting Apps от команды и сообщества ArtCraft.
 	Open (⌘O)	Открыть (⌘O)
 	Open Sample Drawing	Открыть образец чертежа
 	Open sample drawing	Открыть образец чертежа

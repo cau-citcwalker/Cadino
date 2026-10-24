@@ -161,7 +161,7 @@
 	Commits	Commits
 	Company	Företag
 	Compare Drawings...	Jämför ritningar...
-	Computer-aided design and drafting: an open-source, clean-room CAD application written in pure Rust.	Datorstödd konstruktion och ritning: ett CAD-program med öppen källkod, skrivet från grunden i ren Rust.
+	Computer-aided design and drafting: an open-source, clean-room CAD application written in Rust.	Datorstödd konstruktion och ritning: ett CAD-program med öppen källkod, skrivet från grunden i Rust.
 	Concentric	Koncentrisk
 	Cone	Kon
 	Constraint Bars	Villkorsfält
@@ -458,8 +458,6 @@
 	Jogged	Bruten
 	Jogged Linear	Brutet linjärt
 	Join	Foga samman
-	Join the ArtCraft Discord…	Gå med i ArtCrafts Discord…
-	Join us on Discord	Gå med i ArtCrafts community på Discord
 	Keep the system cursor visible over the drawing area	Visa systemets muspekare över ritytan
 	Language	Språk
 	Largest array	Största mönster
@@ -611,7 +609,6 @@
 	Offset	Förskjut
 	On	På
 	On/Off	På/av
-	One of the Crafting Apps by the ArtCraft team and community.	En av Crafting Apps, gjord av ArtCraft-teamet och dess community.
 	Only in this drawing: {n}	Bara i den här ritningen: {n}
 	Only in {name}: {n}	Bara i {name}: {n}
 	Open	Öppna

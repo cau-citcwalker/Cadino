@@ -88,10 +88,10 @@ fn dash_plot_lists_and_refuses_then_asks_again() {
     assert!(logged(&s, "Layout \"Nope\" not found."));
     s.cmdline("model").unwrap();
     s.cmdline("?").unwrap();
-    assert!(logged(&s, "CADCraft PDF"));
+    assert!(logged(&s, "Cadino PDF"));
     s.cmdline("No Such Plotter").unwrap();
     assert!(prompt(&s).contains("Enter an output device name or [?]"), "{}", prompt(&s));
-    s.cmdline("CADCraft SVG").unwrap();
+    s.cmdline("Cadino SVG").unwrap();
     s.cmdline("Z12").unwrap();
     assert!(logged(&s, "has no paper `Z12`"), "{:?}", s.log);
     assert!(prompt(&s).contains("Enter paper size or [?]"));
@@ -103,7 +103,7 @@ fn dash_plot_lists_and_refuses_then_asks_again() {
 fn dash_plot_brief_on_a_layout_saves_the_page_setup() {
     let mut s = session();
     let base = temp("sheet");
-    for line in ["-plot", "n", "Layout1", "", "CADCraft PNG", base.as_str(), "y", "y"] {
+    for line in ["-plot", "n", "Layout1", "", "Cadino PNG", base.as_str(), "y", "y"] {
         s.cmdline(line).unwrap();
     }
     assert!(s.running.is_none(), "{}", prompt(&s));
@@ -111,10 +111,10 @@ fn dash_plot_brief_on_a_layout_saves_the_page_setup() {
     let o = plotted(&format!("{base}.png"));
     assert_eq!((o["layout"].as_str(), o["output"].as_str()), (Some("Layout1"), Some("png")));
     assert!(o.get("plotArea").is_none(), "a layout plots its sheet");
-    assert_eq!(s.doc().unwrap().layout("Layout1").unwrap().page.device, "CADCraft PNG");
+    assert_eq!(s.doc().unwrap().layout("Layout1").unwrap().page.device, "Cadino PNG");
     // The saved page setup is its own undo step: U takes back just that, not the LINE before.
     s.cmdline("u").unwrap();
-    assert_ne!(s.doc().unwrap().layout("Layout1").unwrap().page.device, "CADCraft PNG");
+    assert_ne!(s.doc().unwrap().layout("Layout1").unwrap().page.device, "Cadino PNG");
     assert_eq!(s.doc().unwrap().model.len(), 1);
 }
 
@@ -123,7 +123,7 @@ fn dash_plot_from_a_script() {
     let mut s = session();
     let path = temp("script.svg");
     // Names with spaces go on lines of their own, as in AutoCAD scripts.
-    let script = format!("-PLOT\nY\nModel\nCADCraft SVG\nISO A3 (297.00 x 420.00 MM)\nM\nL\nN\nE\nF\nC\nN\nY\nA\n{path}\nN\nY\n");
+    let script = format!("-PLOT\nY\nModel\nCadino SVG\nISO A3 (297.00 x 420.00 MM)\nM\nL\nN\nE\nF\nC\nN\nY\nA\n{path}\nN\nY\n");
     s.script(&script).unwrap();
     assert!(s.running.is_none(), "{}", prompt(&s));
     let o = plotted(&path);

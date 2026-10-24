@@ -1,5 +1,7 @@
 # Releasing CADCraft
 
+> Cadino's Windows release is built locally with `packaging/windows/package.ps1`: see [release.md](release.md). This file describes the upstream CADCraft pipeline, which Cadino does not use yet.
+
 The canonical recipe is craftrules' [`release/playbook.md`](https://github.com/storytold/craftrules/blob/main/release/playbook.md); this file covers only what's CADCraft-specific.
 
 - **Version:** `[workspace.package] version` in the root `Cargo.toml` is the single source. `cargo xtask version` prints it; `cargo xtask version set X.Y.Z[-pre]` changes it. The app shows it in About, `cadcraft --version` and `cadcraft-cli --version`; release builds also embed the commit (`CADCRAFT_BUILD_SHA`).

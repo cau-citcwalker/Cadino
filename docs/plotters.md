@@ -10,9 +10,12 @@ The built-in devices come first:
 
 | Device | Output |
 |---|---|
-| `CADCraft PDF` | vector PDF |
-| `CADCraft PNG` | raster PNG on white paper at the device resolution (300 dpi) |
-| `CADCraft SVG` | vector SVG |
+| `Cadino PDF` | vector PDF |
+| `Cadino PNG` | raster PNG on white paper at the device resolution (300 dpi) |
+| `Cadino SVG` | vector SVG |
+
+Drawings saved by CADCraft name these devices `CADCraft PDF`, `CADCraft PNG` and `CADCraft SVG`;
+those names find the same built-in devices.
 
 They offer the standard sizes:
 
@@ -23,14 +26,14 @@ They offer the standard sizes:
 ISO sheets have 5 mm margins. Inch sheets have quarter-inch (6.35 mm) margins. A page setup
 with the device `None` plots to PDF on the page setup's paper, as before.
 
-User devices are files in our own format, kept in the `plotters` folder of the CADCraft
+User devices are files in our own format, kept in the `plotters` folder of the Cadino
 settings directory:
 
 | System | Folder |
 |---|---|
 | Linux and FreeBSD | `$XDG_CONFIG_HOME/cadcraft/plotters` or `~/.config/cadcraft/plotters` |
-| macOS | `~/Library/Application Support/CADCraft/plotters` |
-| Windows | `%APPDATA%\CADCraft\plotters` |
+| macOS | `~/Library/Application Support/Cadino/plotters` |
+| Windows | `%APPDATA%\Cadino\plotters` |
 
 `CADCRAFT_CONFIG_DIR` replaces the settings directory. On the web, devices last for the
 session unless the host provides storage (`cmd::plotters::set_plotter_store`). Binary `.pc3`

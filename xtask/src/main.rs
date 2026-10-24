@@ -4,8 +4,10 @@
 //! invoked through `std::process::Command`.
 
 mod assets;
+mod cadino_icon;
 mod ico;
 mod layers;
+mod notices;
 mod parity;
 mod stats;
 mod version;
@@ -27,6 +29,9 @@ commands:
   parity          recompute the AutoCAD menu-breadth checklist in docs/parity-checklist.md
   ico <out.ico> <in.png>...
                   pack square PNGs (<= 256 px) into a Windows .ico (see packaging/icons.sh)
+  cadino-icon     draw the Cadino app icon into assets/app-icon/ (cadino-1024.png, cadino-256.png, cadino.ico)
+  notices <out-dir>
+                  write THIRD-PARTY-NOTICES.txt for the Windows release (cadcraft + cadcraft-cli, OCCT on)
 ";
 
 fn main() -> ExitCode {
@@ -41,6 +46,8 @@ fn main() -> ExitCode {
         Some("stats") => stats::run(&root(), rest.contains(&"--exact")),
         Some("parity") => parity::run(&root()),
         Some("ico") => ico::run(&rest),
+        Some("cadino-icon") => cadino_icon::run(&root()),
+        Some("notices") => notices::run(&root(), &rest),
         Some("version") => version::run(&root(), &rest),
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");

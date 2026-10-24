@@ -1,11 +1,12 @@
 //! Plotter configurations: PLOTTERMANAGER / -PLOTTERMANAGER, and the device and paper a page
 //! setup or a plot uses.
 //!
-//! The built-in devices (`CADCraft PDF`, `CADCraft PNG`, `CADCraft SVG`) come first. They offer
+//! The built-in devices (`Cadino PDF`, `Cadino PNG`, `Cadino SVG`; the upstream names `CADCraft
+//! PDF`… still find them) come first. They offer
 //! the standard ISO and ANSI/ARCH paper sizes with 5 mm (ISO) or quarter-inch (inch sizes)
 //! margins. User devices are `*.plotter.json` files ([`cadcraft_doc::PlotterConfig`],
 //! `docs/plotters.md`) in a folder the host provides through [`set_plotter_store`]. Without
-//! one, native builds use the `plotters` folder of the CADCraft settings directory and the web
+//! one, native builds use the `plotters` folder of the Cadino settings directory and the web
 //! keeps them for the session.
 
 use std::sync::{Mutex, OnceLock};
@@ -60,8 +61,8 @@ impl PlotterStore {
         }
     }
 
-    /// The `plotters` folder of the CADCraft settings directory (`CADCRAFT_CONFIG_DIR`, else
-    /// the platform's settings directory).
+    /// The `plotters` folder of the Cadino settings directory (`CADCRAFT_CONFIG_DIR`, else the
+    /// platform's settings directory, the app's `config_dir`).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn settings_folder() -> PlotterStore {
         fn dir() -> std::result::Result<std::path::PathBuf, String> {
@@ -71,8 +72,8 @@ impl PlotterStore {
                 Some(r) if !r.is_empty() => Some(PathBuf::from(r)),
                 Some(_) => None,
                 None => match std::env::consts::OS {
-                    "macos" => get("HOME").map(|h| h.join("Library/Application Support/CADCraft")),
-                    "windows" => get("APPDATA").map(|r| r.join("CADCraft")),
+                    "macos" => get("HOME").map(|h| h.join("Library/Application Support/Cadino")),
+                    "windows" => get("APPDATA").map(|r| r.join("Cadino")),
                     _ => get("XDG_CONFIG_HOME").map(|r| r.join("cadcraft")).or_else(|| get("HOME").map(|h| h.join(".config/cadcraft"))),
                 },
             };
@@ -143,10 +144,19 @@ const MAX_DEVICES: usize = 1000;
 
 /// The built-in devices: name, output, description.
 const BUILTIN: [(&str, PlotOutput, &str); 3] = [
-    ("CADCraft PDF", PlotOutput::Pdf, "Vector PDF"),
-    ("CADCraft PNG", PlotOutput::Png, "Raster PNG image"),
-    ("CADCraft SVG", PlotOutput::Svg, "Vector SVG image"),
+    ("Cadino PDF", PlotOutput::Pdf, "Vector PDF"),
+    ("Cadino PNG", PlotOutput::Png, "Raster PNG image"),
+    ("Cadino SVG", PlotOutput::Svg, "Vector SVG image"),
 ];
+
+/// The built-in device called `name` (any case), also by its upstream name (`CADCraft PDF`…),
+/// which page setups of drawings saved by CADCraft or earlier builds name.
+fn builtin_entry(name: &str) -> Option<(&'static str, PlotOutput, &'static str)> {
+    let n = name.trim();
+    let legacy = n.get(..9).filter(|p| p.eq_ignore_ascii_case("CADCraft ")).and_then(|_| n.get(9..)).map(|rest| format!("Cadino {rest}"));
+    let n = legacy.as_deref().unwrap_or(n);
+    BUILTIN.iter().find(|(b, _, _)| b.eq_ignore_ascii_case(n)).copied()
+}
 
 /// A page setup's "no device" name.
 const NO_DEVICE: &str = "None";
@@ -173,7 +183,7 @@ fn builtins() -> Vec<PlotterConfig> {
 }
 
 fn is_builtin(name: &str) -> bool {
-    BUILTIN.iter().any(|(n, _, _)| n.eq_ignore_ascii_case(name.trim()))
+    builtin_entry(name).is_some()
 }
 
 /// The user's devices (unreadable files are skipped), sorted by name.
@@ -210,8 +220,8 @@ pub fn find_device(name: &str) -> Option<PlotterConfig> {
     if n.is_empty() || n.eq_ignore_ascii_case(NO_DEVICE) {
         return None;
     }
-    if let Some((b, o, d)) = BUILTIN.iter().find(|(b, _, _)| b.eq_ignore_ascii_case(n)) {
-        return Some(builtin(b, *o, d));
+    if let Some((b, o, d)) = builtin_entry(n) {
+        return Some(builtin(b, o, d));
     }
     let st = store();
     let direct = cadcraft_doc::plotter_file_name(n).and_then(|f| PlotterConfig::from_file_text(&(st.read)(&f).ok()?).ok());
@@ -555,7 +565,7 @@ fn run_plottermanager(_s: &mut Session, p: &Value) -> Result<Value> {
                         Some(o) => o.as_str().and_then(PlotOutput::parse).ok_or_else(|| bad(cmd, "`output` must be pdf, png or svg"))?,
                         None => PlotOutput::Pdf,
                     };
-                    let (b, o, _) = BUILTIN.iter().find(|(_, o, _)| *o == output).copied().unwrap_or(("CADCraft PDF", PlotOutput::Pdf, ""));
+                    let (b, o, _) = BUILTIN.iter().find(|(_, o, _)| *o == output).copied().unwrap_or(("Cadino PDF", PlotOutput::Pdf, ""));
                     builtin(b, o, "")
                 }
             };

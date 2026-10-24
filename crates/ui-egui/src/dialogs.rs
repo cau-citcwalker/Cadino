@@ -427,6 +427,15 @@ fn units(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
     }
 }
 
+/// Copyright lines are legal notices and stay in English.
+const COPYRIGHT: &str = "Copyright (c) 2026 Cadino contributors. Portions copyright (c) 2026 ArtCraft Team and the CADCraft contributors.";
+/// The 3D kernel's notice: LGPL-2.1 section 6 asks for the library's copyright notice among the
+/// ones shown, and a pointer to its licence.
+const OCCT_NOTICE: &str = "Uses Open CASCADE Technology 7.8.1, Copyright (c) Open CASCADE SAS, and the opencascade-rs bindings, under the GNU LGPL 2.1 with the Open CASCADE exception; see THIRD-PARTY-NOTICES.txt.";
+/// Cadino's NOTICE (with CADCraft's) and both licence texts, as shipped.
+const LICENCES: &str =
+    concat!(include_str!("../../../NOTICE"), "\n\n", include_str!("../../../LICENSE-MIT"), "\n\n", include_str!("../../../LICENSE-APACHE"));
+
 fn about(ctx: &egui::Context, open: &mut bool) {
     let t = Tokens::get();
     let tab_id = egui::Id::new("about_tab");
@@ -438,7 +447,7 @@ fn about(ctx: &egui::Context, open: &mut bool) {
         .show(ctx, |ui| {
             let mut tab = ui.data_mut(|d| d.get_temp::<u8>(tab_id)).unwrap_or(0);
             ui.horizontal(|ui| {
-                for (i, l) in ["About", "Contributors", "Models"].iter().enumerate() {
+                for (i, l) in ["About", "Contributors", "Models", "Licences"].iter().enumerate() {
                     if ui.selectable_label(tab == i as u8, crate::i18n::t(l)).clicked() {
                         tab = i as u8;
                     }
@@ -449,14 +458,26 @@ fn about(ctx: &egui::Context, open: &mut bool) {
             match tab {
                 1 => crate::credits::contributors_ui(ui),
                 2 => crate::credits::models_ui(ui),
+                3 => {
+                    ui.label(
+                        RichText::new(crate::tl!("Third-party licences are listed in THIRD-PARTY-NOTICES.txt next to the program."))
+                            .color(t.text_dim),
+                    );
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                        // The files are CRLF in a Windows checkout.
+                        ui.label(RichText::new(LICENCES.replace('\r', "")).monospace().small());
+                    });
+                }
                 _ => {
                     ui.heading(crate::tl!("Cadino"));
                     ui.label(crate::tf!("Version {version}", version = env!("CARGO_PKG_VERSION")));
-                    ui.label(crate::tl!("Computer-aided design and drafting: an open-source, clean-room CAD application written in pure Rust."));
+                    ui.label(crate::tl!("Computer-aided design and drafting: an open-source, clean-room CAD application written in Rust."));
                     ui.add_space(6.0);
-                    ui.label(RichText::new(crate::tl!("One of the Crafting Apps by the ArtCraft team and community.")).color(t.text_dim));
-                    ui.hyperlink_to("getartcraft.com/apps/cadcraft", "https://getartcraft.com/apps/cadcraft");
-                    ui.hyperlink_to(crate::tl!("Join us on Discord"), "https://discord.gg/artcraft");
+                    ui.label(RichText::new(crate::tl!("Based on CADCraft by the CADCraft contributors (MIT OR Apache-2.0).")).color(t.text_dim));
+                    ui.label(RichText::new(COPYRIGHT).small().color(t.text_dim));
+                    if cadcraft_engine::kernel::available() {
+                        ui.label(RichText::new(OCCT_NOTICE).small().color(t.text_dim));
+                    }
                     ui.add_space(6.0);
                     ui.label(RichText::new(crate::tl!("MIT OR Apache-2.0. Not affiliated with Autodesk, Inc.")).small().color(t.text_faint));
                 }

@@ -157,7 +157,7 @@
 	Commits	Commity
 	Company	Společnost
 	Compare Drawings...	Porovnat výkresy...
-	Computer-aided design and drafting: an open-source, clean-room CAD application written in pure Rust.	Počítačem podporované navrhování a kreslení: CAD aplikace s otevřeným zdrojovým kódem, napsaná nezávisle v čistém Rustu.
+	Computer-aided design and drafting: an open-source, clean-room CAD application written in Rust.	Počítačem podporované navrhování a kreslení: CAD aplikace s otevřeným zdrojovým kódem, napsaná nezávisle v Rustu.
 	Concentric	Soustřednost
 	Cone	Kužel
 	Constraint Bars	Lišty vazeb
@@ -433,8 +433,6 @@
 	Jogged	Zalomená
 	Jogged Linear	Zalomená lineární
 	Join	Spojit
-	Join the ArtCraft Discord…	Připojit se na Discord ArtCraft…
-	Join us on Discord	Připojte se k nám na Discordu
 	Isometric Plane	Izometrická rovina
 	Isometric snap	Izometrické uchopení
 	Language	Jazyk
@@ -574,7 +572,6 @@
 	Offset	Ekvidistanta
 	On	Zapnuto
 	On/Off	Zapnout/Vypnout
-	One of the Crafting Apps by the ArtCraft team and community.	Jedna z aplikací Crafting Apps od týmu ArtCraft a komunity.
 	Only in this drawing: {n}	Pouze v tomto výkresu: {n}
 	Only in {name}: {n}	Pouze v {name}: {n}
 	Open (⌘O)	Otevřít (⌘O)

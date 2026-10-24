@@ -121,7 +121,7 @@
 	Command Reference	Befehlsreferenz
 	Commits	Commits
 	Company	Firma
-	Computer-aided design and drafting: an open-source, clean-room CAD application written in pure Rust.	Rechnergestütztes Konstruieren und Zeichnen: eine quelloffene, unabhängig entwickelte CAD-Anwendung in reinem Rust.
+	Computer-aided design and drafting: an open-source, clean-room CAD application written in Rust.	Rechnergestütztes Konstruieren und Zeichnen: eine quelloffene, unabhängig entwickelte CAD-Anwendung in Rust.
 	Concentric	Konzentrisch
 	Cone	Kegel
 	Constraint Bars	Abhängigkeitsleisten
@@ -360,8 +360,6 @@
 	Isolate Layer	Layer isolieren
 	Isometric Drafting	Isometrisches Zeichnen
 	Join	Verbinden
-	Join the ArtCraft Discord…	Dem ArtCraft-Discord beitreten…
-	Join us on Discord	Treten Sie uns auf Discord bei
 	Language	Sprache
 	Last	Letzter
 	Last commit	Letzter Commit
@@ -489,7 +487,6 @@
 	Offset	Versatz
 	On	Ein
 	On/Off	Ein/Aus
-	One of the Crafting Apps by the ArtCraft team and community.	Eine der Crafting Apps vom ArtCraft-Team und seiner Community.
 	Open (⌘O)	Öffnen (⌘O)
 	Open Sample Drawing	Beispielzeichnung öffnen
 	Open sample drawing	Beispielzeichnung öffnen

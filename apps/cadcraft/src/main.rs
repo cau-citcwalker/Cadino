@@ -172,7 +172,7 @@ fn filters_for_save(name: &str) -> Vec<(String, String)> {
 
 /// The per-user settings directory (it holds `logs/` and `autosave/`): `CADCRAFT_CONFIG_DIR` if set, else
 /// `$XDG_CONFIG_HOME/cadcraft` or `~/.config/cadcraft` on Linux and the BSDs,
-/// `~/Library/Application Support/CADCraft` on macOS, `%APPDATA%\CADCraft` on Windows.
+/// `~/Library/Application Support/Cadino` on macOS, `%APPDATA%\Cadino` on Windows.
 fn config_dir() -> Option<std::path::PathBuf> {
     config_dir_from(|k| std::env::var_os(k))
 }
@@ -195,12 +195,30 @@ fn config_dir_from(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<s
 }
 
 /// Where eframe keeps the app's state (preferences, the autosave settings, egui's memory):
-/// `app.ron` in `CADCRAFT_CONFIG_DIR` when that is set, so a run with a settings directory of its
-/// own shares nothing with the others; else eframe's own folder for the app (`None`).
+/// `app.ron` in the settings directory ([`config_dir_from`]). Not eframe's own folder: that one is
+/// named after [`APP_ID`], so upstream CADCraft uses it too and the two apps would read and
+/// overwrite each other's preferences.
 fn persistence_file_from(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<std::path::PathBuf> {
-    var("CADCRAFT_CONFIG_DIR").filter(|v| !v.is_empty()).map(|d| std::path::PathBuf::from(d).join("app.ron"))
+    config_dir_from(var).map(|d| d.join("app.ron"))
 }
 
+/// Earlier builds kept `app.ron` in eframe's folder for [`APP_ID`]: copy it (not move: CADCraft may
+/// still use it) the first time, so existing settings carry over. Never into a
+/// `CADCRAFT_CONFIG_DIR`, which is meant to share nothing with other runs.
+fn migrate_app_state(new: &std::path::Path) {
+    if std::env::var_os("CADCRAFT_CONFIG_DIR").is_some_and(|v| !v.is_empty()) || new.exists() {
+        return;
+    }
+    let Some(old) = eframe::storage_dir(APP_ID).map(|d| d.join("app.ron")).filter(|p| p.is_file()) else { return };
+    let copied = new.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::copy(&old, new));
+    match copied {
+        Ok(_) => log::info!("settings copied from {} to {}", old.display(), new.display()),
+        Err(e) => log::warn!("settings not copied from {}: {e}", old.display()),
+    }
+}
+
+/// The window's app id (Wayland app_id, X11 class), which packaging/linux's desktop file matches.
+/// It no longer names the settings folder (see [`persistence_file_from`]).
 const APP_ID: &str = "ai.storyteller.cadcraft";
 
 /// Stencil bits of the window's render pass (see `NativeOptions::stencil_buffer`).
@@ -210,9 +228,9 @@ const STENCIL_BITS: u8 = 8;
 const DEPTH_BITS: u8 = 24;
 
 #[cfg(target_os = "macos")]
-const APP_ICON_PNG: &[u8] = include_bytes!("../../../assets/app-icon/cadcraft-macos-512.png");
+const APP_ICON_PNG: &[u8] = include_bytes!("../../../assets/app-icon/cadino-1024.png");
 #[cfg(not(target_os = "macos"))]
-const APP_ICON_PNG: &[u8] = include_bytes!("../../../assets/app-icon/cadcraft-256.png");
+const APP_ICON_PNG: &[u8] = include_bytes!("../../../assets/app-icon/cadino-256.png");
 
 fn app_icon() -> Option<egui::IconData> {
     eframe::icon_data::from_png_bytes(APP_ICON_PNG).map_err(|e| log::warn!("app icon: {e}")).ok()
@@ -220,7 +238,7 @@ fn app_icon() -> Option<egui::IconData> {
 
 fn version_string() -> String {
     let sha = option_env!("CADCRAFT_BUILD_SHA").unwrap_or("dev");
-    format!("cadcraft {} ({sha})", env!("CARGO_PKG_VERSION"))
+    format!("Cadino {} ({sha})", env!("CARGO_PKG_VERSION"))
 }
 
 /// The control port from `--control <port>` or `CADCRAFT_CONTROL_PORT` (`source`); a value that is
@@ -282,6 +300,11 @@ fn main() -> eframe::Result {
         }
     }
     install_io();
+    // ponytail: with no settings directory (no APPDATA/HOME) eframe falls back to its APP_ID folder.
+    let persistence_path = persistence_file_from(|k| std::env::var_os(k));
+    if let Some(p) = &persistence_path {
+        migrate_app_state(p);
+    }
     let surface = cadcraft_ui_egui::gpu::surface_config(std::env::var("CADCRAFT_VSYNC").ok().as_deref(), cfg!(all(unix, not(target_os = "macos"))));
     let mut options = eframe::NativeOptions {
         // The crosshair is drawn by the app: present without a queue on Linux/BSD, where X11
@@ -297,7 +320,7 @@ fn main() -> eframe::Result {
             .with_title_shown(false)
             .with_app_id(APP_ID),
         persist_window: false,
-        persistence_path: persistence_file_from(|k| std::env::var_os(k)),
+        persistence_path,
         // A stencil buffer clips the contents of clipped layout viewports on the GPU; a depth
         // buffer hides what is behind shaded solids.
         stencil_buffer: STENCIL_BITS,
@@ -475,7 +498,7 @@ mod tests {
         let empty = [("CADCRAFT_CONFIG_DIR", ""), ("HOME", ""), ("XDG_CONFIG_HOME", ""), ("APPDATA", "")];
         assert_eq!(config_dir_from(env(&empty)), None, "no usable variable means no directory, not the working directory");
         assert_eq!(config_dir_from(env(&[])), None);
-        // eframe's state follows the override too (autosave settings included), else its own place.
+        // eframe's state lives in the settings directory too (autosave settings included).
         assert_eq!(persistence_file_from(env(&vars)), Some(PathBuf::from("/tmp/cc").join("app.ron")));
         assert_eq!(persistence_file_from(env(&empty)), None);
     }
@@ -501,6 +524,11 @@ mod tests {
         assert_eq!(
             config_dir_from(env(&[("APPDATA", "C:\\Users\\u\\AppData\\Roaming")])),
             Some(PathBuf::from("C:\\Users\\u\\AppData\\Roaming").join("Cadino"))
+        );
+        // Not eframe's folder for APP_ID (%APPDATA%\ai.storyteller.cadcraft\data), which CADCraft uses.
+        assert_eq!(
+            persistence_file_from(env(&[("APPDATA", "C:\\Users\\u\\AppData\\Roaming")])),
+            Some(PathBuf::from("C:\\Users\\u\\AppData\\Roaming").join("Cadino").join("app.ron"))
         );
     }
 

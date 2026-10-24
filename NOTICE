@@ -1,3 +1,12 @@
+Cadino
+Copyright (c) 2026 Cadino contributors.
+Licensed under the MIT License or the Apache License, Version 2.0, at your option
+(LICENSE-MIT, LICENSE-APACHE).
+
+Cadino is a modified version of CADCraft 0.7.0. It is not made, sponsored or endorsed by the
+ArtCraft Team or the CADCraft project. CADCraft's notice follows unchanged:
+
+--------------------------------------------------------------------------------------------------
 CADCraft
 Copyright (c) 2026 ArtCraft Team and the CADCraft contributors.
 Licensed under the MIT License or the Apache License, Version 2.0, at your option
@@ -22,3 +31,21 @@ each under the SIL Open Font License 1.1.
 
 CADCraft is an independent project and is not affiliated with, sponsored by or endorsed by
 Autodesk, Inc. AutoCAD and DWG are trademarks of Autodesk, Inc.
+--------------------------------------------------------------------------------------------------
+
+Cadino's additions
+
+The Cadino app icon (assets/app-icon/cadino*) is original work by the Cadino contributors, drawn by
+`cargo xtask cadino-icon`, under MIT OR Apache-2.0. Cadino's name, icon, installer and interface
+use no ArtCraft marks, and the ArtCraft brand files (docs/brand/ in CADCraft) are not part of
+Cadino, as their terms require of modified versions.
+
+Native builds with the 3D kernel link Open CASCADE Technology 7.8.1, Copyright (c) Open CASCADE
+SAS (LGPL-2.1 with the Open CASCADE exception), and its opencascade/opencascade-sys bindings
+(LGPL-2.1). The release ships THIRD-PARTY-NOTICES.txt (`cargo xtask notices <out-dir>`): every
+bundled component with its licence text and where the corresponding source is
+(Cadino-<version>-source.zip, published next to each release).
+
+Cadino is not affiliated with, sponsored by or endorsed by Autodesk, Inc., Robert McNeel &
+Associates or Open Cascade SAS. AutoCAD and DWG are trademarks of Autodesk, Inc.; Rhino is a
+trademark of Robert McNeel & Associates.

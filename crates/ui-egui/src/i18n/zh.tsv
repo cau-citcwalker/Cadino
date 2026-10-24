@@ -121,7 +121,7 @@
 	Command Reference	命令参考
 	Commits	提交
 	Company	公司
-	Computer-aided design and drafting: an open-source, clean-room CAD application written in pure Rust.	计算机辅助设计与绘图：一个用纯 Rust 编写的开源、自主实现的 CAD 应用程序。
+	Computer-aided design and drafting: an open-source, clean-room CAD application written in Rust.	计算机辅助设计与绘图：一个用 Rust 编写的开源、自主实现的 CAD 应用程序。
 	Concentric	同心
 	Cone	圆锥体
 	Constraint Bars	约束栏
@@ -356,8 +356,6 @@
 	Isolate Layer	隔离图层
 	Isometric Drafting	等轴测制图
 	Join	合并
-	Join the ArtCraft Discord…	加入 ArtCraft Discord…
-	Join us on Discord	在 Discord 上加入我们
 	Language	语言
 	Last	最后
 	Last commit	最后提交
@@ -485,7 +483,6 @@
 	Offset	偏移
 	On	开启
 	On/Off	开/关
-	One of the Crafting Apps by the ArtCraft team and community.	由 ArtCraft 团队和社区打造的 Crafting 系列应用之一。
 	Open (⌘O)	打开 (⌘O)
 	Open Sample Drawing	打开示例图形
 	Open sample drawing	打开示例图形

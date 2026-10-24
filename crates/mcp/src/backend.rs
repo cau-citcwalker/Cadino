@@ -123,14 +123,17 @@ fn not_open(addr: &str, e: std::io::Error) -> std::io::Error {
     )
 }
 
-/// Open the app with the control port of `addr` (macOS: `open -a CADCraft`, the bundle's name).
+/// Open the app with the control port of `addr` (macOS: `open -a CADCraft`, the name of the
+/// bundle packaging/macos still builds).
 fn launch_app(addr: &str) -> std::io::Result<()> {
     let port = addr.rsplit(':').next().filter(|p| p.parse::<u16>().is_ok()).ok_or_else(|| std::io::Error::other(format!("no port in {addr}")))?;
     if cfg!(target_os = "macos") {
         let ok = std::process::Command::new("open").args(["-a", "CADCraft", "--args", "--control", port]).status()?.success();
         if ok { Ok(()) } else { Err(std::io::Error::other("could not open Cadino (is it in Applications?)")) }
     } else {
-        Err(std::io::Error::other(format!("Cadino is not running; start it with `cadcraft --control {port}`")))
+        // The Windows packages install the app as Cadino.exe; other builds name it cadcraft.
+        let exe = if cfg!(windows) { "Cadino.exe" } else { "cadcraft" };
+        Err(std::io::Error::other(format!("Cadino is not running; start it with `{exe} --control {port}`")))
     }
 }
 

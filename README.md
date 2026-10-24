@@ -1,23 +1,18 @@
 <p align="center">
-  <a href="https://getartcraft.com/">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/brand/artcraft-logo-white.svg">
-      <img alt="ArtCraft" src="docs/brand/artcraft-logo.svg" width="200">
-    </picture>
-  </a>
+  <img alt="" src="assets/app-icon/cadino-256.png" width="128" height="128">
 </p>
 
-<h1 align="center">CADCraft</h1>
+<h1 align="center">Cadino</h1>
 
 <p align="center">
-  <b>Computer-aided design and drafting; an open-source, clean-room reimplementation of Autodesk AutoCAD, rebuilt in pure Rust.</b>
+  <b>Computer-aided design and drafting; an open-source, clean-room reimplementation of Autodesk AutoCAD, rebuilt in Rust.</b>
 </p>
 
 <p align="center">
   A fast, open-source take on the AutoCAD workflow: the command line, object snaps, layers,
   dimensions, hatches, blocks and DXF drawings you already know. It runs natively on macOS,
   Windows, Linux and FreeBSD, and in the browser via WebAssembly.<br>
-  <i>By the ArtCraft team.</i>
+  <i>Based on CADCraft by the CADCraft contributors.</i>
 </p>
 
 <p align="center">
@@ -28,38 +23,23 @@
   <img alt="Status: early development" src="https://img.shields.io/badge/status-early%20development-f07a3a?style=flat-square">
 </p>
 
-<p align="center">
-  <a href="https://discord.gg/artcraft"><img alt="Join the ArtCraft community on Discord" src="https://img.shields.io/badge/Join%20us%20on%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" height="40"></a>
-</p>
-
-<p align="center">
-  <a href="https://getartcraft.com/apps/cadcraft"><b>CADCraft on getartcraft.com</b></a> ·
-  <a href="https://getartcraft.com/">ArtCraft</a> ·
-  <a href="https://getartcraft.com/apps">All Crafting Apps</a>
-</p>
-
 <br>
 
 <p align="center">
-  <img src="docs/images/ui-apartment.png" alt="CADCraft with an apartment floor plan open: hatched grey walls, blue windows, green door swings, furniture outlines, yellow room names with areas, a yellow room schedule table, a multileader note and cyan dimensions with architectural ticks; Tool Sets on the left, Layers and Properties on the right, the command line at the bottom" width="100%">
-  <br><sub><b>Apartment plan</b> (<a href="examples/apartment.dxf">examples/apartment.dxf</a>): walls with pick-point hatching, TrueType MTEXT room labels, a TABLE, a multileader and architectural dimensions — built entirely from CADCraft commands.</sub>
+  <img src="docs/images/ui-apartment.png" alt="Cadino with an apartment floor plan open: hatched grey walls, blue windows, green door swings, furniture outlines, yellow room names with areas, a yellow room schedule table, a multileader note and cyan dimensions with architectural ticks; Tool Sets on the left, Layers and Properties on the right, the command line at the bottom" width="100%">
+  <br><sub><b>Apartment plan</b> (<a href="examples/apartment.dxf">examples/apartment.dxf</a>): walls with pick-point hatching, TrueType MTEXT room labels, a TABLE, a multileader and architectural dimensions — built entirely from Cadino commands.</sub>
 </p>
-
-> [!NOTE]
-> **ArtCraft is a community of artists from all walks of life.** Painters, photographers,
-> filmmakers, illustrators, designers, animators, hobbyists, and people who picked up a pencil
-> last week. If you make things, you're one of us. **[Come say hi on Discord](https://discord.gg/artcraft).**
 
 <p align="center">
   <a href="#screenshots">Screenshots</a> ·
-  <a href="#why-cadcraft">Why CADCraft</a> ·
+  <a href="#why-cadino">Why Cadino</a> ·
   <a href="#what-works-today">What works today</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#drive-it-from-agents-mcp-and-the-cli">Agents, MCP and the CLI</a> ·
   <a href="#architecture">Architecture</a> ·
   <a href="#roadmap">Roadmap</a> ·
-  <a href="#downloads">Downloads</a> ·
-  <a href="#the-crafting-apps">The Crafting Apps</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#based-on-cadcraft">Based on CADCraft</a> ·
   <a href="#license-and-credits">License and credits</a>
 </p>
 
@@ -67,8 +47,8 @@
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/images/ui-layout.png" alt="A paper-space layout in CADCraft: a white sheet with a dashed printable area and a viewport showing the apartment plan at scale, the status bar showing the A1 Plan layout tab and a PAPER toggle"></td>
-    <td width="50%"><img src="docs/images/ui-bracket.png" alt="CADCraft with a mounting bracket part drawing: front view with bolt holes, centre lines and dimensions, a hatched section view, notes and a title block"></td>
+    <td width="50%"><img src="docs/images/ui-layout.png" alt="A paper-space layout in Cadino: a white sheet with a dashed printable area and a viewport showing the apartment plan at scale, the status bar showing the A1 Plan layout tab and a PAPER toggle"></td>
+    <td width="50%"><img src="docs/images/ui-bracket.png" alt="Cadino with a mounting bracket part drawing: front view with bolt holes, centre lines and dimensions, a hatched section view, notes and a title block"></td>
   </tr>
   <tr>
     <td><sub><b>Layouts</b>: paper space with viewports, page setups and PLOT to PDF. Double-click a viewport to work in model space through it.</sub></td>
@@ -76,7 +56,7 @@
   </tr>
 </table>
 
-## Why CADCraft
+## Why Cadino
 
 - **The workflow you know.** Type `L`, click two points, type `@5<45`, press Enter. The command
   line, prompts with clickable `[Keywords]`, AutoComplete, object snaps, polar tracking, ortho,
@@ -94,7 +74,7 @@
 
 ## What works today
 
-CADCraft is in early, fast development. Honest status (see [ROADMAP.md](ROADMAP.md) for parity
+Cadino is in early, fast development. Honest status (see [ROADMAP.md](ROADMAP.md) for parity
 numbers):
 
 | Area | Status |
@@ -107,7 +87,7 @@ numbers):
 | Layers & properties | Layers palette and Layer Properties Manager (on/off, freeze, lock, plot, colour, linetype), layer tools (isolate, freeze, off, lock, match, previous), Properties palette with per-object editing, linetypes, lineweights, colour index and true colour |
 | Annotation | All DIM* commands with full DIMSTYLE variables, overrides and every arrowhead, associative dimensions that follow geometry, MLEADER, TABLE, TrueType fonts (`.ttf`, `.otf`, `.ttc` collections), MTEXT formatting codes (fonts, heights, colours, stacked fractions), our own single-stroke drafting font |
 | Hatch & blocks | Pick-point hatch boundaries with islands, pattern, solid and gradient fills from our own pattern library, BLOCK/INSERT, attributes and nested blocks, the Block Editor with dynamic-block authoring (parameters, actions, visibility states, test block), xrefs and raster images (PNG, JPEG, BMP: attach, clip, adjust), DesignCenter |
-| Files | DXF read (R12–2018, ASCII and binary) and write (R2000), including dimension styles, associativity, tables and constraints; DWG read (via the acadrust library) and write (R2000); PDF plotting, SVG and PNG export; ETRANSMIT packages and PARTIALOPEN. Entities CADCraft doesn't model yet are not kept on save: see [file-format parity](docs/file-format-parity.md) |
+| Files | DXF read (R12–2018, ASCII and binary) and write (R2000), including dimension styles, associativity, tables and constraints; DWG read (via the acadrust library) and write (R2000); PDF plotting, SVG and PNG export; ETRANSMIT packages and PARTIALOPEN. Entities Cadino doesn't model yet are not kept on save: see [file-format parity](docs/file-format-parity.md) |
 | Layouts & plotting | Paper-space layouts, viewports (scale, lock, per-viewport layer freeze), MSPACE/PSPACE through viewports, page setups, PLOT and EXPORTPDF |
 | Parametric | Geometric and dimensional constraints, AUTOCONSTRAIN, PARAMETERS with expressions, conflict detection; constraints re-solve after every edit |
 | Grips | Hot grips with Space to cycle Stretch, Move, Rotate, Scale and Mirror |
@@ -120,11 +100,14 @@ numbers):
 Desktop and web UI builds require Rust 1.95 or later. The core workspace's declared minimum
 remains Rust 1.90.
 
+From the Cadino source folder:
+
 ```sh
-git clone https://github.com/storytold/cadcraft
-cd cadcraft
 cargo run --release -p cadcraft -- --sample       # opens the sample drawing
 ```
+
+The 3D modelling kernel (OpenCASCADE) is an optional feature: add
+`--features cadcraft-engine/occt` (on Windows run `scripts/occt-msvc-setup.ps1` once first).
 
 Then try typing at the command line:
 
@@ -139,7 +122,7 @@ The web build: `cd apps/cadcraft-web && trunk serve` (needs [trunk](https://trun
 
 ### Fonts
 
-CADCraft has no fonts in its repository; it uses the TrueType/OpenType fonts installed on your
+Cadino has no fonts in its repository; it uses the TrueType/OpenType fonts installed on your
 system. Builds made with the optional [craft-fonts](https://github.com/storytold/craft-fonts)
 input (`CRAFT_FONTS_DIR=<absolute path to a checkout> cargo build --release`) also embed its
 fonts: BIZ UDPGothic, BIZ UDMincho and Shippori Mincho (Japanese) and Noto Sans Arabic (the web
@@ -164,7 +147,7 @@ run) an environment variable, steer this:
 Linux and the BSDs `/usr/share/fonts`, `/usr/local/share/fonts`, `~/.local/share/fonts` or
 `~/.fonts`) and name it in a text style (`STYLE`, or `style {"name":"FA","font":"Vazirmatn"}`)
 by file name (`Vazirmatn-Regular.ttf`) or family name (`Vazirmatn`), or inline in MTEXT with
-`\fVazirmatn;`. Restart CADCraft after installing a font: the font folders are scanned once.
+`\fVazirmatn;`. Restart Cadino after installing a font: the font folders are scanned once.
 
 **Right-to-left text (Persian, Arabic, Urdu, Hebrew).** TEXT and MTEXT lines are laid out with the
 Unicode Bidirectional Algorithm (the paragraph direction comes from its first letter, so numbers
@@ -183,8 +166,8 @@ point.
 
 The desktop app writes its `log` records to standard error and to `logs/cadcraft.log` in the
 settings directory (Linux and the BSDs `~/.config/cadcraft/logs/`, or
-`$XDG_CONFIG_HOME/cadcraft/logs/`; macOS `~/Library/Application Support/CADCraft/logs/`; Windows
-`%APPDATA%\CADCraft\logs\`; or under `CADCRAFT_CONFIG_DIR`). A start from a desktop menu or the
+`$XDG_CONFIG_HOME/cadcraft/logs/`; macOS `~/Library/Application Support/Cadino/logs/`; Windows
+`%APPDATA%\Cadino\logs\`; or under `CADCRAFT_CONFIG_DIR`). A start from a desktop menu or the
 Dock has no terminal, so this file is what to attach to a bug report. Each launch moves the
 previous log to `cadcraft.1.log` (and that one to `cadcraft.2.log`), so the log of a run that
 crashed survives the next start. The file stops growing at 16 MiB. `--version` writes no file.
@@ -192,7 +175,7 @@ crashed survives the next start. The file stops growing at 16 MiB. `--version` w
 | Variable | Effect |
 |---|---|
 | `CADCRAFT_CONFIG_DIR` | Use this directory instead of the platform settings directory (the log goes to its `logs/`, autosave files to its `autosave/`, and the app's own state, preferences included, to its `app.ron`) |
-| `RUST_LOG` | Log levels for standard error and the log file. Default: `info` for CADCraft's own crates, `warn` for everything else. env_logger-style directives replace that, e.g. `RUST_LOG=debug`, `RUST_LOG=warn,cadcraft_io=trace` or `RUST_LOG=info,wgpu_core=warn`; a directive ending in `*` covers every target starting with it (`cadcraft*=debug`). `cadcraft_engine=debug` also logs every command-line message. |
+| `RUST_LOG` | Log levels for standard error and the log file. Default: `info` for Cadino's own crates, `warn` for everything else. env_logger-style directives replace that, e.g. `RUST_LOG=debug`, `RUST_LOG=warn,cadcraft_io=trace` or `RUST_LOG=info,wgpu_core=warn`; a directive ending in `*` covers every target starting with it (`cadcraft*=debug`). `cadcraft_engine=debug` also logs every command-line message. |
 
 The logger is `apps/cadcraft/src/logging.rs`; the web build logs to the browser console instead.
 
@@ -246,7 +229,7 @@ Nothing below `ui-egui` knows about egui, so the front end can be replaced. `car
 checks formatting, clippy, tests, asset attribution, the crate layering and the wasm build.
 
 Drafting and layer-palette icon buttons use the pinned `craft-ui` button component for interaction,
-accessible labels and keyboard focus. CADCraft keeps its multicolor icon painter, dark palette,
+accessible labels and keyboard focus. Cadino keeps its multicolor icon painter, dark palette,
 disabled tint and tool commands. The native host saves workspace visibility and toolset choices
 atomically; `CADCRAFT_CONFIG_DIR` selects an isolated profile. Compact toolbar groups move into a
 More menu, and status readouts truncate with a full-value tooltip before they reach layout tabs.
@@ -257,11 +240,11 @@ have accessible labels and visible keyboard focus. Property controls remain appl
 
 ### System cursor
 
-Over the drawing area CADCraft hides the system cursor and draws its own crosshair. Tools that follow the system cursor (Windows Magnifier set to follow or centre the mouse pointer, other screen magnifiers, screen recorders, remote desktops) lose track of it there. Turn on **View ▸ Accessibility ▸ Show System Cursor** to keep a small system crosshair visible at the centre of the drawn one, or start CADCraft with the environment variable `CADCRAFT_SYSTEM_CURSOR=1` (on Windows, set it once with `setx CADCRAFT_SYSTEM_CURSOR 1` and start CADCraft again). Agents can switch it with the control channel: `ui.set {"systemCursor": true}`.
+Over the drawing area Cadino hides the system cursor and draws its own crosshair. Tools that follow the system cursor (Windows Magnifier set to follow or centre the mouse pointer, other screen magnifiers, screen recorders, remote desktops) lose track of it there. Turn on **View ▸ Accessibility ▸ Show System Cursor** to keep a small system crosshair visible at the centre of the drawn one, or start Cadino with the environment variable `CADCRAFT_SYSTEM_CURSOR=1` (on Windows, set it once with `setx CADCRAFT_SYSTEM_CURSOR 1` and start Cadino again). Agents can switch it with the control channel: `ui.set {"systemCursor": true}`.
 
 ### Animation effects
 
-CADCraft follows the operating system's animation setting. When the system is set to show no animations, dialogs, menus and tooltips appear at once instead of fading in, collapsing sections and scroll bars change at once, and the mouse wheel scrolls lists a whole step at a time instead of gliding. Zooming the drawing with the wheel always moves a whole step; with Ctrl held (a touchpad pinch, on Windows) it glides to the new zoom only while animation effects show.
+Cadino follows the operating system's animation setting. When the system is set to show no animations, dialogs, menus and tooltips appear at once instead of fading in, collapsing sections and scroll bars change at once, and the mouse wheel scrolls lists a whole step at a time instead of gliding. Zooming the drawing with the wheel always moves a whole step; with Ctrl held (a touchpad pinch, on Windows) it glides to the new zoom only while animation effects show.
 
 | System | Where the setting is |
 |---|---|
@@ -270,7 +253,7 @@ CADCraft follows the operating system's animation setting. When the system is se
 | Linux, BSD | the desktop's reduced-motion (or animations) setting, read through the XDG Desktop Portal |
 | Web | the browser's `prefers-reduced-motion` |
 
-A change to the system setting is picked up while CADCraft runs, within a few seconds. To choose for CADCraft alone, use **View ▸ Accessibility ▸ Animation Effects**: **Use System Setting** (the default), **On** or **Off**. Options ▸ Display has the same choice. Agents can set it with the control channel: `ui.set {"animations": "off"}` (`"system"`, `"on"` or `"off"`), and `ui.inspect` reports whether animations show (`animations`).
+A change to the system setting is picked up while Cadino runs, within a few seconds. To choose for Cadino alone, use **View ▸ Accessibility ▸ Animation Effects**: **Use System Setting** (the default), **On** or **Off**. Options ▸ Display has the same choice. Agents can set it with the control channel: `ui.set {"animations": "off"}` (`"system"`, `"on"` or `"off"`), and `ui.inspect` reports whether animations show (`animations`).
 
 Drafting feedback is not an animation effect and stays as it is: rubber bands and previews, snap markers, the pause that acquires an object snap tracking point, the text cursor's blink, the spinner shown while a drawing opens, and pan and zoom, which follow the pointer and the wheel directly.
 
@@ -278,21 +261,45 @@ Drafting feedback is not an animation effect and stays as it is: rubber bands an
 
 See [ROADMAP.md](ROADMAP.md) for the stage, measured parity and the estimate of remaining work, and [docs/gaps.md](docs/gaps.md) for everything still missing.
 
-## Downloads
+## Install
 
-**Download CADCraft** from GitHub: the [latest release](https://github.com/storytold/cadcraft/releases/latest) has every build listed below, and [all releases](https://github.com/storytold/cadcraft/releases) has earlier versions and their notes. `<ver>` in the file names is the version number, and `SHA256SUMS.txt` lists a checksum for every file.
+Cadino's Windows release is three files plus `SHA256SUMS.txt` (`<ver>` is the version number).
+How they are built: [docs/release.md](docs/release.md).
 
-### Windows
+| File | What it is |
+|---|---|
+| `Cadino-<ver>-windows-x64.msi` | the installer (64-bit Intel/AMD Windows 10 or 11) |
+| `Cadino-<ver>-windows-x64-portable.zip` | the same program, to run from any folder |
+| `Cadino-<ver>-source.zip` | the source code of exactly that build, with the OpenCASCADE sources it links |
 
-| Build | Installer | Portable |
-|---|---|---|
-| x64 (64-bit Intel/AMD) | `cadcraft-<ver>-windows-x64.msi` | `cadcraft-<ver>-windows-x64-portable.zip` |
-| arm64 (Snapdragon and other ARM PCs) | `cadcraft-<ver>-windows-arm64.msi` | `cadcraft-<ver>-windows-arm64-portable.zip` |
-| x86 (32-bit) | `cadcraft-<ver>-windows-x86.msi` | `cadcraft-<ver>-windows-x86-portable.zip` |
+**Installer.** Double-click the MSI. It installs Cadino for all users into `Program Files\Cadino`
+(administrator rights needed), adds Cadino to the Start menu, asks whether to add a desktop
+shortcut too (unticked by default) and offers Cadino under "Open with" for `.dxf` and `.dwg`
+drawings, without changing your default app for them. Silent install, with the desktop shortcut:
 
-Installers and executables are code-signed.
+```powershell
+msiexec /i Cadino-<ver>-windows-x64.msi /qn DESKTOPSHORTCUT=1
+```
 
-The installer adds CADCraft to the Start menu and asks whether to add a desktop shortcut too (unticked by default). For a silent install with the desktop shortcut: `msiexec /i cadcraft-<ver>-windows-x64.msi /qn DESKTOPSHORTCUT=1`.
+Uninstall from Settings ▸ Apps ▸ Installed apps ▸ Cadino. A newer MSI upgrades an older one in
+place. Cadino has its own installer identity, so it never replaces or removes a CADCraft install.
+
+**Portable.** Unzip anywhere and run `Cadino.exe` in the `Cadino-<ver>` folder. Keep
+`cadcraft-cli.exe` next to it: the AI options and the MCP configurations use it from there.
+
+Both hold `Cadino.exe`, `cadcraft-cli.exe` (command line and MCP server), `README-Cadino.txt`,
+the licences and `THIRD-PARTY-NOTICES.txt`, the licences of everything bundled. No Visual C++
+redistributable is needed. Settings, logs and autosaves go to `%APPDATA%\Cadino`.
+
+**Unsigned builds.** The MSI and the executables are not code-signed. Windows SmartScreen may
+say "Windows protected your PC" the first time: choose More info ▸ Run anyway. Check the download
+against `SHA256SUMS.txt` first. In PowerShell, in the download folder:
+
+```powershell
+Get-FileHash -Algorithm SHA256 Cadino-<ver>-windows-x64.msi   # compare with SHA256SUMS.txt
+```
+
+or, with Git Bash, WSL or Linux: `sha256sum -c SHA256SUMS.txt`.
 
 **If the app doesn't open on Windows:** the desktop app initializes only DirectX 12 by default.
 Letting wgpu also create an OpenGL instance can crash some graphics drivers (AMD's
@@ -302,106 +309,43 @@ PowerShell, from the folder containing the executable:
 
 ```powershell
 $env:WGPU_BACKEND = "vulkan"
-& .\cadcraft.exe
+& .\Cadino.exe
 Remove-Item Env:WGPU_BACKEND                     # restore the default for later launches
 ```
 
 An explicit `gl` override can bring the driver crash back on affected systems. The macOS, Linux
 and web backend defaults are unchanged.
 
-### macOS
+### Other platforms
 
-| Build | File | Notes |
-|---|---|---|
-| App, universal (Apple silicon + Intel) | `cadcraft-<ver>-macos-universal.dmg` | Signed and notarized |
-| Command-line tool, universal | `cadcraft-cli-<ver>-macos-universal.zip` | Signed and notarized |
+Cadino builds from source on macOS, Linux, FreeBSD and the web (see [Quick start](#quick-start));
+there are no packaged Cadino releases for them yet.
 
-### Linux
+## Based on CADCraft
 
-| Format | x86_64 | aarch64 (ARM64) | Notes |
-|---|---|---|---|
-| AppImage | `cadcraft-<ver>-linux-x86_64.AppImage` | `cadcraft-<ver>-linux-aarch64.AppImage` | Runs anywhere; updates itself with [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) (`.zsync` files) |
-| Flatpak | `cadcraft-<ver>-linux-x86_64.flatpak` | `cadcraft-<ver>-linux-aarch64.flatpak` | Sandboxed; `flatpak install --user <file>` |
-| Debian/Ubuntu | `cadcraft-<ver>-linux-x86_64.deb` | `cadcraft-<ver>-linux-aarch64.deb` | |
-| Fedora/RHEL/openSUSE | `cadcraft-<ver>-linux-x86_64.rpm` | `cadcraft-<ver>-linux-aarch64.rpm` | |
-| Tarball | `cadcraft-<ver>-linux-x86_64.tar.gz` | `cadcraft-<ver>-linux-aarch64.tar.gz` | Unpack anywhere |
-
-RISC-V (riscv64): `cadcraft-<ver>-linux-riscv64.tar.gz`, cross-compiled; needs glibc 2.39 or newer (Ubuntu 24.04+, Debian 13+).
-
-### FreeBSD
-
-| Build | File |
-|---|---|
-| x86_64 | `cadcraft-<ver>-freebsd-x86_64.tar.gz` |
-
-### Web (WebAssembly)
-
-| Build | File | Notes |
-|---|---|---|
-| Static site | `cadcraft-web-<ver>.zip` | Runs in a modern browser; host it on any static server |
-
-## The Crafting Apps
-
-CADCraft is one of the **Crafting Apps**: free, open-source creative tools from the
-[ArtCraft](https://getartcraft.com/) team, each written from scratch in Rust and each able to
-stand on its own.
-
-| | App | What it's for | Code | Learn more |
-|:-:|---|---|---|---|
-| <img src="https://raw.githubusercontent.com/storytold/photocraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.photocraft.png" alt="" width="32" height="32"> | **PhotoCraft** | Image editing: layers, masks, type and real PSD files | [GitHub](https://github.com/storytold/photocraft) | [Website](https://getartcraft.com/apps/photocraft) |
-| <img src="https://raw.githubusercontent.com/storytold/vectorcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.vectorcraft.png" alt="" width="32" height="32"> | **VectorCraft** | Vector illustration | [GitHub](https://github.com/storytold/vectorcraft) | [Website](https://getartcraft.com/apps/vectorcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/filmcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.filmcraft.png" alt="" width="32" height="32"> | **FilmCraft** | Video editing, color and sound | [GitHub](https://github.com/storytold/filmcraft) | [Website](https://getartcraft.com/apps/filmcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/lightcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.lightcraft.png" alt="" width="32" height="32"> | **LightCraft** | Photo library and raw development | [GitHub](https://github.com/storytold/lightcraft) | [Website](https://getartcraft.com/apps/lightcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/pdfcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.pdfcraft.png" alt="" width="32" height="32"> | **PdfCraft** | Reading, organizing and protecting PDFs | [GitHub](https://github.com/storytold/pdfcraft) | [Website](https://getartcraft.com/apps/pdfcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/effectcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.effectcraft.png" alt="" width="32" height="32"> | **EffectCraft** | Motion graphics and visual effects | [GitHub](https://github.com/storytold/effectcraft) | [Website](https://getartcraft.com/apps/effectcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/designcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.designcraft.png" alt="" width="32" height="32"> | **DesignCraft** | Page layout and publishing | [GitHub](https://github.com/storytold/designcraft) | [Website](https://getartcraft.com/apps/designcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/cadcraft/main/assets/app-icon/cadcraft-64.png" alt="" width="32" height="32"> | **CADCraft** | **Computer-aided design and drafting · you are here** | [GitHub](https://github.com/storytold/cadcraft) | [Website](https://getartcraft.com/apps/cadcraft) |
-
-And [**ArtCraft**](https://getartcraft.com/) itself, our AI image and video studio for artists who want real control.
-
-<br>
-
-<p align="center">
-  <a href="https://discord.gg/artcraft"><img alt="Join the ArtCraft community on Discord" src="https://img.shields.io/badge/Join%20us%20on%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" height="40"></a>
-</p>
-
-<h3 align="center">Come make things with us</h3>
-
-<p align="center">
-  Our Discord is where artists of every kind hang out: people who paint, shoot, draw, cut film,
-  set type, and people still figuring out what they like to make. Share what you're working on,
-  ask for help, tell us what's broken, or tell us what you wish these tools could do.
-  Whatever your medium and however long you've been at it, you're welcome here.
-</p>
-
-<p align="center">
-  <a href="https://discord.gg/artcraft"><b>discord.gg/artcraft</b></a> ·
-  <a href="https://getartcraft.com/">getartcraft.com</a> ·
-  <a href="https://getartcraft.com/apps">The Crafting Apps</a> ·
-  <a href="https://getartcraft.com/apps/cadcraft">CADCraft</a>
-</p>
+Cadino is a modified version of CADCraft 0.7.0 by the CADCraft contributors, used under MIT OR
+Apache-2.0. Cadino is a separate project: it is not made, sponsored or endorsed by the ArtCraft
+team or the CADCraft project.
 
 ## License and credits
 
-CADCraft is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
-Copyright (c) 2026 ArtCraft Team and the CADCraft contributors. Required notices are in [NOTICE](NOTICE).
+Cadino is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
+Copyright (c) 2026 Cadino contributors. Portions copyright (c) 2026 ArtCraft Team and the CADCraft
+contributors, under the same licences. Required notices are in [NOTICE](NOTICE). Release builds
+ship `THIRD-PARTY-NOTICES.txt` (`cargo xtask notices <out-dir>`) with the licences of
+OpenCASCADE, the fonts and every bundled crate.
 
 Bundled fonts, icons, images and other assets keep their own open licenses; each one is listed
 with its author, source and license in [ATTRIBUTION.md](ATTRIBUTION.md).
 
-CADCraft's icons, its single-stroke drafting font, its hatch patterns and its linetypes are all
-original work, drawn or defined in code. The sample drawings are generated in code too.
+Cadino's app icon, its UI icons, its single-stroke drafting font, its hatch patterns and its
+linetypes are all original work, drawn or defined in code. The sample drawings are generated in
+code too.
 
-The ArtCraft name, wordmark and logos in [`docs/brand/`](docs/brand/) are trademarks of the
-ArtCraft Team and are not covered by this license. They may be used only unmodified, and only as
-part of this repository and CADCraft, under [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt).
-Forks and modified versions must remove them.
+The ArtCraft name, wordmark and logos are trademarks of the ArtCraft Team. Cadino does not use
+them, and the brand files that came with the CADCraft sources (`docs/brand/`) are removed, as
+their terms require of modified versions.
 
-<sub>Autodesk, AutoCAD and DWG are trademarks or registered trademarks of Autodesk, Inc. in the United States and/or other countries. CADCraft is an independent, open-source project and is not affiliated with, sponsored by or endorsed by Autodesk, Inc.; these names are used only to describe the workflows and file formats it is compatible with.</sub>
-
-<p align="center">
-  <a href="https://getartcraft.com/"><img alt="ArtCraft" src="docs/brand/artcraft-mark.svg" width="28"></a><br>
-  <sub>Made by the <a href="https://getartcraft.com/">ArtCraft</a> team and community.</sub>
-</p>
+<sub>Autodesk, AutoCAD and DWG are trademarks or registered trademarks of Autodesk, Inc. in the United States and/or other countries. Rhino is a trademark of Robert McNeel & Associates. Cadino is an independent, open-source project and is not affiliated with, sponsored by or endorsed by Autodesk, Inc. or Robert McNeel & Associates; these names are used only to describe the workflows and file formats it is compatible with.</sub>
 
 Tool Sets, Layers, and Properties can be regrouped, split, floated within the app window, closed, and reopened. The drawing canvas stays visible and cannot be closed or turned into a tab. Drag a panel header to a target edge or another header. Its context menu offers Float panel, Move to group, and Close panel. Existing panel toggles reopen panels at their saved location; Reset Panel Layout restores the app layout. Floating panels remain inside the current app window.

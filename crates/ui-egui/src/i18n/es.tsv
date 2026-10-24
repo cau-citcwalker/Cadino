@@ -157,7 +157,7 @@
 	Commits	Commits
 	Company	Empresa
 	Compare Drawings...	Comparar dibujos...
-	Computer-aided design and drafting: an open-source, clean-room CAD application written in pure Rust.	Diseño y dibujo asistidos por computadora: una aplicación CAD de código abierto, desarrollada de forma independiente y escrita íntegramente en Rust.
+	Computer-aided design and drafting: an open-source, clean-room CAD application written in Rust.	Diseño y dibujo asistidos por computadora: una aplicación CAD de código abierto, desarrollada de forma independiente y escrita en Rust.
 	Concentric	Concéntrica
 	Cone	Cono
 	Constraint Bars	Barras de restricciones
@@ -454,8 +454,6 @@
 	Jogged	Con recodo
 	Jogged Linear	Lineal con recodo
 	Join	Unir
-	Join the ArtCraft Discord…	Únete al Discord de ArtCraft…
-	Join us on Discord	Únete a nosotros en Discord
 	Keep the system cursor visible over the drawing area	Mantener visible el cursor del sistema sobre el área de dibujo
 	Language	Idioma
 	Largest array	Matriz más grande
@@ -607,7 +605,6 @@
 	Offset	Desfase
 	On	Activado
 	On/Off	Activar/desactivar
-	One of the Crafting Apps by the ArtCraft team and community.	Una de las Crafting Apps del equipo y la comunidad de ArtCraft.
 	Only in this drawing: {n}	Solo en este dibujo: {n}
 	Only in {name}: {n}	Solo en {name}: {n}
 	Open	Abrir
