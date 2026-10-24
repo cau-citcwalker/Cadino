@@ -203,3 +203,65 @@ fn the_block_editor_shows_parameters_and_bvstate_opens_the_visibility_states() {
     app.cmdline("-BVSTATE");
     assert!(app.session.current_prompt().is_some_and(|p| p.message == "Enter an option"), "{:?}", app.session.current_prompt());
 }
+
+/// BACTION Lookup adds an empty table and the Property Lookup Table dialog opens on it; BLOOKUPTABLE
+/// typed bare opens it too. Its columns, rows and Allow reverse lookup go through `blookuptable`.
+#[test]
+fn the_property_lookup_table_dialog_edits_a_lookup_actions_table() {
+    let mut app = app_with_blocks();
+    app.run("bedit", json!({ "name": "Window" })).unwrap();
+    app.run("bparameter", json!({ "type": "linear", "base": [0, -1], "end": [2, -1], "label": "Width" })).unwrap();
+    app.run("bparameter", json!({ "type": "lookup", "at": [1, 2], "label": "Size" })).unwrap();
+    app.run("baction", json!({ "type": "lookup", "parameter": "Size", "columns": [{ "parameter": "Size", "lookup": true }] })).unwrap();
+    let ctx = egui::Context::default();
+    app.logic(&ctx);
+    painted(&mut app, &ctx);
+    let t = app.bedit.lookup.as_ref().expect("an empty table opens the dialog");
+    assert_eq!(t.columns.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["Size"]);
+    assert_eq!(t.available.len(), 2);
+
+    // Add the width as an input property, two rows, Allow reverse lookup; OK sets the table.
+    let width = app.bedit.lookup.as_ref().unwrap().available[0].clone();
+    if let Some(t) = app.bedit.lookup.as_mut() {
+        t.columns.insert(0, bedit::LookupCol { unmatched: "Custom".into(), ..width });
+        t.rows = vec![vec!["1".into(), "Small".into()], vec!["2".into(), "Large".into()]];
+        t.columns[1].reverse = true;
+    }
+    let text = painted(&mut app, &ctx);
+    for s in ["Property Lookup Table", "Input Properties", "Lookup Properties", "Width", "Size", "<Unmatched>", "Allow reverse lookup", "Audit"] {
+        assert!(text.contains(s), "{s} missing from:\n{text}");
+    }
+    bedit::audit_lookup_table(&mut app);
+    assert!(app.bedit.lookup.as_ref().is_some_and(|t| t.note.is_some() && t.error.is_none()));
+    assert!(bedit::confirm_lookup_table(&mut app));
+    let r = app.run("blookuptable", json!({})).unwrap();
+    assert_eq!(r["rows"], json!([["1", "Small"], ["2", "Large"]]));
+    assert_eq!(r["columns"][1]["reverse"], json!(true));
+
+    // Typed bare, it opens on that table again; a bad table keeps the dialog with the reason.
+    app.cmdline("BLOOKUPTABLE");
+    assert_eq!(app.bedit.lookup.as_ref().map(|t| t.rows.len()), Some(2));
+    if let Some(t) = app.bedit.lookup.as_mut() {
+        t.rows[1][0] = "1".into();
+    }
+    assert!(!bedit::confirm_lookup_table(&mut app));
+    assert!(app.bedit.lookup.as_ref().and_then(|t| t.error.as_deref()).is_some_and(|e| e.contains("same input values")));
+}
+
+/// Default action names and state values show in the interface language; others as typed.
+#[test]
+fn default_action_names_and_dynamic_values_translate() {
+    use cadcraft_ui_egui::i18n::with_language;
+    with_language("ko", || {
+        assert_eq!(bedit::shown_action("Stretch1"), format!("{}1", cadcraft_ui_egui::i18n::t("Stretch")));
+        assert_ne!(bedit::shown_action("Move"), "Move");
+        assert_eq!(bedit::shown_action("Door swing"), "Door swing");
+        assert_eq!(bedit::shown_value("Closed"), cadcraft_ui_egui::i18n::t("Closed"));
+        assert_eq!(bedit::shown_value("Shut"), "Shut");
+        // A state named "Open" is shown as the state (열림), not the verb Open (열기).
+        assert_eq!(bedit::shown_value("Open"), "열림");
+        assert_ne!(bedit::shown_value("Open"), cadcraft_ui_egui::i18n::t("Open"));
+    });
+    with_language("uk", || assert_eq!(bedit::shown_value("Open"), "Відкрито"));
+    assert_eq!(bedit::shown_value("Not Flipped"), "Not Flipped");
+}

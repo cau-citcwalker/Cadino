@@ -4,14 +4,16 @@
 //! changes the drawing. JSON calls (`bedit {name}`) and a selected block reference skip it.
 //!
 //! Also the Visibility States dialog (BVSTATE typed bare in the Block Editor), which runs
-//! `bvstate` for each change, and the dynamic block the editor's canvas shows
-//! ([`authored`]).
+//! `bvstate` for each change, the Property Lookup Table dialog (BLOOKUPTABLE typed bare), which
+//! reads and sets a lookup action's table through `blookuptable`, the dynamic block the editor's
+//! canvas shows ([`authored`]), and the names of dynamic blocks' default actions and states in
+//! the interface language ([`shown_action`], [`shown_value`]).
 
 use std::sync::Arc;
 
 use cadcraft_color::Rgb;
 use cadcraft_engine::blockedit::CURRENT_DRAWING;
-use cadcraft_engine::doc::dynblock::{DynamicBlock, ParameterKind};
+use cadcraft_engine::doc::dynblock::{ActionKind, DynamicBlock, ParameterKind};
 use cadcraft_engine::doc::{Drawing, EntityKind};
 use cadcraft_geom::Vec2;
 use cadcraft_render::DisplayList;
@@ -35,6 +37,45 @@ pub struct State {
     authored: Option<((u64, u64), Option<(Arc<DynamicBlock>, Vec2)>)>,
     /// The Visibility States dialog, while it is open.
     vstates: Option<VStates>,
+    /// The Property Lookup Table dialog, while it is open.
+    pub lookup: Option<LookupTable>,
+    /// Lookup actions with an empty table the dialog opened on by itself: (drawing uid, node).
+    offered: Vec<(u64, i32)>,
+}
+
+/// One column of the Property Lookup Table dialog: a parameter property, as `blookuptable`
+/// reports and takes it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LookupCol {
+    pub parameter: i64,
+    pub label: String,
+    pub property: String,
+    /// A lookup property (else an input property).
+    pub lookup: bool,
+    /// What a reference shows when no row matches (input properties).
+    pub unmatched: String,
+    /// Allow reverse lookup (lookup properties), else Read only.
+    pub reverse: bool,
+}
+
+/// The Property Lookup Table dialog's state: one lookup action's table being edited.
+#[derive(Default)]
+pub struct LookupTable {
+    /// The lookup action (its graph id) and name.
+    pub action: i64,
+    pub name: String,
+    /// Input properties first, then lookup properties.
+    pub columns: Vec<LookupCol>,
+    pub rows: Vec<Vec<String>>,
+    /// The parameter properties a column can be.
+    pub available: Vec<LookupCol>,
+    /// The block's lookup actions: (node, name).
+    actions: Vec<(i64, String)>,
+    /// Add Properties is open, with the property picked (an index into `available`).
+    adding: Option<Option<usize>>,
+    pub error: Option<String>,
+    /// What Audit found.
+    pub note: Option<String>,
 }
 
 /// The Visibility States dialog's state.
@@ -110,6 +151,11 @@ pub fn authoring_dialog(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) 
 /// BVSTATE typed bare in the Block Editor opens the Visibility States dialog (with no visibility
 /// parameter, the command says why not).
 pub fn route(app: &mut CadApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
+    // BLOOKUPTABLE typed bare in the Block Editor opens the Property Lookup Table dialog (with no
+    // lookup action, the command says why not).
+    if id == "blookuptable" && params.is_null() {
+        return Some(open_lookup_table(app, None).map(|()| Value::Null));
+    }
     if id == "bvstate" && params.is_null() {
         visibility_states(app)?;
         open_visibility_states(app);
@@ -449,4 +495,362 @@ pub(crate) fn visibility_states_dialog(app: &mut CadApp, ctx: &egui::Context) {
     if close || !open {
         app.bedit.vstates = None;
     }
+}
+
+/// A dynamic block action's name as the Block Editor's tag shows it: a default name ("Stretch",
+/// "Lookup1") in the interface language, any other as the block has it.
+pub fn shown_action(name: &str) -> String {
+    let base = name.trim_end_matches(|c: char| c.is_ascii_digit());
+    let digits = name.get(base.len()..).unwrap_or_default();
+    let t = match base {
+        "Move" => crate::tl!("Move"),
+        "Scale" => crate::tl!("Scale"),
+        "Stretch" => crate::tl!("Stretch"),
+        "Polar Stretch" => crate::tl!("Polar Stretch"),
+        "Array" => crate::tl!("Array"),
+        "Rotate" => crate::tl!("Rotate"),
+        "Flip" => crate::tl!("Flip"),
+        "Lookup" => crate::tl!("Lookup"),
+        _ => return name.to_string(),
+    };
+    format!("{t}{digits}")
+}
+
+/// A dynamic block property's value as Properties and the grips show it: flip states, the usual
+/// visibility state names and a lookup's "Custom" in the interface language; other values as the
+/// block has them. What is typed or chosen stays the block's own (English) value.
+pub fn shown_value(v: &str) -> String {
+    match v {
+        "Flipped" => crate::tl!("Flipped"),
+        "Not Flipped" => crate::tl!("Not Flipped"),
+        "Open" => crate::i18n::value("Open"),
+        "Closed" => crate::i18n::value("Closed"),
+        "Custom" => crate::tl!("Custom"),
+        other => other,
+    }
+    .to_string()
+}
+
+/// A menu of a dynamic property's choices, shown with [`shown_value`]: the value chosen (the
+/// block's own), if any.
+pub(crate) fn value_menu(ui: &mut egui::Ui, current: &str, choices: &[String]) -> Option<String> {
+    let mut out = None;
+    ui.menu_button(shown_value(current), |ui| {
+        for c in choices {
+            if ui.button(shown_value(c)).clicked() {
+                out = Some(c.clone());
+                ui.close();
+            }
+        }
+    });
+    out
+}
+
+fn col(v: &Value) -> LookupCol {
+    let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+    let b = |k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
+    LookupCol {
+        parameter: v.get("parameter").and_then(Value::as_i64).unwrap_or(0),
+        label: s("label"),
+        property: s("property"),
+        lookup: b("lookup"),
+        unmatched: s("unmatched"),
+        reverse: b("reverse"),
+    }
+}
+
+/// Open the Property Lookup Table dialog on lookup action `action` (the block's first when
+/// `None`), as `blookuptable` reports it.
+pub fn open_lookup_table(app: &mut CadApp, action: Option<i64>) -> Result<(), String> {
+    let actions: Vec<(i64, String)> = authored(app)
+        .map(|(m, _)| m.actions.iter().filter(|a| matches!(a.kind, ActionKind::Lookup { .. })).map(|a| (i64::from(a.node), a.name.clone())).collect())
+        .unwrap_or_default();
+    let action = action.or_else(|| actions.first().map(|(n, _)| *n));
+    let r = app.run("blookuptable", action.map_or(json!({}), |a| json!({ "action": a })))?;
+    let list = |k: &str| r.get(k).and_then(Value::as_array).cloned().unwrap_or_default();
+    let read: Vec<LookupCol> = list("columns").iter().map(col).collect();
+    // Input properties first, as the dialog shows them.
+    let order: Vec<usize> = (0..read.len())
+        .filter(|i| read.get(*i).is_some_and(|c| !c.lookup))
+        .chain((0..read.len()).filter(|i| read.get(*i).is_some_and(|c| c.lookup)))
+        .collect();
+    let rows: Vec<Vec<String>> = list("rows")
+        .iter()
+        .map(|r| {
+            let cells: Vec<String> = r.as_array().map(|a| a.iter().map(|c| c.as_str().unwrap_or_default().to_string()).collect()).unwrap_or_default();
+            order.iter().map(|i| cells.get(*i).cloned().unwrap_or_default()).collect()
+        })
+        .collect();
+    app.bedit.lookup = Some(LookupTable {
+        action: r.get("node").and_then(Value::as_i64).unwrap_or(0),
+        name: r.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
+        columns: order.iter().filter_map(|i| read.get(*i).cloned()).collect(),
+        rows,
+        available: list("available").iter().map(col).collect(),
+        actions,
+        ..LookupTable::default()
+    });
+    Ok(())
+}
+
+/// The table as `blookuptable` takes it.
+fn lookup_params(t: &LookupTable, check: bool) -> Value {
+    let columns: Vec<Value> = t
+        .columns
+        .iter()
+        .map(|c| json!({ "parameter": c.parameter, "property": c.property, "lookup": c.lookup, "unmatched": c.unmatched, "reverse": c.reverse }))
+        .collect();
+    json!({ "action": t.action, "columns": columns, "rows": t.rows, "check": check })
+}
+
+/// OK: set the table. Returns whether it was set; if not, the dialog shows why and stays open.
+pub fn confirm_lookup_table(app: &mut CadApp) -> bool {
+    let Some(p) = app.bedit.lookup.as_ref().map(|t| lookup_params(t, false)) else { return false };
+    match app.run("blookuptable", p) {
+        Ok(_) => {
+            app.bedit.lookup = None;
+            true
+        }
+        Err(e) => {
+            if let Some(t) = app.bedit.lookup.as_mut() {
+                t.error = Some(e);
+            }
+            false
+        }
+    }
+}
+
+/// Audit: check the table without changing it.
+pub fn audit_lookup_table(app: &mut CadApp) {
+    let Some(p) = app.bedit.lookup.as_ref().map(|t| lookup_params(t, true)) else { return };
+    let r = app.run("blookuptable", p);
+    if let Some(t) = app.bedit.lookup.as_mut() {
+        match r {
+            Ok(_) => {
+                t.error = None;
+                t.note = Some(crate::tl!("No errors found.").to_string());
+            }
+            Err(e) => {
+                t.note = None;
+                t.error = Some(e);
+            }
+        }
+    }
+}
+
+/// Open the dialog by itself on a lookup action whose table is empty (BACTION Lookup has just
+/// added it), once for each.
+pub(crate) fn offer_lookup_table(app: &mut CadApp) {
+    if app.bedit.lookup.is_some() {
+        return;
+    }
+    let Some((m, _)) = authored(app) else { return };
+    let Ok(uid) = app.session.state().map(|st| st.uid) else { return };
+    let empty = m.actions.iter().find(|a| {
+        matches!(&a.kind, ActionKind::Lookup { columns, rows } if rows.is_empty() && columns.iter().all(|c| c.lookup))
+            && !app.bedit.offered.contains(&(uid, a.node))
+    });
+    let Some(node) = empty.map(|a| a.node) else { return };
+    app.bedit.offered.push((uid, node));
+    if let Err(e) = open_lookup_table(app, Some(i64::from(node))) {
+        app.session.echo(e);
+    }
+}
+
+/// The Property Lookup Table dialog: the lookup action's input properties and lookup properties
+/// as columns, a row per set of values, the unmatched row (what a reference shows when no row
+/// matches; a lookup property's Read only or Allow reverse lookup), Add Properties, Audit, Add
+/// Row, and OK, which sets the table with `blookuptable`.
+pub(crate) fn lookup_table_dialog(app: &mut CadApp, ctx: &egui::Context) {
+    if app.bedit.lookup.is_none() {
+        return;
+    }
+    if app.session.state().ok().and_then(|st| st.block_edit.as_ref()).is_none() {
+        app.bedit.lookup = None;
+        return;
+    }
+    let t = Tokens::get();
+    let mut open = true;
+    let (mut ok, mut cancel, mut audit) = (false, false, false);
+    let mut switch: Option<i64> = None;
+    let Some(lt) = app.bedit.lookup.as_mut() else { return };
+    egui::Window::new(crate::tl!("Property Lookup Table"))
+        .id(egui::Id::new("Property Lookup Table"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(ctx.content_rect().center())
+        .show(ctx, |ui| {
+            ui.set_min_width(420.0);
+            ui.horizontal(|ui| {
+                ui.label(crate::tl!("Action name:"));
+                if lt.actions.len() > 1 {
+                    egui::ComboBox::from_id_salt("lookup-action").selected_text(shown_action(&lt.name)).show_ui(ui, |ui| {
+                        for (n, name) in &lt.actions {
+                            if ui.selectable_label(*n == lt.action, shown_action(name)).clicked() && *n != lt.action {
+                                switch = Some(*n);
+                            }
+                        }
+                    });
+                } else {
+                    ui.label(RichText::new(shown_action(&lt.name)).strong());
+                }
+                ui.separator();
+                if ui.button(crate::tl!("Add Properties...")).clicked() {
+                    lt.adding = Some(None);
+                }
+                if ui.button(crate::tl!("Audit")).clicked() {
+                    audit = true;
+                }
+            });
+            ui.add_space(4.0);
+            lookup_grid(ui, lt);
+            if ui.button(crate::tl!("Add Row")).clicked() && lt.rows.len() < 10_000 {
+                lt.rows.push(vec![String::new(); lt.columns.len()]);
+            }
+            add_properties(ui, lt);
+            if let Some(e) = &lt.error {
+                ui.colored_label(t.warn, e);
+            } else if let Some(n) = &lt.note {
+                ui.colored_label(t.text_dim, n);
+            }
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(crate::tl!("Cancel")).clicked() {
+                        cancel = true;
+                    }
+                    if ui.button(crate::tl!("OK")).clicked() {
+                        ok = true;
+                    }
+                });
+            });
+        });
+    if let Some(n) = switch
+        && let Err(e) = open_lookup_table(app, Some(n))
+    {
+        app.session.echo(e);
+    }
+    if audit {
+        audit_lookup_table(app);
+    }
+    if cancel || !open {
+        app.bedit.lookup = None;
+    } else if ok {
+        confirm_lookup_table(app);
+    }
+}
+
+/// The table: a heading row (Input Properties, Lookup Properties), the columns' properties (each
+/// with a remove button, but the last lookup property), the rows (each with a delete button) and
+/// the unmatched row.
+fn lookup_grid(ui: &mut egui::Ui, lt: &mut LookupTable) {
+    let t = Tokens::get();
+    let first_lookup = lt.columns.iter().position(|c| c.lookup);
+    let mut remove_col: Option<usize> = None;
+    let mut remove_row: Option<usize> = None;
+    egui::ScrollArea::both().id_salt("lookup-table").max_height(320.0).show(ui, |ui| {
+        egui::Grid::new("lookup-table-grid").striped(true).spacing(vec2(6.0, 4.0)).show(ui, |ui| {
+            ui.label("");
+            for i in 0..lt.columns.len() {
+                let heading = if i == 0 && first_lookup != Some(0) {
+                    crate::tl!("Input Properties")
+                } else if Some(i) == first_lookup {
+                    crate::tl!("Lookup Properties")
+                } else {
+                    ""
+                };
+                ui.label(RichText::new(heading).color(t.text_dim));
+            }
+            ui.end_row();
+            ui.label("");
+            let lookups = lt.columns.iter().filter(|c| c.lookup).count();
+            for (i, c) in lt.columns.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&c.label).strong());
+                    // The last lookup property stays: a table gives a lookup value.
+                    if !(c.lookup && lookups <= 1) && ui.small_button("x").on_hover_text(crate::tl!("Remove Properties")).clicked() {
+                        remove_col = Some(i);
+                    }
+                });
+            }
+            ui.end_row();
+            for (r, row) in lt.rows.iter_mut().enumerate() {
+                if ui.small_button("x").on_hover_text(crate::tl!("Delete Row")).clicked() {
+                    remove_row = Some(r);
+                }
+                row.resize(lt.columns.len(), String::new());
+                for cell in row.iter_mut() {
+                    ui.add(egui::TextEdit::singleline(cell).desired_width(96.0));
+                }
+                ui.end_row();
+            }
+            ui.label(RichText::new(crate::tl!("<Unmatched>")).color(t.text_dim));
+            for (i, c) in lt.columns.iter_mut().enumerate() {
+                if c.lookup {
+                    let shown = if c.reverse { crate::tl!("Allow reverse lookup") } else { crate::tl!("Read only") };
+                    egui::ComboBox::from_id_salt(("lookup-reverse", i)).selected_text(shown).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut c.reverse, false, crate::tl!("Read only"));
+                        ui.selectable_value(&mut c.reverse, true, crate::tl!("Allow reverse lookup"));
+                    });
+                } else {
+                    ui.add(egui::TextEdit::singleline(&mut c.unmatched).desired_width(96.0));
+                }
+            }
+            ui.end_row();
+        });
+    });
+    if let Some(i) = remove_col.filter(|i| *i < lt.columns.len()) {
+        lt.columns.remove(i);
+        for r in &mut lt.rows {
+            if i < r.len() {
+                r.remove(i);
+            }
+        }
+    }
+    if let Some(r) = remove_row.filter(|r| *r < lt.rows.len()) {
+        lt.rows.remove(r);
+    }
+}
+
+/// Add Properties: the parameter properties not in the table yet; Add puts the one picked in as
+/// an input property (before the lookup properties) or a lookup property.
+fn add_properties(ui: &mut egui::Ui, lt: &mut LookupTable) {
+    let Some(picked) = lt.adding else { return };
+    ui.separator();
+    ui.label(crate::tl!("Parameter properties"));
+    let offered: Vec<usize> = (0..lt.available.len())
+        .filter(|i| lt.available.get(*i).is_some_and(|a| !lt.columns.iter().any(|c| c.parameter == a.parameter && c.lookup == a.lookup)))
+        .collect();
+    let mut chosen = picked;
+    if offered.is_empty() {
+        ui.label(RichText::new(crate::tl!("Every parameter property is in the table.")).color(Tokens::get().text_dim));
+    }
+    for i in &offered {
+        let Some(a) = lt.available.get(*i) else { continue };
+        let kind = if a.lookup { crate::tl!("Lookup Properties") } else { crate::tl!("Input Properties") };
+        if ui.selectable_label(chosen == Some(*i), format!("{} ({kind})", a.label)).clicked() {
+            chosen = Some(*i);
+        }
+    }
+    let mut close = false;
+    ui.horizontal(|ui| {
+        let ready = chosen.is_some_and(|i| offered.contains(&i));
+        if ui.add_enabled(ready, egui::Button::new(crate::tl!("Add"))).clicked()
+            && let Some(a) = chosen.and_then(|i| lt.available.get(i)).cloned()
+        {
+            let at = if a.lookup { lt.columns.len() } else { lt.columns.iter().position(|c| c.lookup).unwrap_or(lt.columns.len()) };
+            let unmatched = if a.lookup { String::new() } else { "Custom".to_string() };
+            lt.columns.insert(at, LookupCol { unmatched, ..a });
+            for r in &mut lt.rows {
+                r.insert(at.min(r.len()), String::new());
+            }
+            close = true;
+        }
+        if ui.button(crate::tl!("Cancel")).clicked() {
+            close = true;
+        }
+    });
+    lt.adding = if close { None } else { Some(chosen) };
 }

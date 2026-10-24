@@ -1078,11 +1078,12 @@ pub(crate) fn properties_section(app: &mut CadApp, ui: &mut egui::Ui) {
                     group(ui, "Custom");
                     for p in &props {
                         prop_row(ui, &p.name, |ui| {
+                            // Default state names show translated (the value set stays the block's).
                             let picked = match (p.editable, p.choices.is_empty()) {
-                                (true, false) => pick_menu(ui, &p.value, p.choices.iter().cloned()),
+                                (true, false) => crate::bedit::value_menu(ui, &p.value, &p.choices),
                                 (true, true) => edit_field(ui, ui.id().with(("dynprop", e.handle, &p.name)), p.value.clone()),
                                 (false, _) => {
-                                    read_only(ui, &p.value);
+                                    read_only(ui, &crate::bedit::shown_value(&p.value));
                                     None
                                 }
                             };

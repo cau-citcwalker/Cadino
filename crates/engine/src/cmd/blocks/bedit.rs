@@ -14,6 +14,7 @@ use crate::cmd::{CommandSpec, bad, bool_or, str_param};
 use crate::{Accept, EngineError, Input, Interactive, Prompt, Result, Session, Step};
 
 mod action;
+mod lookup;
 mod param;
 mod vstate;
 
@@ -21,6 +22,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
     let mut v = authoring_specs();
     v.extend(param::specs());
     v.extend(action::specs());
+    v.extend(lookup::specs());
     v.extend(vstate::specs());
     v
 }

@@ -847,6 +847,13 @@ pub struct VportTile {
     /// direction (DXF VIEWMODE 71 bit 1, lens 42, target 17); `None` for parallel projection.
     #[serde(default)]
     pub camera: Option<cadcraft_geom::Camera>,
+    /// DVIEW TWist: the view turned counter-clockwise about the line of sight, radians (DXF 51).
+    #[serde(default)]
+    pub twist: f64,
+    /// DVIEW CLip: the front and back clipping planes as depths along the view direction (DXF
+    /// VIEWMODE 71 bits 2, 4 and 16, and 43 and 44 measured from the target).
+    #[serde(default)]
+    pub clip: cadcraft_geom::Clip,
 }
 
 fn plan_dir() -> [f64; 3] {
@@ -867,6 +874,8 @@ impl Default for VportTile {
             cplane: Mat4::IDENTITY,
             ucs: Mat4::IDENTITY,
             camera: None,
+            twist: 0.0,
+            clip: cadcraft_geom::Clip::OFF,
         }
     }
 }

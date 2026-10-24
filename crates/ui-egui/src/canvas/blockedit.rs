@@ -1,10 +1,10 @@
 //! The Block Editor on the canvas (BEDIT): a tint over the drawing area so the editor can't be
 //! mistaken for the drawing, the block's base point marked at the origin, the dynamic block's
-//! parameters (with their labels and grips) and actions (tags with their names), and a bar with
-//! the block's name, Parameter, Action, the visibility state shown, Save Block, Save Block As and
-//! Close Block Editor.
+//! parameters (with their labels and grips) and actions (tags with their names, a default name in
+//! the interface language), and a bar with the block's name, Parameter, Action, the visibility
+//! state shown, Lookup Table, Save Block, Save Block As and Close Block Editor.
 
-use cadcraft_engine::doc::dynblock::ParameterKind;
+use cadcraft_engine::doc::dynblock::{ActionKind, ParameterKind};
 use cadcraft_engine::geom::{Vec2, Vec3};
 use egui::{Pos2, Rect, RichText, Shape, Stroke, vec2};
 use serde_json::json;
@@ -49,9 +49,11 @@ pub(super) fn paint(app: &mut CadApp, ctx: &egui::Context, p: &egui::Painter, xf
     }
     authoring(app, p, xf, rect);
     let states = crate::bedit::visibility_states(app);
+    let has_lookup = crate::bedit::authored(app).is_some_and(|(m, _)| m.actions.iter().any(|a| matches!(a.kind, ActionKind::Lookup { .. })));
     let mut action: Option<(&str, bool)> = None;
     let mut show_state: Option<String> = None;
     let mut open_states = false;
+    let mut open_lookup = false;
     egui::Area::new(id()).order(egui::Order::Foreground).pivot(egui::Align2::CENTER_TOP).fixed_pos(rect.center_top() + vec2(0.0, 8.0)).show(
         ctx,
         |ui| {
@@ -88,6 +90,9 @@ pub(super) fn paint(app: &mut CadApp, ctx: &egui::Context, p: &egui::Painter, xf
                             action = Some(("bvhide", true));
                         }
                     }
+                    if has_lookup && ui.button(crate::tl!("Lookup Table")).on_hover_text("BLOOKUPTABLE").clicked() {
+                        open_lookup = true;
+                    }
                     if ui.button(crate::tl!("Test Block")).on_hover_text("BTESTBLOCK").clicked() {
                         action = Some(("btestblock", false));
                     }
@@ -116,6 +121,11 @@ pub(super) fn paint(app: &mut CadApp, ctx: &egui::Context, p: &egui::Painter, xf
         crate::bedit::open_visibility_states(app);
     }
     crate::bedit::visibility_states_dialog(app, ctx);
+    if open_lookup && let Err(e) = crate::bedit::open_lookup_table(app, None) {
+        app.session.echo(e);
+    }
+    crate::bedit::offer_lookup_table(app);
+    crate::bedit::lookup_table_dialog(app, ctx);
     match action {
         // Prompting commands start like a menu item; BSAVE needs no answer.
         Some((id, true)) => app.start(id),
@@ -260,7 +270,7 @@ fn authoring(app: &mut CadApp, p: &egui::Painter, xf: &Xf, rect: Rect) {
         if !rect.expand(60.0).contains(c) {
             continue;
         }
-        let g = p.layout_no_wrap(a.name.clone(), crate::theme::small(), t.text);
+        let g = p.layout_no_wrap(crate::bedit::shown_action(&a.name), crate::theme::small(), t.text);
         let r = Rect::from_min_size(c, vec2(g.size().x + 20.0, g.size().y + 6.0));
         p.rect_filled(r, 3.0, t.cmd_bg);
         p.rect_stroke(r, 3.0, Stroke::new(1.0, tag), egui::StrokeKind::Inside);

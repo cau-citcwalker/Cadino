@@ -1634,8 +1634,16 @@ fn tables(tags: &[Tag], d: &mut Drawing, rx: &mut Rx) {
         }
     }
     // One *Active viewport is no tiling: the view is the editor's (it zooms to the extents),
-    // unless it looks along a direction or in a style of its own (kept for the editor to show).
-    let own_look = |t: &VportTile| t.shaded || t.edges || t.camera.is_some() || !matches!(t.view_dir, [x, y, z] if x == 0.0 && y == 0.0 && z > 0.0);
+    // unless it looks along a direction or in a style of its own, or is twisted or clipped (kept
+    // for the editor to show).
+    let own_look = |t: &VportTile| {
+        t.shaded
+            || t.edges
+            || t.camera.is_some()
+            || t.twist != 0.0
+            || !t.clip.is_off()
+            || !matches!(t.view_dir, [x, y, z] if x == 0.0 && y == 0.0 && z > 0.0)
+    };
     d.vports.retain(|c| c.tiles.len() > usize::from(c.is_active()) || c.tiles.first().is_some_and(own_look));
 }
 
@@ -1680,24 +1688,32 @@ fn vport_record(d: &mut Drawing, t: &T) {
     // there reads as wireframe; upgrade: resolve 348 to its VISUALSTYLE's type.
     let v = t.p(16);
     let view_dir = if v.is_finite() && v != Vec3::ZERO { [v.x, v.y, v.z] } else { [0.0, 0.0, 1.0] };
-    // 12 is in display coordinates, whose origin is the target (17); a tile's centre is in the
-    // view plane from the world origin. Twist (51) is not applied: tiles have none.
+    // 12 is in display coordinates, whose origin is the target (17) and whose axes the view
+    // twist (51, degrees) turns; a tile's centre is in its (twisted) view plane from the world
+    // origin.
     let target = t.p(17);
-    let center = Some(center + ViewDir::new(v).project(target)).filter(|c| c.is_finite()).unwrap_or(center);
+    let twist = t.f(51).filter(|a| a.is_finite()).map_or(0.0, |a| a.rem_euclid(360.0).to_radians());
+    let center = Some(center + ViewDir { twist, ..ViewDir::new(v) }.project(target)).filter(|c| c.is_finite()).unwrap_or(center);
     let mode = t.i(281).unwrap_or(0);
     // 2 is hidden line: unshaded with edges here (the Hidden style).
     let (shaded, edges) = (matches!(mode, 3..=6), matches!(mode, 2 | 5 | 6));
     let (ucs, cplane) = if cplane_marked(t) { (Mat4::IDENTITY, vport_ucs(t)) } else { (vport_ucs(t), Mat4::IDENTITY) };
     // VIEWMODE (71) bit 1: a perspective view through a lens of 42 mm, its camera as far from the
     // target (17) as the direction (16) is long; the view's height follows from those two.
-    let persp = t.i(71).unwrap_or(0) & 1 != 0;
+    let viewmode = t.i(71).unwrap_or(0);
+    let persp = viewmode & 1 != 0;
+    // VIEWMODE bits 2 and 4: front and back clipping planes, 43 and 44 from the target along the
+    // direction. A front plane at the eye (bit 16 clear) cuts no more than the near plane does.
+    let from_target = ViewDir::new(v).depth(target);
+    let plane = |bit: i64, code: i32| (viewmode & bit != 0).then(|| t.f(code)).flatten().map(|o| from_target + o);
+    let clip = cadcraft_geom::Clip::new(plane(2, 43).filter(|_| viewmode & 16 != 0), plane(4, 44));
     let camera =
         persp.then(|| cadcraft_geom::Camera::new(t.f(42).filter(|l| *l > 0.0).unwrap_or(cadcraft_geom::Camera::LENS), ViewDir::new(v).depth(target)));
     let height = match camera.map(|c| c.height_at(v.len())) {
         Some(h) if h.is_finite() && h > 0.0 => h,
         _ => height,
     };
-    let tile = VportTile { min: clamp(min), max: clamp(max), center, height, aspect, view_dir, shaded, edges, cplane, ucs, camera };
+    let tile = VportTile { min: clamp(min), max: clamp(max), center, height, aspect, view_dir, shaded, edges, cplane, ucs, camera, twist, clip };
     let name = if name.eq_ignore_ascii_case(VportConfig::ACTIVE) { VportConfig::ACTIVE.to_string() } else { name };
     let room = d.vports.len() < MAX_OBJECTS;
     match d.vports.iter_mut().find(|c| c.name.eq_ignore_ascii_case(&name)) {
@@ -1935,6 +1951,7 @@ pub fn read(bytes: &[u8]) -> Result<Drawing> {
         d.layers.insert(0, Layer::default());
     }
     crate::dxf_raw::read(&secs, &mut d);
+    cadcraft_doc::dynblock::file::from_file(&mut d);
     d.skipped_records = skipped;
     Ok(d)
 }

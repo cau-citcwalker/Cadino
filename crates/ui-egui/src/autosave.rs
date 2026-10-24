@@ -139,28 +139,28 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
     let mut later = false;
     egui::Modal::new(egui::Id::new("cc_drawing_recovery")).show(ctx, |ui| {
         ui.set_width(460.0);
-        ui.label(RichText::new("Drawing Recovery").strong());
+        ui.label(RichText::new(crate::tl!("Drawing Recovery")).strong());
         ui.add_space(4.0);
-        ui.label("Cadino did not close normally. These drawings were autosaved:");
+        ui.label(crate::tl!("Cadino did not close normally. These drawings were autosaved:"));
         ui.add_space(6.0);
         egui::Grid::new("cc_recovery_list").num_columns(4).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
             for (i, item) in app.recovery.items.iter().enumerate() {
                 ui.label(&item.drawing);
                 ui.label(RichText::new(format!("{} UTC · {} KB", utc(item.modified), item.bytes.div_ceil(1024))).color(t.text_dim));
-                if ui.button("Open").clicked() {
+                if ui.button(crate::tl!("Open")).clicked() {
                     open = Some(i);
                 }
-                if ui.button("Discard").clicked() {
+                if ui.button(crate::tl!("Discard")).clicked() {
                     discard = Some(i);
                 }
                 ui.end_row();
             }
         });
         ui.add_space(6.0);
-        ui.label(RichText::new("Opened drawings have no file name: save them to keep them.").color(t.text_dim));
+        ui.label(RichText::new(crate::tl!("Opened drawings have no file name: save them to keep them.")).color(t.text_dim));
         ui.add_space(8.0);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("Later").on_hover_text("Keep the files and ask again next time").clicked() {
+            if ui.button(crate::tl!("Later")).on_hover_text(crate::tl!("Keep the files and ask again next time")).clicked() {
                 later = true;
             }
         });

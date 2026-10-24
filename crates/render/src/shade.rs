@@ -9,6 +9,9 @@
 //! references as everything else is; this module depth-buffers them at twice the size and
 //! scales the picture down, so its edges are smooth.
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
 use cadcraft_color::Rgb;
 use cadcraft_doc::{Drawing, Handle, Space};
 use cadcraft_geom::{Mat4, Mesh3, Persp, Vec2, Vec3, ViewDir};
@@ -166,24 +169,47 @@ struct V {
 /// `center` (view plane, the target plane in perspective) `view_height` high: a picture
 /// `o.width` × `o.height`, as wide as that shape makes the view. `None` for a size out of range.
 pub fn render(d: &Drawing, dir: ViewDir, center: Vec2, view_height: f64, o: &RenderOptions) -> Option<Pixmap> {
+    render_cancellable(d, dir, center, view_height, o, None)
+}
+
+/// [`render`], stopped early (`None`) once `cancel` is set from another thread.
+pub fn render_cancellable(
+    d: &Drawing,
+    dir: ViewDir,
+    center: Vec2,
+    view_height: f64,
+    o: &RenderOptions,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Option<Pixmap> {
     let ok = |s: u32| (16..=MAX_SIDE).contains(&s);
     if !(ok(o.width) && ok(o.height) && view_height.is_finite() && view_height > 0.0 && center.is_finite()) {
         return None;
     }
-    let opts = crate::Options { view_dir: dir, render: true, tolerance: view_height * 1e-3, ..Default::default() };
+    let opts = crate::Options { view_dir: dir, render: true, tolerance: view_height * 1e-3, cancel, ..Default::default() };
     let list = crate::build(d, &Space::Model, &opts);
+    if opts.cancelled() {
+        return None;
+    }
     let sup = if u64::from(o.width) * u64::from(o.height) <= SUPER_PIXELS { SUPER } else { 1 };
     let (w, h) = (o.width * sup, o.height * sup);
     let mut img = Canvas::new(w, h, sup, dir.persp, center, f64::from(h) / view_height)?;
     // Depths relative to one of the model's own, so f32 keeps them apart far from the origin.
     img.zref = list.shade.first().and_then(|t| img.screen_raw(t.p[0])).map_or(0.0, |s| s.2);
+    let (lo, hi) = crate::persp::kept_depths(&dir);
+    img.keep = (lo - img.zref, hi - img.zref);
     for t in &list.shade {
+        if opts.cancelled() {
+            return None;
+        }
         img.tri(t);
     }
     if o.edges {
         for (pts, c) in &list.shade_edges {
             img.polyline(pts, *c);
         }
+    }
+    if opts.cancelled() {
+        return None;
     }
     img.finish(o.width, o.height)
 }
@@ -203,6 +229,8 @@ struct Canvas {
     span: f64,
     /// Depths are kept relative to this one.
     zref: f64,
+    /// The depths (relative to `zref`) between the view's clipping planes: nothing else draws.
+    keep: (f64, f64),
 }
 
 /// The key and fill lights (toward the light, in view coordinates: x right, y up, z toward the
@@ -225,7 +253,7 @@ impl Canvas {
             let c = [0.80 + 0.15 * t, 0.83 + 0.13 * t, 0.87 + 0.10 * t].map(|v| v as f32);
             rgb.extend(std::iter::repeat_n(c, w as usize));
         }
-        Some(Canvas { w, h, sup, rgb, depth, persp, center, scale, span: 0.0, zref: 0.0 })
+        Some(Canvas { w, h, sup, rgb, depth, persp, center, scale, span: 0.0, zref: 0.0, keep: (f64::NEG_INFINITY, f64::INFINITY) })
     }
 
     /// Screen position (pixels, y down) and depth (larger nearer, linear across the screen over a
@@ -306,6 +334,9 @@ impl Canvas {
                     continue;
                 }
                 let z = w0 * a.2 + w1 * b.2 + w2 * c.2;
+                if !(self.keep.0..=self.keep.1).contains(&z) {
+                    continue;
+                }
                 let i = (y * self.w + x) as usize;
                 let Some(slot) = self.depth.get_mut(i) else { continue };
                 if (z as f32) <= *slot {
@@ -369,7 +400,8 @@ impl Canvas {
                         continue;
                     }
                     let i = (py as u32 * self.w + px as u32) as usize;
-                    if self.depth.get(i).is_some_and(|d| (z + bias) as f32 >= *d)
+                    if (self.keep.0..=self.keep.1).contains(&z)
+                        && self.depth.get(i).is_some_and(|d| (z + bias) as f32 >= *d)
                         && let Some(c) = self.rgb.get_mut(i)
                     {
                         *c = ink;
@@ -547,6 +579,19 @@ mod tests {
         assert_ne!(pixel(&pm, 32, 24), background, "the solid is rendered");
     }
 
+    /// A render cancelled from another thread stops and gives no picture.
+    #[test]
+    fn a_cancelled_render_stops() {
+        let d = cabinet();
+        let dir = ViewDir::named("iso").unwrap();
+        let center = dir.project(Vec3::new(300.0, 200.0, 350.0));
+        let o = RenderOptions { width: 64, height: 48, edges: true };
+        let flag = Arc::new(AtomicBool::new(false));
+        assert!(render_cancellable(&d, dir, center, 2000.0, &o, Some(flag.clone())).is_some());
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(render_cancellable(&d, dir, center, 2000.0, &o, Some(flag)).is_none());
+    }
+
     #[test]
     fn a_camera_inside_the_model_clips_and_unusable_sizes_fail() {
         let d = cabinet();
@@ -559,5 +604,33 @@ mod tests {
         assert!(render(&d, dir, center, 1000.0, &RenderOptions { width: 0, height: 48, edges: false }).is_none());
         assert!(render(&d, dir, center, f64::NAN, &RenderOptions::default()).is_none());
         assert!(render(&d, dir, center, 1000.0, &RenderOptions { width: MAX_SIDE + 1, height: 48, edges: false }).is_none());
+    }
+
+    /// DVIEW CLip: RENDER draws nothing outside the clipping planes, so a back plane in front
+    /// of a solid leaves the background, and a front plane through it shows its far side.
+    #[test]
+    fn render_honours_the_clipping_planes() {
+        let mut d = Drawing::default();
+        d.add(&Space::Model, Common::default(), EntityKind::Solid3d(block(Vec3::new(3.0, 3.0, 0.0), Vec3::new(4.0, 4.0, 4.0), "Walnut"))).unwrap();
+        let dir = ViewDir::named("front").unwrap();
+        let center = dir.project(Vec3::new(5.0, 5.0, 2.0));
+        let o = RenderOptions { width: 64, height: 48, edges: false };
+        let shown = |clip| render(&d, ViewDir { clip, ..dir }, center, 20.0, &o).map(|pm| pixel(&pm, 32, 24) != pixel(&pm, 1, 24));
+        // The box spans depths -7 to -3 (front view: the depth is -y).
+        assert_eq!(shown(cadcraft_geom::Clip::OFF), Some(true));
+        assert_eq!(shown(cadcraft_geom::Clip::new(None, Some(-2.0))), Some(false), "all of it behind the back plane");
+        assert_eq!(shown(cadcraft_geom::Clip::new(Some(-5.0), None)), Some(true), "cut open: its back faces show");
+        assert_eq!(shown(cadcraft_geom::Clip::new(Some(-8.0), None)), Some(false), "all of it in front of the front plane");
+        assert_eq!(shown(cadcraft_geom::Clip::new(Some(-100.0), Some(50.0))), Some(false), "a front plane behind the back one");
+        // In perspective, a back plane behind the eye keeps nothing in front of it.
+        let target = Vec3::new(5.0, 5.0, 2.0);
+        let cam = Camera::new(50.0, dir.depth(target));
+        let height = cam.height_at(40.0);
+        let persp = dir.with_camera(Some(cam), dir.project(target), height);
+        let eye = persp.persp.map_or(0.0, |c| c.eye.z);
+        let seen = |clip| render(&d, ViewDir { clip, ..persp }, dir.project(target), height, &o).map(|pm| pixel(&pm, 32, 24) != pixel(&pm, 1, 24));
+        assert_eq!(seen(cadcraft_geom::Clip::OFF), Some(true));
+        assert_eq!(seen(cadcraft_geom::Clip::new(None, Some(eye + 10.0))), Some(false), "a back plane behind the eye");
+        assert_eq!(seen(cadcraft_geom::Clip::new(Some(eye + 10.0), None)), Some(true), "a front plane behind the eye limits nothing");
     }
 }

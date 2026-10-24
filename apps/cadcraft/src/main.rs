@@ -194,6 +194,13 @@ fn config_dir_from(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<s
     }
 }
 
+/// Where eframe keeps the app's state (preferences, the autosave settings, egui's memory):
+/// `app.ron` in `CADCRAFT_CONFIG_DIR` when that is set, so a run with a settings directory of its
+/// own shares nothing with the others; else eframe's own folder for the app (`None`).
+fn persistence_file_from(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<std::path::PathBuf> {
+    var("CADCRAFT_CONFIG_DIR").filter(|v| !v.is_empty()).map(|d| std::path::PathBuf::from(d).join("app.ron"))
+}
+
 const APP_ID: &str = "ai.storyteller.cadcraft";
 
 /// Stencil bits of the window's render pass (see `NativeOptions::stencil_buffer`).
@@ -290,6 +297,7 @@ fn main() -> eframe::Result {
             .with_title_shown(false)
             .with_app_id(APP_ID),
         persist_window: false,
+        persistence_path: persistence_file_from(|k| std::env::var_os(k)),
         // A stencil buffer clips the contents of clipped layout viewports on the GPU; a depth
         // buffer hides what is behind shaded solids.
         stencil_buffer: STENCIL_BITS,
@@ -401,7 +409,9 @@ fn main() -> eframe::Result {
 
 #[cfg(test)]
 mod tests {
-    use super::{DEPTH_BITS, STENCIL_BITS, config_dir_from, control_flag, control_port_from, filters_for_save, follow_desktop};
+    use super::{
+        DEPTH_BITS, STENCIL_BITS, config_dir_from, control_flag, control_port_from, filters_for_save, follow_desktop, persistence_file_from,
+    };
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -465,6 +475,9 @@ mod tests {
         let empty = [("CADCRAFT_CONFIG_DIR", ""), ("HOME", ""), ("XDG_CONFIG_HOME", ""), ("APPDATA", "")];
         assert_eq!(config_dir_from(env(&empty)), None, "no usable variable means no directory, not the working directory");
         assert_eq!(config_dir_from(env(&[])), None);
+        // eframe's state follows the override too (autosave settings included), else its own place.
+        assert_eq!(persistence_file_from(env(&vars)), Some(PathBuf::from("/tmp/cc").join("app.ron")));
+        assert_eq!(persistence_file_from(env(&empty)), None);
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]

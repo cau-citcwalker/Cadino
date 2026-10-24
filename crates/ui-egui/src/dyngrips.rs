@@ -202,7 +202,7 @@ pub(crate) fn menu(app: &mut CadApp, ctx: &egui::Context, xf: &Xf) {
     let area = egui::Area::new(egui::Id::new(("dyn-grip-list", h, g.node))).order(egui::Order::Foreground).fixed_pos(at).show(ctx, |ui| {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
             for c in &g.choices {
-                if ui.selectable_label(c.eq_ignore_ascii_case(&current), c.as_str()).clicked() {
+                if ui.selectable_label(c.eq_ignore_ascii_case(&current), crate::bedit::shown_value(c)).clicked() {
                     chosen = Some(c.clone());
                 }
             }

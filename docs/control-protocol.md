@@ -97,8 +97,9 @@ It stores palette/toolset visibility, selected toolset, collapsed groups, comman
 height and related chrome choices. It does not store drawings, command buffers, dialogs or the
 current Start tab. The default directory is `~/Library/Application Support/CADCraft` on macOS,
 `%APPDATA%/CADCraft` on Windows, and `$XDG_CONFIG_HOME/cadcraft` or `~/.config/cadcraft` elsewhere.
-Set `CADCRAFT_CONFIG_DIR` to a private directory for an isolated profile; an explicitly empty
-value disables workspace reads and writes. An invalid, oversized or newer-version file is
+Set `CADCRAFT_CONFIG_DIR` to a private directory for an isolated profile (its preferences, autosave
+settings and Drawing Recovery files included); an explicitly empty value disables workspace reads
+and writes. An invalid, oversized or newer-version file is
 reported and left untouched, with persistence disabled for that launch. Repair or move that
 file before restarting to resume saving workspace choices.
 

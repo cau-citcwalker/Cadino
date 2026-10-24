@@ -19,16 +19,16 @@ use std::sync::Arc;
 use cadcraft_geom::{Vec2, Vec3};
 
 use super::{
-    ActionKind, DynamicBlock, LookupColumn, Parameter, ParameterKind, SET1, SET2, SetCodes, ValueSet, VisibilityState, dynamic_block, section,
-    sections,
+    ActionKind, DynamicBlock, LookupColumn, OWN_LOOKUP, Parameter, ParameterKind, SET1, SET2, SetCodes, ValueSet, VisibilityState, dynamic_block,
+    section, sections,
 };
 use crate::foreign::{Foreign, ForeignObject};
 use crate::{Drawing, EntityKind, EntityStore, Handle, RawTag};
 
 /// Most parameters and actions one block is authored with.
-const MAX_ELEMENTS: usize = 2_000;
+pub(super) const MAX_ELEMENTS: usize = 2_000;
 
-fn tag(code: i32, value: impl Into<String>) -> RawTag {
+pub(super) fn tag(code: i32, value: impl Into<String>) -> RawTag {
     RawTag { code, value: value.into() }
 }
 
@@ -36,19 +36,19 @@ fn point(code: i32, p: Vec3) -> [RawTag; 3] {
     [tag(code, p.x.to_string()), tag(code + 10, p.y.to_string()), tag(code + 20, p.z.to_string())]
 }
 
-fn key(block: &str) -> (String, String) {
+pub(super) fn key(block: &str) -> (String, String) {
     ("BLOCK_RECORD".to_string(), block.trim().to_ascii_uppercase())
 }
 
-fn foreign(d: &mut Drawing) -> &mut Foreign {
+pub(super) fn foreign(d: &mut Drawing) -> &mut Foreign {
     Arc::make_mut(&mut d.foreign)
 }
 
-fn object(d: &Drawing, h: Handle) -> Option<&ForeignObject> {
+pub(super) fn object(d: &Drawing, h: Handle) -> Option<&ForeignObject> {
     d.foreign.objects.iter().find(|o| o.handle == h)
 }
 
-fn object_mut(d: &mut Drawing, h: Handle) -> Option<&mut ForeignObject> {
+pub(super) fn object_mut(d: &mut Drawing, h: Handle) -> Option<&mut ForeignObject> {
     foreign(d).objects.iter_mut().find(|o| o.handle == h)
 }
 
@@ -64,8 +64,12 @@ pub(super) fn record_target(d: &mut Drawing, name: &str) -> Handle {
 }
 
 /// The entry `name` of dictionary object `dict`.
-fn entry(d: &Drawing, dict: Handle, name: &str) -> Option<Handle> {
-    let o = object(d, dict)?;
+pub(super) fn entry(d: &Drawing, dict: Handle, name: &str) -> Option<Handle> {
+    dict_entry(object(d, dict)?, name)
+}
+
+/// The entry `name` of dictionary object `o`.
+pub(super) fn dict_entry(o: &ForeignObject, name: &str) -> Option<Handle> {
     let mut tags = o.tags.iter();
     while let Some(t) = tags.next() {
         if t.code == 3 && t.value.eq_ignore_ascii_case(name) {
@@ -76,7 +80,7 @@ fn entry(d: &Drawing, dict: Handle, name: &str) -> Option<Handle> {
 }
 
 /// Block `block`'s evaluation graph, when it has one.
-fn graph(d: &Drawing, block: &str) -> Option<Handle> {
+pub(super) fn graph(d: &Drawing, block: &str) -> Option<Handle> {
     let xdict = d.foreign.records.get(&key(block))?.xdict?;
     entry(d, xdict, "ACAD_ENHANCEDBLOCK").filter(|g| object(d, *g).is_some_and(|o| o.kind.eq_ignore_ascii_case("ACAD_EVALUATION_GRAPH")))
 }
@@ -122,7 +126,7 @@ fn ensure_graph(d: &mut Drawing, block: &str) -> Handle {
 }
 
 /// A CLASS record for objects of type `dxf` (C++ class `cpp`), unless the drawing has one.
-fn class(f: &mut Foreign, dxf: &str, cpp: &str) {
+pub(super) fn class(f: &mut Foreign, dxf: &str, cpp: &str) {
     if f.classes.iter().any(|c| c.iter().any(|t| t.code == 1 && t.value.eq_ignore_ascii_case(dxf))) {
         return;
     }
@@ -132,7 +136,7 @@ fn class(f: &mut Foreign, dxf: &str, cpp: &str) {
 }
 
 /// The graph's member list entries: (node id, object).
-fn members(g: &ForeignObject) -> Vec<(i32, Handle)> {
+pub(super) fn members(g: &ForeignObject) -> Vec<(i32, Handle)> {
     let mut out = Vec::new();
     let mut node = None;
     for t in section(&sections(&g.tags), "AcDbEvalGraph") {
@@ -166,20 +170,39 @@ fn node_span(o: &ForeignObject) -> (usize, usize) {
 /// Whether block `block`'s graph holds more than node records: edges another program (AutoCAD)
 /// wired its parameters, grips and actions with. Adding or removing nodes would have to keep them
 /// consistent, which isn't done here, so such blocks refuse it ([`wiring_kept`]).
-fn wired(d: &Drawing, block: &str) -> bool {
-    graph(d, block).and_then(|g| object(d, g)).is_some_and(|o| node_span(o).1 < o.tags.len())
+pub(super) fn wired(d: &Drawing, block: &str) -> bool {
+    graph(d, block).and_then(|g| object(d, g)).is_some_and(wired_graph)
 }
 
-/// Refuse to add or remove elements of a block whose graph another program wired ([`wired`]).
+/// Whether graph object `o` holds more than node records ([`wired`]).
+pub(super) fn wired_graph(o: &ForeignObject) -> bool {
+    node_span(o).1 < o.tags.len()
+}
+
+/// Whether block `block` still has a record of Cadino's own data that wasn't read in (a newer
+/// version's, or a damaged one: [`super::file::from_file`] reads the others in). Changing the
+/// block's elements would lose what it holds, so such blocks refuse it.
+fn unread_record(d: &Drawing, block: &str) -> bool {
+    d.foreign.records.get(&key(block)).and_then(|x| x.xdict).and_then(|x| entry(d, x, super::file::KEY)).is_some()
+}
+
+const NEWER_RECORD: &str =
+    "This dynamic block keeps data saved by a newer version of Cadino: adding or removing its parameters and actions here would lose it.";
+
+/// Refuse to add or remove elements of a block whose graph another program wired ([`wired`]), or
+/// that keeps Cadino data this version can't read ([`unread_record`]).
 fn wiring_kept(d: &Drawing, block: &str) -> Result<(), String> {
     if wired(d, block) {
         return Err("This dynamic block was made in another program, which wired its parameters and actions together: adding or removing them here isn't available yet (their properties and visibility states can be changed).".into());
+    }
+    if unread_record(d, block) {
+        return Err(NEWER_RECORD.into());
     }
     Ok(())
 }
 
 /// Add `(node, object)` to graph `g`'s members, after its node records.
-fn add_member(d: &mut Drawing, g: Handle, node: i32, h: Handle) {
+pub(super) fn add_member(d: &mut Drawing, g: Handle, node: i32, h: Handle) {
     let Some(o) = object_mut(d, g) else { return };
     let (start, end) = node_span(o);
     let n = (end - start) / NODE.len();
@@ -204,14 +227,28 @@ fn count_members(o: &mut ForeignObject) {
 
 /// Remove the members `gone` from graph `g` (its node records, renumbered). A graph another
 /// program wired ([`wired`]) is left as it is: callers refuse first ([`wiring_kept`]).
-fn remove_members(d: &mut Drawing, g: Handle, gone: &HashSet<Handle>) {
+pub(super) fn remove_members(d: &mut Drawing, g: Handle, gone: &HashSet<Handle>) {
+    edit_members(d, g, |entries| {
+        entries.retain(|e| !e.iter().any(|t| t.code == 360 && Handle::parse_hex(&t.value).is_some_and(|h| gone.contains(&h))))
+    });
+}
+
+/// Put graph `g`'s node records in node id order (the order they were added in here).
+pub(super) fn sort_members(d: &mut Drawing, g: Handle) {
+    let node = |e: &Vec<RawTag>| e.iter().find(|t| t.code == 95).and_then(|t| t.value.trim().parse::<i32>().ok()).unwrap_or(i32::MAX);
+    edit_members(d, g, |entries| entries.sort_by_key(node));
+}
+
+/// Change graph `g`'s node records with `f`, then number them again. A graph another program
+/// wired ([`wired`]) is left as it is.
+fn edit_members(d: &mut Drawing, g: Handle, f: impl FnOnce(&mut Vec<Vec<RawTag>>)) {
     let Some(o) = object_mut(d, g) else { return };
     let (start, end) = node_span(o);
     if end < o.tags.len() {
         return;
     }
     let mut entries: Vec<Vec<RawTag>> = o.tags.drain(start..end).collect::<Vec<_>>().chunks(NODE.len()).map(<[RawTag]>::to_vec).collect();
-    entries.retain(|e| !e.iter().any(|t| t.code == 360 && Handle::parse_hex(&t.value).is_some_and(|h| gone.contains(&h))));
+    f(&mut entries);
     for (i, e) in entries.iter_mut().enumerate() {
         if let Some(t) = e.iter_mut().find(|t| t.code == 91) {
             t.value = i.to_string();
@@ -246,7 +283,7 @@ fn head(h: Handle, g: Handle, node: i32, element: &str) -> Vec<RawTag> {
 
 /// Replace object `h`'s section `marker` (its groups after the subclass marker up to the next
 /// one) with `body`, adding the section at the end when the object has none.
-fn replace_section(d: &mut Drawing, h: Handle, marker: &str, body: Vec<RawTag>) {
+pub(super) fn replace_section(d: &mut Drawing, h: Handle, marker: &str, body: Vec<RawTag>) {
     let Some(o) = object_mut(d, h) else { return };
     let at = o.tags.iter().position(|t| t.code == 100 && t.value.eq_ignore_ascii_case(marker));
     match at {
@@ -670,6 +707,14 @@ fn action_section(a: &NewAction) -> (&'static str, Vec<RawTag>) {
     (cpp, t)
 }
 
+/// Cadino's own section of a new action, when its kind has one.
+fn own_action_section(k: &ActionKind) -> Option<(&'static str, Vec<RawTag>)> {
+    match k {
+        ActionKind::Lookup { columns, .. } => Some((OWN_LOOKUP, own_lookup_tags(columns))),
+        _ => None,
+    }
+}
+
 /// A lookup table, as [`super::lookup`] reads it.
 fn lookup_tags(columns: &[LookupColumn], rows: &[Vec<String>]) -> Vec<RawTag> {
     let mut t = vec![tag(92, rows.len().to_string()), tag(93, columns.len().to_string()), tag(301, "")];
@@ -690,6 +735,38 @@ fn lookup_tags(columns: &[LookupColumn], rows: &[Vec<String>]) -> Vec<RawTag> {
     }
     t.push(tag(280, "1"));
     t
+}
+
+/// A lookup table's Cadino section ([`OWN_LOOKUP`]): each column's Allow reverse lookup.
+fn own_lookup_tags(columns: &[LookupColumn]) -> Vec<RawTag> {
+    let mut t = vec![tag(90, columns.len().to_string())];
+    t.extend(columns.iter().map(|c| tag(290, if c.reverse { "1" } else { "0" })));
+    t
+}
+
+/// Give lookup action `node` of block `block` the table `columns` × `rows` (BLOOKUPTABLE, the
+/// Property Lookup Table dialog). Columns must name the block's parameters.
+pub fn set_lookup(d: &mut Drawing, block: &str, node: i32, columns: Vec<LookupColumn>, rows: Vec<Vec<String>>) -> Result<(), String> {
+    let m = dynamic_block(d, block).ok_or("The block has no dynamic data.")?;
+    // ponytail: a table another program wrote may hold groups not modelled here, so it isn't
+    // rewritten (the dialog shows it); allow it once AutoCAD's whole layout is known.
+    if wired(d, block) {
+        return Err("This dynamic block was made in another program: its lookup tables can't be changed here yet.".into());
+    }
+    if unread_record(d, block) {
+        return Err(NEWER_RECORD.into());
+    }
+    let a = m.actions.iter().find(|a| a.node == node).ok_or("No such action.")?;
+    if !matches!(a.kind, ActionKind::Lookup { .. }) {
+        return Err(format!("{} is not a lookup action.", a.name));
+    }
+    if let Some(c) = columns.iter().find(|c| !m.parameters.iter().any(|p| p.node == c.node)) {
+        return Err(format!("A lookup table column names parameter {}, which the block doesn't have.", c.node));
+    }
+    let h = a.handle;
+    replace_section(d, h, "AcDbBlockLookupAction", lookup_tags(&columns, &rows));
+    replace_section(d, h, OWN_LOOKUP, own_lookup_tags(&columns));
+    Ok(())
 }
 
 /// An action name block `m` doesn't use yet: `base`, else `base` with the first free number.
@@ -723,6 +800,10 @@ pub fn add_action(d: &mut Drawing, block: &str, a: NewAction) -> Result<(i32, St
     let (marker, body) = action_section(&a);
     tags.push(tag(100, marker));
     tags.extend(body);
+    if let Some((marker, body)) = own_action_section(&a.kind) {
+        tags.push(tag(100, marker));
+        tags.extend(body);
+    }
     let f = foreign(d);
     class(f, dxf, cpp);
     f.objects.push(ForeignObject { handle: h, kind: dxf.into(), tags });

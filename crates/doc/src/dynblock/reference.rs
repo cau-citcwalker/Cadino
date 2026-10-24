@@ -290,13 +290,19 @@ pub fn custom_properties(d: &Drawing, insert: Handle) -> Option<(String, Vec<Cus
             }
             ParameterKind::Lookup { label, .. } => {
                 let (value, choices) = cur.lookup(p.node);
-                let editable = lookup_sets_what_changes(&m, p.node);
+                let editable = lookup_sets_what_changes(&m, p.node) && reverse_lookup(&m, p.node);
                 out.push(CustomProperty { name: label.clone(), value, choices, editable });
             }
             _ => {}
         }
     }
     Some((r.definition, out))
+}
+
+/// Whether a lookup table of `m` allows reverse lookup of lookup parameter `node` (choosing its
+/// value sets the row's inputs); a table that doesn't makes it read-only.
+pub(super) fn reverse_lookup(m: &DynamicBlock, node: i32) -> bool {
+    m.actions.iter().any(|a| matches!(&a.kind, ActionKind::Lookup { columns, .. } if columns.iter().any(|c| c.lookup && c.node == node && c.reverse)))
 }
 
 /// Whether every lookup table that sets lookup parameter `node` sets only what

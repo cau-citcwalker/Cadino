@@ -11,7 +11,9 @@
 //! What can change: a visibility state, a lookup value, a flip state, a distance, a position,
 //! a polar or XY parameter's end and an angle, with the move, stretch, polar stretch, scale,
 //! rotate and flip actions they drive (and the actions of parameters those carry along that
-//! chain theirs) and the lookups that follow. Array actions are kept but don't copy yet.
+//! chain theirs) and the lookups that follow. An array action copies its objects along its
+//! parameter ([`array_offsets`]); the copies are marked ([`ARRAY_APP`]) and made again on the
+//! next change.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -25,6 +27,12 @@ use crate::{Block, Drawing, Entity, EntityKind, Handle, RawTag};
 const ETAG: &str = "AcDbBlockRepETag";
 /// Xdata application naming an anonymous block's dynamic block.
 const BTAG: &str = "AcDbBlockRepBTag";
+/// Xdata application marking the copies an array action made on a reference (1071: the
+/// action's graph id).
+pub const ARRAY_APP: &str = "CADCRAFT_DYNARRAY";
+/// Most copies one array action makes, and one change makes in all.
+const MAX_ARRAY: usize = 1_000;
+const MAX_ARRAYED: usize = 20_000;
 
 fn tag(code: i32, value: impl Into<String>) -> RawTag {
     RawTag { code, value: value.into() }
@@ -37,9 +45,71 @@ fn etag(d: &Drawing, h: Handle) -> Option<i64> {
     x.iter().skip(at + 1).take_while(|t| t.code != 1001).find(|t| t.code == 1071).and_then(|t| t.value.trim().parse().ok())
 }
 
-/// Each object of `b` keyed by its element tag, or by its position when it has none.
+/// Each object of `b` keyed by its element tag, or by its position when it has none. An array
+/// action's copies on a reference aren't the block's objects: they are left out.
 fn by_tag(d: &Drawing, b: &Block) -> Vec<(i64, Handle)> {
-    b.entities.iter().enumerate().map(|(i, e)| (etag(d, e.handle).unwrap_or(i as i64 + 1_000_000), e.handle)).collect()
+    b.entities.iter().filter(|e| !array_copy(e)).enumerate().map(|(i, e)| (etag(d, e.handle).unwrap_or(i as i64 + 1_000_000), e.handle)).collect()
+}
+
+/// Whether `e` is a copy an array action made on a reference ([`ARRAY_APP`]).
+fn array_copy(e: &Entity) -> bool {
+    e.common.xdata.iter().any(|t| t.code == 1001 && t.value.trim().eq_ignore_ascii_case(ARRAY_APP))
+}
+
+/// The array action (graph id) whose copy `e` is.
+fn array_copy_of(e: &Entity) -> Option<i32> {
+    let x = &e.common.xdata;
+    let at = x.iter().position(|t| t.code == 1001 && t.value.trim().eq_ignore_ascii_case(ARRAY_APP))?;
+    x.iter().skip(at + 1).take_while(|t| t.code != 1001).find(|t| t.code == 1071).and_then(|t| t.value.trim().parse().ok())
+}
+
+/// `xdata` without application `app`'s groups.
+fn without_app(xdata: &[RawTag], app: &str) -> Vec<RawTag> {
+    let mut inside = false;
+    xdata
+        .iter()
+        .filter(|t| {
+            if t.code == 1001 {
+                inside = t.value.trim().eq_ignore_ascii_case(app);
+            }
+            !inside
+        })
+        .cloned()
+        .collect()
+}
+
+/// Where an array action puts copies of its objects, as moves in block coordinates, for its
+/// parameter at `b`–`e` (AutoCAD's array action): `column` apart along a linear or polar
+/// parameter, as many columns as its distance holds (`distance / column`, the objects
+/// themselves the first); an XY parameter's horizontal distance holds the columns and its
+/// vertical one the rows, `row` apart, each the way its distance goes.
+pub(super) fn array_offsets(k: &ParameterKind, b: Vec3, e: Vec3, column: f64, row: f64) -> Vec<Vec2> {
+    let fit = |len: f64, step: f64| -> usize {
+        let n = (len.abs() / step + 1e-9).floor();
+        if step > 0.0 && n.is_finite() && n >= 1.0 { n.min(MAX_ARRAY as f64) as usize } else { 1 }
+    };
+    match k {
+        ParameterKind::Xy { .. } => {
+            let (dx, dy) = (e.x - b.x, e.y - b.y);
+            let (cols, rows) = (fit(dx, column), fit(dy, row));
+            let (sx, sy) = (column.copysign(dx), row.copysign(dy));
+            (0..rows)
+                .flat_map(|j| (0..cols).map(move |i| (i, j)))
+                .filter(|ij| *ij != (0, 0))
+                .take(MAX_ARRAY)
+                .map(|(i, j)| Vec2::new(i as f64 * sx, j as f64 * sy))
+                .collect()
+        }
+        _ => {
+            let v = e.xy() - b.xy();
+            let len = v.len();
+            if !(len > 1e-12 && len.is_finite()) {
+                return Vec::new();
+            }
+            let u = v * (1.0 / len);
+            (1..fit(len, column)).map(|i| u * (i as f64 * column)).collect()
+        }
+    }
 }
 
 /// The object entry `key` of dictionary `dict` refers to.
@@ -277,6 +347,9 @@ pub fn set_property(d: &mut Drawing, insert: Handle, name: &str, value: &str) ->
             plan.chain(&m, &r.values, p.node, "VisibilityState")?;
         }
         (ParameterKind::Lookup { label, .. }, _) => {
+            if !super::reference::reverse_lookup(&m, p.node) {
+                return Err(format!("{label} is read-only: its lookup table doesn't allow reverse lookup."));
+            }
             plan.set.insert(p.node, Val::Text(value.trim().to_string()));
             if !plan.lookup(&m, &r.values, p.node, value, None)? {
                 return Err(format!("\"{value}\" is not a value of {label}."));
@@ -555,8 +628,7 @@ fn action_xf<'a>(m: &DynamicBlock, a: &'a super::Action, changed: &BTreeMap<i32,
             let ParameterKind::Flip { base, end, .. } = &param.kind else { return None };
             whole(Mat3::mirror(base.xy(), end.xy()))
         }
-        // ponytail: an array action is kept and written but doesn't copy objects on references
-        // yet; add the copies (marked so the next change can replace them) when it's wanted.
+        // An array action copies its objects when the reference's block is made ([`apply`]).
         ActionKind::Array { .. } | ActionKind::Lookup { .. } | ActionKind::Other { .. } => return None,
     };
     Some(x)
@@ -683,8 +755,9 @@ fn apply(
     // AutoCAD's anonymous copies have no units of their own.
     let mut b =
         Block { name: name.clone(), anonymous: true, xref_path: None, array: None, units: 0, entities: crate::EntityStore::new(), ..(*src).clone() };
+    // The reference's array copies are made again below.
     let mut copies: HashMap<Handle, Handle> = HashMap::new();
-    for e in src.entities.iter() {
+    for e in src.entities.iter().filter(|e| !array_copy(e)) {
         copies.insert(e.handle, d.new_handle());
     }
     // How far each attribute definition moves (block coordinates): the reference's attribute of
@@ -716,6 +789,48 @@ fn apply(
             }
         }
         b.entities.push(c);
+    }
+    // Array actions: copies of their objects (as the other actions placed them) for their
+    // parameters' new values, once the parameter has changed (a reference shows the block as
+    // drawn until then, as AutoCAD's do).
+    let had: HashSet<i32> = src.entities.iter().filter_map(|e| array_copy_of(e)).collect();
+    let mut arrayed: Vec<Entity> = Vec::new();
+    for a in &m.actions {
+        let ActionKind::Array { column, row } = &a.kind else { continue };
+        let Some((node, _)) = a.connections.first() else { continue };
+        if !had.contains(&a.node) && new.get(node).is_none_or(|v| Some(v) == current(&m, values, *node).as_ref()) {
+            continue;
+        }
+        let (Some(p), Some(Val::Points(pb, pe))) =
+            (m.parameters.iter().find(|p| p.node == *node), new.get(node).cloned().or_else(|| current(&m, values, *node)))
+        else {
+            continue;
+        };
+        let offsets = array_offsets(&p.kind, pb, pe, *column, *row);
+        for h in &a.selection {
+            let Some(c) = copy_of(h).and_then(|s| copies.get(&s)).and_then(|n| b.entities.get(*n)).cloned() else { continue };
+            if matches!(c.kind, EntityKind::AttDef(_)) {
+                continue;
+            }
+            for off in offsets.iter().take(MAX_ARRAYED.saturating_sub(arrayed.len())) {
+                let mut e: Entity = (*c).clone();
+                e.handle = d.new_handle();
+                e.transform(&Mat3::translate(*off));
+                e.common.xdata = without_app(&e.common.xdata, ETAG);
+                e.common.xdata.extend([tag(1001, ARRAY_APP), tag(1071, a.node.to_string())]);
+                // ponytail: a copied hatch keeps its fill but not its boundary association.
+                if let EntityKind::Hatch(hh) = &mut e.kind {
+                    hh.associative = false;
+                    for l in &mut hh.loops {
+                        l.sources.clear();
+                    }
+                }
+                arrayed.push(e);
+            }
+        }
+    }
+    for e in arrayed {
+        b.entities.push(e);
     }
     refill_hatches(&mut b);
     let def_record = Some(super::author::record_target(d, definition));
@@ -1119,5 +1234,39 @@ fn drop_if_unused(d: &mut Drawing, name: &str) {
         for e in b.entities.iter() {
             f.entities.remove(&e.handle);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn xy() -> ParameterKind {
+        ParameterKind::Xy {
+            base: Vec3::ZERO,
+            end: Vec3::ZERO,
+            label: "Horizontal".into(),
+            description: String::new(),
+            label2: "Vertical".into(),
+            description2: String::new(),
+            values: Default::default(),
+            values2: Default::default(),
+        }
+    }
+
+    #[test]
+    fn array_offsets_fill_the_distance_column_by_column_and_row_by_row() {
+        let lin = ParameterKind::Point { at: Vec3::ZERO, label: String::new(), description: String::new() };
+        // A distance of 30 holds two columns 12 apart along the parameter (here at 90°).
+        let v = array_offsets(&lin, Vec3::ZERO, Vec3::new(0.0, 30.0, 0.0), 12.0, 0.0);
+        assert_eq!(v, [Vec2::new(0.0, 12.0)]);
+        // XY: 30 across in columns of 10, 10 down in rows of 5: 3 × 2, the objects one of them.
+        let v = array_offsets(&xy(), Vec3::ZERO, Vec3::new(30.0, -10.0, 0.0), 10.0, 5.0);
+        assert_eq!(v, [Vec2::new(10.0, 0.0), Vec2::new(20.0, 0.0), Vec2::new(0.0, -5.0), Vec2::new(10.0, -5.0), Vec2::new(20.0, -5.0)]);
+        // Hostile spacings: none, a tiny one (capped), NaN.
+        assert!(array_offsets(&lin, Vec3::ZERO, Vec3::new(5.0, 0.0, 0.0), 0.0, 0.0).is_empty());
+        assert_eq!(array_offsets(&lin, Vec3::ZERO, Vec3::new(1e9, 0.0, 0.0), 1e-3, 0.0).len(), MAX_ARRAY - 1);
+        assert!(array_offsets(&lin, Vec3::ZERO, Vec3::new(1e9, 0.0, 0.0), 1e-300, 0.0).is_empty(), "too many to count: the objects alone");
+        assert!(array_offsets(&xy(), Vec3::ZERO, Vec3::new(f64::NAN, 1.0, 0.0), f64::NAN, 1.0).len() <= MAX_ARRAY);
     }
 }

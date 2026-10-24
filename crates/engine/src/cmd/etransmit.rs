@@ -2,10 +2,16 @@
 //! style tables) in one `.zip`, with a transmittal report listing what went in and what could
 //! not be found. The drawing goes in as saved (or as it is now, when it has unsaved changes);
 //! files found by a relative path keep their folders, others go next to it, where the drawing
-//! looks for them (by file name in its folder) when the package is opened elsewhere.
+//! looks for them (by file name in its folder) when the package is opened elsewhere. Each xref
+//! brings its own attached xrefs and images (found from its folder, put where it looks for
+//! them in the package), at most `MAX_DEPTH` levels deep; a drawing already packed (a
+//! circular reference) isn't read again.
 //!
 //! The archive is a plain "stored" ZIP (no compression) written here: no ZIP library for one
 //! writer.
+// ponytail: no ZIP64 records, and the package is built in memory: one past 4 GB or
+// `MAX_ENTRIES` files is refused, saying so. Stream it to the file with ZIP64 records if
+// packages that big matter.
 
 use serde_json::{Value, json};
 
@@ -19,6 +25,10 @@ const MAX_ZIP_BYTES: u64 = u32::MAX as u64 - (64 << 20);
 const MAX_ENTRIES: usize = 10_000;
 /// Largest referenced file packed.
 const MAX_FILE_BYTES: u64 = 1 << 30;
+/// Largest referenced drawing read for its own references.
+const MAX_READ_BYTES: u64 = 512 << 20;
+/// Deepest nesting of xrefs packed (the drawing's own are the first level).
+const MAX_DEPTH: usize = cadcraft_doc::MAX_BLOCK_DEPTH;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
     vec![
@@ -166,6 +176,49 @@ impl Item {
 /// The file name of `path` (either separator).
 fn file_name(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).trim().to_string()
+}
+
+/// Where a drawing packed as `parent` (an archive name) looks for a file it saves as `saved`:
+/// that path from its folder while it stays in the package, else the file name beside it.
+/// `None` for a path naming no file.
+fn nested_name(parent: &str, saved: &str) -> Option<String> {
+    let dir: Vec<&str> = parent.rsplit_once('/').map_or(Vec::new(), |(d, _)| d.split('/').collect());
+    let norm = saved.trim().replace('\\', "/");
+    let rooted = norm.starts_with('/') || norm.get(1..2) == Some(":");
+    let mut parts = dir.clone();
+    // Inside the package, and ending in a name.
+    let (mut inside, mut named) = (!rooted, false);
+    for p in norm.split('/') {
+        if !inside {
+            break;
+        }
+        match p {
+            "" | "." => {}
+            ".." => (inside, named) = (parts.pop().is_some(), false),
+            p => {
+                parts.push(p);
+                named = true;
+            }
+        }
+    }
+    if !(inside && named) {
+        let name = file_name(saved);
+        if matches!(name.as_str(), "" | "." | "..") {
+            return None;
+        }
+        return Some(dir.into_iter().map(str::to_string).chain(std::iter::once(name)).collect::<Vec<_>>().join("/"));
+    }
+    Some(parts.join("/"))
+}
+
+/// Referenced drawing `file` (`len` bytes) read for its own references; `None` when it can't be.
+fn read_drawing(file: &std::path::Path, len: u64) -> Option<cadcraft_doc::Drawing> {
+    let hooks = io()?;
+    if len > MAX_READ_BYTES {
+        return None;
+    }
+    let bytes = read_file(file).ok()?;
+    (hooks.read)(&bytes, &file.to_string_lossy()).ok()
 }
 
 /// The archive name of a file the drawing saves as `saved`: its relative path (folders kept,
@@ -318,6 +371,9 @@ fn items(s: &Session) -> Result<Vec<Item>> {
     let own = drawing_name(st);
     // Files packed: the file, its archive name.
     let mut packed: Vec<(std::path::PathBuf, String)> = Vec::new();
+    // The drawing's own file is in the package as itself (an xref referring back to it).
+    let host = st.path.as_deref().and_then(|p| locate(p, None)).map(|(_, key, _)| key);
+    let mut read: Vec<std::path::PathBuf> = host.iter().cloned().collect();
     // References whose archive name isn't where the drawing would look for them.
     let mut renamed: Vec<(String, String)> = Vec::new();
     let mut total: u64 = 0;
@@ -338,7 +394,7 @@ fn items(s: &Session) -> Result<Vec<Item>> {
             None => {
                 total = total.saturating_add(len);
                 if total > MAX_ZIP_BYTES {
-                    return Err(bad("etransmit", "the package would be larger than a ZIP file can hold (4 GB)"));
+                    return Err(too_big());
                 }
                 // Two files can't share a name in the archive.
                 let taken = |n: &str| n.eq_ignore_ascii_case(&own) || packed.iter().any(|(_, p)| p.eq_ignore_ascii_case(n));
@@ -362,6 +418,7 @@ fn items(s: &Session) -> Result<Vec<Item>> {
             renamed.push((saved.clone(), name));
         }
     }
+    nested(&mut out, &mut packed, &mut read, &mut total, (&own, host.as_deref()))?;
     // A shape font is saved without its extension.
     for (saved, name) in &mut renamed {
         if !saved.contains('.') && name.to_ascii_lowercase().ends_with(".shx") {
@@ -371,6 +428,92 @@ fn items(s: &Session) -> Result<Vec<Item>> {
     let mut all = vec![drawing_item(s, &renamed)?];
     all.extend(out);
     Ok(all)
+}
+
+/// Add the xrefs and images the packed xrefs of `out` refer to, and theirs in turn (`packed`:
+/// the files in the package and their names; `read`: the drawings already read, by file;
+/// `total`: the bytes packed so far; the drawing itself is packed as `own`, from `host` when it
+/// has a file). The xrefs go in as they are, so each file goes where its drawing looks for it;
+/// when another file has that name already, it is reported missing.
+// ponytail: a drawing reached by several paths is read once, its references placed from where
+// it was first packed.
+fn nested(
+    out: &mut Vec<Item>,
+    packed: &mut Vec<(std::path::PathBuf, String)>,
+    read: &mut Vec<std::path::PathBuf>,
+    total: &mut u64,
+    (own, host): (&str, Option<&std::path::Path>),
+) -> Result<()> {
+    // Drawings to read: file, size, archive name, level.
+    let mut queue: Vec<(std::path::PathBuf, u64, String, usize)> = Vec::new();
+    for i in out.iter().filter(|i| i.kind == "xref") {
+        if let (Src::File(f), Some((key, _))) = (&i.src, packed.iter().find(|(_, n)| *n == i.name)) {
+            let len = std::fs::metadata(f).map(|m| m.len()).unwrap_or(u64::MAX);
+            queue.push((f.clone(), len, i.name.clone(), 1));
+            read.push(key.clone());
+        }
+    }
+    let mut next = 0;
+    while let Some((file, len, name, level)) = queue.get(next).cloned() {
+        next += 1;
+        if level >= MAX_DEPTH {
+            continue;
+        }
+        let Some(x) = read_drawing(&file, len) else { continue };
+        let dir = file.parent().map(std::path::Path::to_path_buf);
+        let from = file.to_string_lossy().into_owned();
+        let xrefs = x.blocks.values().filter(|b| !b.xref_overlay && !b.name.contains('|')).filter_map(|b| b.xref_path.clone()).map(|p| (p, "xref"));
+        let images = super::images::image_defs(&x, Some(&from)).into_iter().map(|d| (d.path, "image"));
+        for (saved, kind) in xrefs.chain(images).collect::<Vec<_>>() {
+            if saved.trim().is_empty() {
+                continue;
+            }
+            if out.len() >= MAX_ENTRIES {
+                return Err(too_many());
+            }
+            let Some(want) = nested_name(&name, &saved) else { continue };
+            let found = locate(&saved, dir.as_deref()).filter(|(_, _, len)| *len <= MAX_FILE_BYTES);
+            let missing = |out: &mut Vec<Item>| {
+                if !out.iter().any(|i| !i.packed() && i.name.eq_ignore_ascii_case(&want)) {
+                    out.push(Item { name: want.clone(), kind, from: None, src: Src::Missing });
+                }
+            };
+            let Some((f, key, flen)) = found else {
+                missing(out);
+                continue;
+            };
+            // The file already at that name: one packed, or the drawing itself.
+            let there = match packed.iter().find(|(_, n)| n.eq_ignore_ascii_case(&want)) {
+                Some((k, _)) => Some(Some(k.clone())),
+                None => want.eq_ignore_ascii_case(own).then(|| host.map(std::path::Path::to_path_buf)),
+            };
+            match there {
+                Some(Some(k)) if k == key => {}
+                Some(_) => missing(out),
+                None => {
+                    *total = total.saturating_add(flen);
+                    if *total > MAX_ZIP_BYTES {
+                        return Err(too_big());
+                    }
+                    packed.push((key.clone(), want.clone()));
+                    out.push(Item { name: want.clone(), kind, from: Some(f.to_string_lossy().into_owned()), src: Src::File(f.clone()) });
+                    if kind == "xref" && !read.contains(&key) {
+                        read.push(key);
+                        queue.push((f, flen, want, level + 1));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn too_big() -> EngineError {
+    bad("etransmit", "the package would be larger than a ZIP file can hold (4 GB)")
+}
+
+fn too_many() -> EngineError {
+    bad("etransmit", format!("the package would hold more than {MAX_ENTRIES} files"))
 }
 
 /// The transmittal report.
@@ -431,9 +574,8 @@ fn run_etransmit(s: &mut Session, p: &Value) -> Result<Value> {
     if bool_or(p, "reportOnly", false) {
         return Ok(json!({ "files": files, "missing": missing, "report": text }));
     }
-    let too_big = || bad("etransmit", "the package would be larger than a ZIP file can hold (4 GB)");
     if items.len() >= MAX_ENTRIES {
-        return Err(too_big());
+        return Err(too_many());
     }
     // One file at a time: only the archive and the file being added are held.
     let mut z = Zip::default();
@@ -567,5 +709,21 @@ mod tests {
         assert_eq!(archive_name("../elsewhere/b.png"), "b.png");
         assert_eq!(archive_name("C:\\pics\\c.png"), "c.png");
         assert_eq!(archive_name("/home/me/d.png"), "d.png");
+    }
+
+    #[test]
+    fn a_nested_reference_goes_where_its_drawing_looks_for_it() {
+        let n = |parent: &str, saved: &str| nested_name(parent, saved);
+        assert_eq!(n("xrefs/a.dxf", "b.dxf").as_deref(), Some("xrefs/b.dxf"));
+        assert_eq!(n("xrefs/a.dxf", "..\\pics\\p.png").as_deref(), Some("pics/p.png"));
+        assert_eq!(n("x/y/a.dxf", "../b.png").as_deref(), Some("x/b.png"));
+        assert_eq!(n("a.dxf", "./sub/b.dxf").as_deref(), Some("sub/b.dxf"));
+        // Leaving the package or rooted: the file name beside the drawing.
+        assert_eq!(n("a.dxf", "../../far/b.dxf").as_deref(), Some("b.dxf"));
+        assert_eq!(n("x/y/a.dxf", "C:\\work\\b.dxf").as_deref(), Some("x/y/b.dxf"));
+        assert_eq!(n("x/a.dxf", "/home/me/c.png").as_deref(), Some("x/c.png"));
+        // No file named: nothing (never a name that climbs out of the package).
+        assert_eq!(n("x/a.dxf", ".."), None);
+        assert_eq!(n("x/a.dxf", "sub/.."), None);
     }
 }

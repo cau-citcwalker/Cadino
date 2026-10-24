@@ -191,7 +191,7 @@ crashed survives the next start. The file stops growing at 16 MiB. `--version` w
 
 | Variable | Effect |
 |---|---|
-| `CADCRAFT_CONFIG_DIR` | Use this directory instead of the platform settings directory (the log goes to its `logs/`) |
+| `CADCRAFT_CONFIG_DIR` | Use this directory instead of the platform settings directory (the log goes to its `logs/`, autosave files to its `autosave/`, and the app's own state, preferences included, to its `app.ron`) |
 | `RUST_LOG` | Log levels for standard error and the log file. Default: `info` for CADCraft's own crates, `warn` for everything else. env_logger-style directives replace that, e.g. `RUST_LOG=debug`, `RUST_LOG=warn,cadcraft_io=trace` or `RUST_LOG=info,wgpu_core=warn`; a directive ending in `*` covers every target starting with it (`cadcraft*=debug`). `cadcraft_engine=debug` also logs every command-line message. |
 
 The logger is `apps/cadcraft/src/logging.rs`; the web build logs to the browser console instead.

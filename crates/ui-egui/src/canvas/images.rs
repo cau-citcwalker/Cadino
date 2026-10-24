@@ -1,6 +1,7 @@
 //! Raster images on the canvas: each picture of a display list
 //! ([`cadcraft_render::image::ImagePrim`]) is uploaded once as a texture (per picture and look)
-//! and painted as a textured mesh clipped to what shows of it.
+//! and painted as a textured mesh clipped to what shows of it (in perspective, the picture's
+//! grid of triangles seen through the eye).
 //!
 //! ponytail: pictures paint before the list's GPU callback, so they sit under every line and fill
 //! (an image brought to the front with DRAWORDER still draws behind them on screen; plots and
@@ -59,8 +60,7 @@ pub(crate) fn paint(p: &egui::Painter, xf: &Xf, list: &DisplayList) {
             }
         };
         let mut mesh = Mesh::with_texture(tex);
-        for q in im.triangles() {
-            let Some([u, v]) = im.uv(q) else { break };
+        for (q, [u, v]) in im.textured() {
             let i = mesh.vertices.len() as u32;
             mesh.vertices.push(Vertex { pos: xf.view_to_screen(q), uv: pos2(u, v), color: Color32::WHITE });
             mesh.indices.push(i);
@@ -117,6 +117,7 @@ mod tests {
             handle: cadcraft_doc::Handle(1),
             at: 0,
             placement: cadcraft_geom::Mat3 { a: 10.0, b: 0.0, c: 0.0, d: 5.0, e: 0.0, f: 0.0 },
+            mesh: Vec::new(),
             clips: Vec::new(),
             pixels: Raster::new(2, 2, vec![255; 16], false).unwrap(),
             look: Look { brightness: 50, contrast: 50, fade: 0, transparent: false, alpha: 255, draft: false },

@@ -24,7 +24,7 @@ pub use curve::{Arc, Circle, Ellipse, Line, PolyVertex, Polyline, Segment, arc_t
 pub use fillet::{CornerFit, TanCurve, tangent_circles};
 pub use intersect::{circle_circle, intersect_ext, intersect_segments, line_circle, line_line, line_line_infinite};
 pub use mat::{Mat3, Mat4};
-pub use solid::{Camera, FILM, Mesh3, NEAR, Persp, ViewDir};
+pub use solid::{Camera, Clip, FILM, Mesh3, NEAR, Persp, ViewDir};
 pub use spline::Spline;
 pub use spline_fit::{FitOptions, KnotParam};
 pub use vec::{Vec2, Vec3};

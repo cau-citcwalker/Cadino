@@ -1,5 +1,6 @@
-//! DesignCenter (ADCENTER, ADC, DC; Ctrl+2): a palette to browse drawings and bring their
-//! named content into the current one. Folders: Favorites and the drives (or the file system
+//! DesignCenter (ADCENTER, ADC, DC; Ctrl+2, which open it or, open, close it as AutoCAD's do;
+//! ADCCLOSE closes it): a palette to browse drawings and bring their named content into the
+//! current one. Folders: Favorites and the drives (or the file system
 //! root and the home folder) as a tree, drawings (.dwg, .dxf, .dwt) in their folders; Open
 //! Drawings: the drawings open in this session. A drawing opens into its content types (Blocks,
 //! Dimstyles, Layers, Layouts, Linetypes, Multileaderstyles, Tablestyles, Textstyles, Xrefs);
@@ -175,9 +176,25 @@ pub fn open(app: &mut CadApp) -> Result<Value, String> {
     crate::docking::command(app, false, &json!({ "operation": "float", "panel": panel.id(), "rect": rect }))
 }
 
-/// The UI side of ADCENTER, ADC and DC typed or picked bare: the palette.
+/// Close the DesignCenter palette (nothing when it isn't open).
+pub fn close(app: &mut CadApp) -> Result<Value, String> {
+    let panel = crate::docking::Panel::DesignCenter;
+    if !app.ui.docking.layout.contains(&panel) {
+        return Ok(json!({ "docking": app.ui.docking }));
+    }
+    crate::docking::command(app, false, &json!({ "operation": "close", "panel": panel.id() }))
+}
+
+/// The UI side of ADCENTER, ADC and DC typed or picked bare (Ctrl+2 too): the palette, or when
+/// it is open, closed again. ADCCLOSE closes it.
 pub fn route(app: &mut CadApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
-    (matches!(id, "adcenter" | "adc" | "dc") && params.is_null()).then(|| open(app))
+    match id {
+        "adcenter" | "adc" | "dc" if params.is_null() => {
+            Some(if app.ui.docking.layout.contains(&crate::docking::Panel::DesignCenter) { close(app) } else { open(app) })
+        }
+        "adcclose" => Some(close(app)),
+        _ => None,
+    }
 }
 
 /// Copy `name` of `kind` from `src` into the current drawing; a block is then placed with
@@ -521,6 +538,38 @@ mod tests {
         let r = app.run("adcenter", json!({})).unwrap();
         assert!(r["layers"].as_array().is_some_and(|l| !l.is_empty()));
         assert!(!app.ui.docking.layout.contains(&crate::docking::Panel::DesignCenter));
+    }
+
+    /// Ctrl+2 and ADCENTER typed open the palette and, open, close it; ADCCLOSE closes it and
+    /// does nothing more when it is closed.
+    #[test]
+    fn ctrl_2_and_adcenter_toggle_the_palette_and_adcclose_closes_it() {
+        let mut app = CadApp::new(cadcraft_engine::Session::new(), crate::Services::default());
+        let shown = |app: &CadApp| app.ui.docking.layout.contains(&crate::docking::Panel::DesignCenter);
+        let ctx = egui::Context::default();
+        let ctrl_2 = |app: &mut CadApp| {
+            let m = egui::Modifiers::COMMAND;
+            let key = egui::Event::Key { key: egui::Key::Num2, physical_key: None, pressed: true, repeat: false, modifiers: m };
+            let raw = egui::RawInput { events: vec![key], ..Default::default() };
+            ctx.run_ui(raw, |ui| crate::menus::shortcuts(app, ui.ctx())).textures_delta.clear();
+        };
+        ctrl_2(&mut app);
+        assert!(shown(&app), "Ctrl+2 opens it");
+        ctrl_2(&mut app);
+        assert!(!shown(&app), "and closes it");
+        app.start("adcenter");
+        assert!(shown(&app));
+        app.start("adcenter");
+        assert!(!shown(&app), "open, ADCENTER closes it");
+        app.cmdline("DC");
+        assert!(shown(&app));
+        app.cmdline("ADCCLOSE");
+        assert!(!shown(&app));
+        assert!(app.run("adcclose", json!({})).is_ok(), "closed already: nothing to do");
+        assert!(!shown(&app));
+        // The palette comes back where it was the first time: floating.
+        app.start("adc");
+        assert!(shown(&app));
     }
 
     #[test]

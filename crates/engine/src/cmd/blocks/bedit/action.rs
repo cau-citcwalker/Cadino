@@ -16,7 +16,7 @@ use crate::cmd::{CommandSpec, bad, point_param, points_param, str_param, targets
 use crate::{Accept, EngineError, Input, Interactive, Prompt, Result, Session, Step};
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    const PARAMS: &str = "{type: move|scale|stretch|polarstretch|array|rotate|flip|lookup (one of those the parameter takes), parameter: label or node, handles? (default the selection), parameters?: [labels] (parameters the action carries along), point?: start|end (which point of a two-point parameter a move or stretch follows; default end), frame? ([[x,y],[x,y]] corners or a polygon: stretch, polarstretch), rotate?: [handles] (polarstretch: objects only rotated), at? (where the editor shows it), multiplier?, angleOffset? deg, base? (scale, rotate: an independent base point), column?, row? (array), columns?: [{parameter, property?, lookup?: bool, unmatched?}], rows?: [[cells]] (lookup)} → {node, name}; points in the Block Editor's coordinates";
+    const PARAMS: &str = "{type: move|scale|stretch|polarstretch|array|rotate|flip|lookup (one of those the parameter takes), parameter: label or node, handles? (default the selection), parameters?: [labels] (parameters the action carries along), point?: start|end (which point of a two-point parameter a move or stretch follows; default end), frame? ([[x,y],[x,y]] corners or a polygon: stretch, polarstretch), rotate?: [handles] (polarstretch: objects only rotated), at? (where the editor shows it), multiplier?, angleOffset? deg, base? (scale, rotate: an independent base point), column?, row? (array), columns?: [{parameter, property?, lookup?: bool, unmatched?, reverse?: bool (a lookup column: Allow reverse lookup; default Read only)}], rows?: [[cells]] (lookup; no rows: an empty table that BLOOKUPTABLE fills)} → {node, name}; points in the Block Editor's coordinates";
     vec![
         CommandSpec::new("baction", "Action", run_baction)
             .menu(&["Tools", "Block Editor", "Action"])
@@ -62,7 +62,7 @@ fn kind_name(k: &ParameterKind) -> &'static str {
 }
 
 /// The lookup table property a parameter kind gives a column, when it can be in one.
-fn lookup_property(k: &ParameterKind) -> Option<&'static str> {
+pub(super) fn lookup_property(k: &ParameterKind) -> Option<&'static str> {
     match k {
         ParameterKind::Linear { .. } => Some("UpdatedDistance"),
         ParameterKind::Visibility { .. } => Some("VisibilityState"),
@@ -204,8 +204,9 @@ fn default_at(k: &ParameterKind) -> Vec3 {
 }
 
 /// A lookup action's table from JSON: columns naming parameters (the lookup parameter's column
-/// is its lookup column), rows of cells.
-fn lookup_table(cmd: &str, m: &DynamicBlock, node: i32, p: &Value) -> Result<ActionKind> {
+/// is its lookup column), rows of cells. A table needs the lookup parameter's column, and rows an
+/// input column; rows must differ in their inputs (AutoCAD's Audit).
+pub(super) fn lookup_table(cmd: &str, m: &DynamicBlock, node: i32, p: &Value) -> Result<ActionKind> {
     let cols = p.get("columns").and_then(Value::as_array).ok_or_else(|| bad(cmd, "`columns` is required for a lookup action"))?;
     let mut columns = Vec::new();
     for c in cols.iter().take(100) {
@@ -220,10 +221,8 @@ fn lookup_table(cmd: &str, m: &DynamicBlock, node: i32, p: &Value) -> Result<Act
         };
         let lookup = c.get("lookup").and_then(Value::as_bool).unwrap_or(n == node);
         let unmatched = str_param(c, "unmatched").unwrap_or("Custom").to_string();
-        columns.push(LookupColumn { node: n, property, lookup, unmatched });
-    }
-    if !columns.iter().any(|c| c.lookup && c.node == node) || !columns.iter().any(|c| !c.lookup) {
-        return Err(bad(cmd, "a lookup table needs an input column and the lookup parameter's column"));
+        let reverse = lookup && c.get("reverse").and_then(Value::as_bool).unwrap_or(false);
+        columns.push(LookupColumn { node: n, property, lookup, unmatched, reverse });
     }
     let rows: Vec<Vec<String>> = match p.get("rows").and_then(Value::as_array) {
         Some(rs) => rs
@@ -238,6 +237,24 @@ fn lookup_table(cmd: &str, m: &DynamicBlock, node: i32, p: &Value) -> Result<Act
             .ok_or_else(|| bad(cmd, "each row of `rows` must have a cell per column"))?,
         None => Vec::new(),
     };
+    if !columns.iter().any(|c| c.lookup && c.node == node) || (!rows.is_empty() && !columns.iter().any(|c| !c.lookup)) {
+        return Err(bad(cmd, "a lookup table needs the lookup parameter's column, and an input column for its rows"));
+    }
+    // The same inputs twice would make the lookup ambiguous.
+    let inputs = |r: &[String]| -> Vec<String> {
+        columns
+            .iter()
+            .zip(r)
+            .filter(|(c, _)| !c.lookup)
+            .map(|(_, v)| v.trim().parse::<f64>().map_or_else(|_| v.trim().to_lowercase(), |x| x.to_string()))
+            .collect()
+    };
+    let mut seen: std::collections::HashMap<Vec<String>, usize> = std::collections::HashMap::new();
+    for (i, r) in rows.iter().enumerate() {
+        if let Some(j) = seen.insert(inputs(r), i) {
+            return Err(bad(cmd, format!("rows {} and {} have the same input values", j + 1, i + 1)));
+        }
+    }
     Ok(ActionKind::Lookup { columns, rows })
 }
 
@@ -323,18 +340,20 @@ impl BactionM {
         let Some(node) = self.node else { return Ok(Step::Cancel) };
         self.p.insert("type".into(), json!(self.ty()));
         self.p.insert("parameter".into(), json!(node));
-        self.p.insert("handles".into(), json!(self.handles.iter().map(|h| h.hex()).collect::<Vec<_>>()));
+        let lookup = self.ty() == "lookup";
+        if lookup {
+            // An empty table: the Property Lookup Table dialog (BLOOKUPTABLE) fills it.
+            self.p.insert("columns".into(), json!([{ "parameter": node, "lookup": true }]));
+        } else {
+            self.p.insert("handles".into(), json!(self.handles.iter().map(|h| h.hex()).collect::<Vec<_>>()));
+        }
         if !self.parameters.is_empty() {
             self.p.insert("parameters".into(), json!(self.parameters));
         }
-        if self.ty() == "lookup" {
-            // ponytail: AutoCAD's Property Lookup Table dialog isn't here yet; the table is given
-            // in the JSON form (`baction {type: lookup, columns, rows}`).
-            return Err(EngineError::Other(
-                "Lookup tables are given in the JSON form for now: baction {type: \"lookup\", parameter, columns, rows}.".into(),
-            ));
-        }
         run_baction(s, &Value::Object(std::mem::take(&mut self.p)))?;
+        if lookup {
+            s.echo("Fill its table in the Property Lookup Table (BLOOKUPTABLE).");
+        }
         s.set_selection(Vec::new());
         Ok(Step::Done)
     }

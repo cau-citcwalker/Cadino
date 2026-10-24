@@ -143,14 +143,16 @@ fn look_of(t: &VportTile) -> TileLook {
     let [x, y, z] = t.view_dir;
     let v = Vec3::new(x, y, z);
     // A unit direction as stored, so a round trip keeps it bit for bit; anything else normalised.
-    let dir = if v.is_finite() && (v.len() - 1.0).abs() < 1e-12 { ViewDir { dir: v, persp: None } } else { ViewDir::new(v) };
+    let dir = if v.is_finite() && (v.len() - 1.0).abs() < 1e-12 { ViewDir { dir: v, ..ViewDir::PLAN } } else { ViewDir::new(v) };
+    let twist = if t.twist.is_finite() { t.twist } else { 0.0 };
+    let dir = ViewDir { twist, clip: cadcraft_geom::Clip::new(t.clip.front, t.clip.back), ..dir };
     TileLook { dir, shaded: t.shaded, edges: t.edges, camera: t.camera }
 }
 
 /// Tile `t` with look `l` stored in it.
 fn with_look(t: VportTile, l: TileLook) -> VportTile {
     let d = l.dir.dir;
-    VportTile { view_dir: [d.x, d.y, d.z], shaded: l.shaded, edges: l.edges, camera: l.camera, ..t }
+    VportTile { view_dir: [d.x, d.y, d.z], shaded: l.shaded, edges: l.edges, camera: l.camera, twist: l.dir.twist, clip: l.dir.clip, ..t }
 }
 
 /// The model view shows view `v` along look `l`; from a layout too (undo or redo there), for

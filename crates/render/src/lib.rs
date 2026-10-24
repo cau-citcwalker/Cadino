@@ -24,6 +24,7 @@ mod plotstyle;
 mod point;
 pub mod raster;
 pub mod shade;
+mod shade_cut;
 mod solid;
 mod text;
 mod tolerance;
@@ -446,7 +447,7 @@ impl Builder<'_> {
         if pts.len() < 2 {
             return;
         }
-        if let Some(c) = self.opts.view_dir.persp {
+        if let Some(c) = self.lens() {
             let v = self.view_points(ctx, pts, xf, z);
             return self.persp_polyline(ctx, &c, color, lw, &v);
         }
@@ -480,7 +481,7 @@ impl Builder<'_> {
         if tris.len() < 3 {
             return;
         }
-        if let Some(c) = self.opts.view_dir.persp {
+        if let Some(c) = self.lens() {
             let v = self.view_points(ctx, tris, xf, z);
             return self.persp_tris(ctx, &c, color, &v);
         }
@@ -550,14 +551,14 @@ impl Builder<'_> {
         }
     }
     fn point(&mut self, ctx: &Ctx, color: Ink, p: Vec2) {
-        if let Some(c) = self.opts.view_dir.persp {
+        if let Some(c) = self.lens() {
             return self.persp_point(ctx, &c, color, ctx.xf3.apply(p.to3(0.0)));
         }
         self.point_at(ctx, color, ctx.xf.apply(p), None);
     }
     /// A point marker at view-plane point `q`, at depth `z` (a 3D point) or on the local plane.
     fn point_at(&mut self, ctx: &Ctx, color: Ink, q: Vec2, z: Option<f64>) {
-        if let Some(c) = self.opts.view_dir.persp {
+        if let Some(c) = self.lens() {
             let v = self.view_points(ctx, &[q], Mat3::IDENTITY, z.as_slice());
             return v.into_iter().for_each(|v| self.persp_point(ctx, &c, color, v));
         }
@@ -580,7 +581,7 @@ impl Builder<'_> {
         });
     }
     fn infinite(&mut self, ctx: &Ctx, color: Ink, base: Vec2, dir: Vec2, ray: bool) {
-        if let Some(c) = self.opts.view_dir.persp {
+        if let Some(c) = self.lens() {
             return self.persp_infinite(ctx, &c, color, ctx.xf3.apply(base.to3(0.0)), ctx.xf3.apply_vec(dir.to3(0.0)), ray);
         }
         self.infinite_at(ctx, color, ctx.xf.apply(base), ctx.xf.apply_vec(dir).normalized(), ray, None);
@@ -1072,9 +1073,8 @@ fn append_clipped(dst: &mut DisplayList, src: &DisplayList, clip: &Clip) {
     for im in images {
         put(dst, im);
     }
-    // RENDER's shaded triangles (world 3D) go along whole.
-    // ponytail: not cut by the clip boundary, so an XCLIPped reference renders its solids whole;
-    // cut them by the boundary's prism if clipped furniture renders wrong.
+    // RENDER's shaded triangles (view 3D) go along whole: an XCLIPped reference's are cut by its
+    // boundary's prism first (`shade_cut`).
     dst.shade.extend(src.shade.iter().cloned());
     dst.shade_edges.extend(src.shade_edges.iter().cloned());
 }
@@ -1852,6 +1852,7 @@ fn xclipped(b: &mut Builder, sub: &Ctx, blk: &cadcraft_doc::Block, x: &cadcraft_
         entity(&mut part, sub, be);
     }
     b.list.expanded = part.list.expanded;
+    shade_cut::cut(&mut part.list, &sub.xf3, x);
     append_clipped(&mut b.list, &part.list, &Clip::Poly(&pc));
     let frame = sub.d.header.i64("XCLIPFRAME", 2);
     if frame == 1 || (frame == 2 && !b.plotting) {

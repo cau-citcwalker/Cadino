@@ -387,14 +387,18 @@ pub(crate) const ORBIT_DEG_PER_PX: f64 = 0.4;
 type ListKey = (u64, u64, i32, i32, bool, bool, usize, u64, [u64; 3]);
 
 /// [`ListKey`]'s last field for projection `v`: its direction's bits, mixed with its camera's in
-/// perspective.
+/// perspective and its twist and clipping planes (DVIEW).
 fn dir_key(v: &ViewDir) -> [u64; 3] {
     let d = v.dir;
     let mut k = [d.x.to_bits(), d.y.to_bits(), d.z.to_bits()];
-    if let Some(c) = v.persp {
+    if v.persp.is_some() || v.twist != 0.0 || !v.clip.is_off() {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        [c.eye.x, c.eye.y, c.eye.z, c.focal].map(f64::to_bits).hash(&mut h);
+        if let Some(c) = v.persp {
+            [c.eye.x, c.eye.y, c.eye.z, c.focal].map(f64::to_bits).hash(&mut h);
+        }
+        let (lo, hi) = v.clip.range();
+        [v.twist, lo, hi].map(f64::to_bits).hash(&mut h);
         let m = h.finish() | 1;
         k = k.map(|b| b ^ m);
     }
@@ -4901,7 +4905,8 @@ pub(crate) mod tests {
         app.session.state_mut().unwrap().view_dir = ViewDir::new(cadcraft_geom::Vec3::new(0.2, -1.0, 0.1));
         app.canvas.list = None;
         let text = painted_text(&mut app, &ctx, at);
-        assert!(text.contains("+  |  Custom View  |  Shaded") && text.contains("FRONT"), "{text}");
+        // (The ViewCube's face labels are meshes laid on its faces: `viewcube` tests them.)
+        assert!(text.contains("+  |  Custom View  |  Shaded"), "{text}");
         app.session.state_mut().unwrap().shaded_edges = true;
         let text = painted_text(&mut app, &ctx, at);
         assert!(text.contains("+  |  Custom View  |  Shaded with Edges"), "{text}");

@@ -1655,8 +1655,9 @@ fn vport_table(w: &mut W, d: &Drawing, ext: Bounds2) {
         // A perspective view (VIEWMODE 1): its target (17) at the view's centre, so the centre in
         // display coordinates (12) is 0,0, and the camera as far along the direction (16) as
         // its lens and the view's height put it.
+        let twist = if t.twist.is_finite() { t.twist } else { 0.0 };
         let persp = t.camera.and_then(|c| {
-            let v = cadcraft_geom::ViewDir::new(dir);
+            let v = cadcraft_geom::ViewDir { twist, ..cadcraft_geom::ViewDir::new(dir) };
             let (target, distance) = (v.world_of(t.center.to3(c.target)), c.focal(t.height));
             (target.is_finite() && distance.is_finite() && distance > 0.0).then_some((c.lens, target, v.dir * distance))
         });
@@ -1670,9 +1671,24 @@ fn vport_table(w: &mut W, d: &Drawing, ext: Bounds2) {
         w.f(40, if t.height.is_finite() && t.height > 0.0 { t.height } else { 1.0 });
         w.f(41, if t.aspect.is_finite() && t.aspect > 0.0 { t.aspect } else { 1.0 });
         w.f(42, persp.map_or(50.0, |p| p.0));
+        // DVIEW CLip: the planes from the target (17) along the direction (VIEWMODE bits 2 and 4;
+        // 16: the front plane isn't at the eye).
+        let from_target = persp.map_or(0.0, |p| cadcraft_geom::ViewDir::new(dir).depth(p.1));
+        let mut viewmode = i64::from(persp.is_some());
+        if let Some(f) = t.clip.front.filter(|f| f.is_finite()) {
+            w.f(43, f - from_target);
+            viewmode |= 2 | 16;
+        }
+        if let Some(b) = t.clip.back.filter(|b| b.is_finite()) {
+            w.f(44, b - from_target);
+            viewmode |= 4;
+        }
         w.f(50, d.header.f64("SNAPANG", 0.0));
-        if persp.is_some() {
-            w.i(71, 1);
+        if twist != 0.0 {
+            w.f(51, twist.to_degrees());
+        }
+        if viewmode != 0 {
+            w.i(71, viewmode);
         }
         // Render mode: 0 2D optimised, 2 hidden line, 4 Gouraud shaded, 6 Gouraud shaded with
         // wireframe (Hidden is unshaded with edges).
@@ -1780,6 +1796,10 @@ fn tags_for(d: &Drawing, version: Version, target: Version, dwg: bool) -> Vec<Ta
     // Xrefs are saved as references: without their objects and the symbols that came with them.
     let saved_view = crate::dxf_xref::saved_view(d);
     let d = saved_view.as_ref().unwrap_or(d);
+    // Dynamic blocks made here: the elements whose layout is Cadino's own go into a record
+    // AutoCAD ignores (read back by `dxf_read`).
+    let dynblocks = cadcraft_doc::dynblock::file::for_file(d);
+    let d = dynblocks.as_ref().unwrap_or(d);
     let ps_brs: Vec<(String, String, &Layout)> = paper_layouts
         .iter()
         .enumerate()

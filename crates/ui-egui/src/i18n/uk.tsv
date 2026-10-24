@@ -3263,7 +3263,6 @@
 	3D modelling is not available in this build (no OpenCASCADE kernel)	3D-моделювання недоступне в цій збірці (немає ядра OpenCASCADE)
 	<3D Osnap {0}>	<3D-об'єктна прив'язка {0}>
 	A polygon needs at least 3 points.	Багатокутнику потрібно щонайменше 3 точки.
-	A view twist isn't available yet: views stay upright.	Закручування виду поки недоступне: види лишаються вертикальними.
 	ATTACH: {0} underlays are not available yet; attach a PNG, JPEG or BMP picture or a DWG/DXF drawing	ATTACH: підкладки {0} поки недоступні; приєднайте зображення PNG, JPEG чи BMP або креслення DWG/DXF
 	Action {0} added.	Дію {0} додано.
 	Alignment type = Perpendicular	Тип вирівнювання = перпендикулярно
@@ -3273,7 +3272,6 @@
 	B-rep read: {e}	читання B-rep: {e}
 	B-rep write: {e}	запис B-rep: {e}
 	Base image size: Width: 1.000000, Height: {ratio}, Unitless	Базовий розмір зображення: ширина: 1.000000, висота: {ratio}, без одиниць
-	Clipping planes aren't available yet.	Площини відсікання поки недоступні.
 	Current 3D osnap modes: {0}	Поточні режими 3D-прив'язки: {0}
 	Current layout	Поточний аркуш
 	Current settings: Isolate all layouts={0}	Поточні налаштування: ізолювати на всіх аркушах={0}
@@ -3714,3 +3712,56 @@
 	{i} is not a face or edge index	{i} — не індекс грані чи ребра
 	{n} object(s) made visible.	Зроблено видимими об'єктів: {n}.
 	{n} object(s) made invisible.	Зроблено невидимими об'єктів: {n}.
+# Dynamic block files and lookup tables, the 3D ViewCube, DVIEW TWist and CLip, rendering on a worker, ETRANSMIT nesting.
+	Polar Stretch	Полярне розтягування
+	Flip	Віддзеркалення
+	Lookup	Підстановка
+	Flipped	Віддзеркалено
+	Not Flipped	Не віддзеркалено
+	No errors found.	Помилок не знайдено.
+	Property Lookup Table	Таблиця підстановки властивостей
+	Action name:	Назва дії:
+	Add Properties...	Додати властивості...
+	Add Row	Додати рядок
+	Input Properties	Вхідні властивості
+	Lookup Properties	Властивості підстановки
+	Remove Properties	Вилучити властивості
+	<Unmatched>	<Без збігу>
+	Allow reverse lookup	Дозволити зворотну підстановку
+	Read only	Лише для читання
+	Parameter properties	Властивості параметрів
+	Every parameter property is in the table.	Усі властивості параметрів уже є в таблиці.
+	Lookup Table	Таблиця підстановки
+value	Open	Відкрито
+value	Closed	Закрито
+	Fill its table in the Property Lookup Table (BLOOKUPTABLE).	Заповніть її таблицю в таблиці підстановки властивостей (BLOOKUPTABLE).
+	Lookup table of {name} changed.	Таблицю підстановки {name} змінено.
+	`action` is required: the block has more than one lookup action	потрібен `action`: блок має більше ніж одну дію підстановки
+	the block has no lookup action: add one first (BACTION Lookup)	блок не має дії підстановки: спершу додайте її (BACTION Lookup)
+	`action` must name one of the block's lookup actions	`action` має називати одну з дій підстановки блока
+	not a lookup table	це не таблиця підстановки
+	a lookup table needs the lookup parameter's column, and an input column for its rows	таблиці підстановки потрібні стовпець параметра підстановки та вхідний стовпець для її рядків
+	rows {0} and {1} have the same input values	рядки {0} і {1} мають однакові вхідні значення
+	{label} is read-only: its lookup table doesn't allow reverse lookup.	{label} лише для читання: її таблиця підстановки не дозволяє зворотної підстановки.
+	This dynamic block was made in another program: its lookup tables can't be changed here yet.	Цей динамічний блок створено в іншій програмі: його таблиці підстановки тут поки не можна змінити.
+	{0} is not a lookup action.	{0} — не дія підстановки.
+	A lookup table column names parameter {0}, which the block doesn't have.	Стовпець таблиці підстановки називає параметр {0}, якого блок не має.
+	This dynamic block keeps data saved by a newer version of Cadino: adding or removing its parameters and actions here would lose it.	Цей динамічний блок містить дані, збережені новішою версією Cadino: додавання чи вилучення його параметрів і дій тут їх втратить.
+	Home: the south-west isometric view	Домівка: південно-західний ізометричний вид
+	Compass: drag to orbit the view	Компас: перетягніть, щоб обертати вид
+	Hide ViewCube	Сховати куб виду
+	Coordinate system	Система координат
+	Rendering... {seconds} s	Візуалізація... {seconds} с
+	The render failed.	Візуалізація не вдалася.
+	The render was cancelled.	Візуалізацію скасовано.
+	Close DesignCenter	Закрити центр дизайну
+	Specify distance from target	Укажіть відстань від цілі
+	`{key}` must be a distance from the target, or "off"	`{key}` має бути відстанню від цілі або "off"
+	`clip` must be "off" (`front` and `back` set the planes)	`clip` має бути "off" (площини задають `front` і `back`)
+	the package would hold more than {MAX_ENTRIES} files	пакет містив би понад {MAX_ENTRIES} файлів
+	Drawing Recovery	Відновлення креслень
+	Cadino did not close normally. These drawings were autosaved:	Cadino завершив роботу некоректно. Ці креслення було автоматично збережено:
+	Discard	Відкинути
+	Opened drawings have no file name: save them to keep them.	Відкриті креслення не мають назви файлу: збережіть їх, щоб не втратити.
+	Later	Пізніше
+	Keep the files and ask again next time	Зберегти файли й запитати наступного разу

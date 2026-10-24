@@ -93,8 +93,8 @@ pub(crate) fn free(b: &mut Builder, ctx: &Ctx, e: &Entity, rgb: Ink, lw: f32, lt
             let pts: Vec<Vec3> = (0..=n).map(|i| h.point_at(i as f64 / n as f64)).collect();
             stroke3(b, ctx, rgb, lw, lt, ltscale, &pts);
         }
-        EntityKind::Ray(r) | EntityKind::XLine(r) if b.opts.view_dir.persp.is_some() => {
-            if let Some(c) = b.opts.view_dir.persp {
+        EntityKind::Ray(r) | EntityKind::XLine(r) if b.lens().is_some() => {
+            if let Some(c) = b.lens() {
                 b.persp_infinite(ctx, &c, rgb, ctx.xf3.apply(r.base), ctx.xf3.apply_vec(r.dir), matches!(e.kind, EntityKind::Ray(_)));
             }
         }

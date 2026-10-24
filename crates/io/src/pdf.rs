@@ -9,13 +9,15 @@
 //!
 //! Several sheets go into one file ([`pdf_sheets`], the `layouts` option), each page labelled
 //! with its layout name. Drawing layers become PDF layers (optional content groups) that a PDF
-//! viewer can switch on and off, and entity hyperlinks become link annotations.
+//! viewer can switch on and off, and entity hyperlinks become link annotations. Raster images'
+//! pictures are image XObjects (RGB with an alpha soft mask), clipped as they show.
 
 use std::fmt::Write as _;
 
 use cadcraft_color::Rgb;
 use cadcraft_doc::{Drawing, Handle, PageSetup, Space};
-use cadcraft_geom::{Bounds2, Vec2};
+use cadcraft_geom::{Bounds2, Mat3, Vec2};
+use cadcraft_render::image::ImagePrim;
 use cadcraft_render::{Kind, Sheet, clip, paper};
 use serde_json::Value;
 
@@ -596,13 +598,18 @@ fn color(out: &mut String, c: Rgb, op: &str) {
 /// Transparent primitives are drawn with a graphics state of their alpha (`/T<percent> gs`);
 /// the transparencies used are returned for the page's `/ExtGState` (see [`ext_gstates`]). A
 /// list without transparency writes no graphics states.
-fn content_stream(
-    list: &cadcraft_render::DisplayList,
+///
+/// Pictures are drawn (`/Im<k> Do`) in their place in the draw order; the distinct pictures are
+/// returned, `k` their index.
+// ponytail: pictures sit outside the PDF layers; mark them with their image's layer if a
+// viewer must hide them with it.
+fn content_stream<'a>(
+    list: &'a cadcraft_render::DisplayList,
     map: &Map,
     clip_pt: &Bounds2,
     layers: &[u32],
     texts: &std::collections::HashMap<u32, (usize, &cadcraft_render::PlotText)>,
-) -> (String, Vec<u8>) {
+) -> (String, Vec<u8>, Vec<&'a ImagePrim>) {
     let marked: std::collections::HashSet<u32> = layers.iter().copied().collect();
     let white = Rgb(255, 255, 255);
     let mut c = String::new();
@@ -631,7 +638,34 @@ fn content_stream(
     // The transparency (percent) marks are drawn with, and those used on the page.
     let mut alpha: u8 = 0;
     let mut alphas: Vec<u8> = Vec::new();
+    let mut pictures: Vec<&ImagePrim> = Vec::new();
+    let mut images = list.images.iter().peekable();
+    // A picture: outside text objects and PDF layers, opaque but for its own alpha.
+    let mut put =
+        |c: &mut String, im: &'a ImagePrim, pending: &mut bool, text_font: &mut Option<Option<usize>>, layer: &mut Option<u32>, alpha: u8| {
+            flush(c, pending);
+            if text_font.take().is_some() {
+                c.push_str("ET\n");
+            }
+            if layer.take().is_some() {
+                c.push_str("EMC\n");
+            }
+            let k = match pictures.iter().position(|w| std::sync::Arc::ptr_eq(&w.pixels, &im.pixels) && w.look == im.look) {
+                Some(k) => k,
+                None => {
+                    pictures.push(im);
+                    pictures.len() - 1
+                }
+            };
+            picture(c, im, k, map, alpha != 0);
+        };
     for (i, p) in list.prims.iter().enumerate() {
+        while let Some(im) = images.next_if(|im| im.at as usize <= i) {
+            put(&mut c, im, &mut pending, &mut text_font, &mut layer, alpha);
+            if alpha != 0 && !alphas.contains(&0) {
+                alphas.push(0);
+            }
+        }
         let want = list.prim_layers.get(i).copied().filter(|l| marked.contains(l));
         let text = u32::try_from(i).ok().and_then(|i| texts.get(&i));
         if text_font.is_some() && (text.is_none() || want != layer) {
@@ -751,6 +785,12 @@ fn content_stream(
             }
         }
     }
+    for im in images {
+        put(&mut c, im, &mut pending, &mut text_font, &mut layer, alpha);
+        if alpha != 0 && !alphas.contains(&0) {
+            alphas.push(0);
+        }
+    }
     flush(&mut c, &mut pending);
     if text_font.is_some() {
         c.push_str("ET\n");
@@ -759,7 +799,71 @@ fn content_stream(
         c.push_str("EMC\n");
     }
     c.push_str("Q\n");
-    (c, alphas)
+    (c, alphas, pictures)
+}
+
+/// Draw picture `im` as image XObject `/Im<k>`: clipped to what shows of it; in perspective each
+/// triangle with its piece of the picture, grown a little so neighbours leave no seam. `opaque`:
+/// reset the transparency marks were drawn with (the picture carries its own).
+fn picture(c: &mut String, im: &ImagePrim, k: usize, map: &Map, opaque: bool) {
+    let s = map.s * map.k;
+    let page = Mat3 { a: s, b: 0.0, c: 0.0, d: s, e: (map.to.x - map.from.x * map.s) * map.k, f: (map.to.y - map.from.y * map.s) * map.k };
+    // Image space (y up) to texture coordinates (v down).
+    let flip = Mat3 { a: 1.0, b: 0.0, c: 0.0, d: -1.0, e: 0.0, f: 1.0 };
+    let path = |c: &mut String, pts: &[Vec2]| {
+        for (i, q) in pts.iter().enumerate() {
+            pt(c, page.apply(*q));
+            c.push_str(if i == 0 { " m\n" } else { " l\n" });
+        }
+        c.push_str("h W n\n");
+    };
+    let draw = |c: &mut String, m: Mat3| {
+        let m = page.then_before(m).then_before(flip);
+        for v in [m.a, m.b, m.c, m.d, m.e, m.f] {
+            num(c, v);
+            c.push(' ');
+        }
+        let _ = writeln!(c, "cm /Im{k} Do");
+    };
+    let start = |c: &mut String| c.push_str(if opaque { "q /T0 gs\n" } else { "q\n" });
+    if im.mesh.is_empty() {
+        start(c);
+        for clip in im.clips.iter().filter(|p| p.len() >= 3) {
+            path(c, clip);
+        }
+        draw(c, im.texture_xf());
+        c.push_str("Q\n");
+        return;
+    }
+    // Half a point.
+    let seam = 0.5 / s.max(1e-300);
+    for (t, m) in im.pieces() {
+        start(c);
+        path(c, &cadcraft_render::image::grown(t, seam));
+        draw(c, m);
+        c.push_str("Q\n");
+    }
+}
+
+/// The image XObject of picture `im` (with an alpha soft mask when it has see-through pixels),
+/// added to `objs`: its object number.
+fn image_object(objs: &mut Objects, im: &ImagePrim) -> usize {
+    let px = &im.pixels;
+    let rgba = cadcraft_render::image::adjusted(px, &im.look);
+    let (mut rgb, mut alpha) = (Vec::with_capacity(rgba.len() / 4 * 3), Vec::with_capacity(rgba.len() / 4));
+    for [r, g, b, a] in rgba.as_chunks::<4>().0 {
+        rgb.extend([*r, *g, *b]);
+        alpha.push(*a);
+    }
+    let size = format!(" /Type /XObject /Subtype /Image /Width {} /Height {} /BitsPerComponent 8", px.width, px.height);
+    let smask = if alpha.iter().any(|a| *a != u8::MAX) {
+        let m = objs.add(stream(&alpha, true, &format!("{size} /ColorSpace /DeviceGray")));
+        format!(" /SMask {m} 0 R")
+    } else {
+        String::new()
+    };
+    let interpolate = if im.look.draft { "" } else { " /Interpolate true" };
+    objs.add(stream(&rgb, true, &format!("{size} /ColorSpace /DeviceRGB{interpolate}{smask}")))
 }
 
 /// The page resources' graphics states for transparencies `alphas` (percent): `/T<percent>`
@@ -898,10 +1002,25 @@ fn assemble(d: &Drawing, pages: &[SheetPage], fonts: &fonts::Fonts, o: &PdfOptio
     let mut kids = Vec::new();
     // Page dictionaries are completed once the fonts are written: (page, its fonts, the rest).
     let mut page_dicts: Vec<(usize, Vec<usize>, String, String, String)> = Vec::new();
+    // Pictures written, shared by the pages showing them: (picture, its object).
+    let mut written: Vec<(&ImagePrim, usize)> = Vec::new();
     for p in pages {
         let page = objs.reserve();
         let texts = fonts.texts(&p.list);
-        let (marks, alphas) = content_stream(&p.list, &p.map, &p.clip_pt, &p.layers, &texts);
+        let (marks, alphas, pictures) = content_stream(&p.list, &p.map, &p.clip_pt, &p.layers, &texts);
+        let mut xobjects = String::new();
+        for (k, im) in pictures.iter().enumerate() {
+            let id = match written.iter().find(|(w, _)| std::sync::Arc::ptr_eq(&w.pixels, &im.pixels) && w.look == im.look) {
+                Some((_, id)) => *id,
+                None => {
+                    let id = image_object(&mut objs, im);
+                    written.push((im, id));
+                    id
+                }
+            };
+            let _ = write!(xobjects, " /Im{k} {id} 0 R");
+        }
+        let xobjects = if xobjects.is_empty() { xobjects } else { format!(" /XObject <<{xobjects} >>") };
         let content = objs.add(stream(marks.as_bytes(), o.compress, ""));
         let mut used: Vec<usize> = texts.values().map(|(f, _)| *f).collect();
         used.sort_unstable();
@@ -932,7 +1051,7 @@ fn assemble(d: &Drawing, pages: &[SheetPage], fonts: &fonts::Fonts, o: &PdfOptio
         let mut mb = String::new();
         pt(&mut mb, p.media);
         let annots = if annots.is_empty() { String::new() } else { format!(" /Annots [{}]", refs(annots)) };
-        page_dicts.push((page, used, props, ext_gstates(&alphas), format!("/MediaBox [0 0 {mb}] /Contents {content} 0 R{annots}")));
+        page_dicts.push((page, used, props, ext_gstates(&alphas) + &xobjects, format!("/MediaBox [0 0 {mb}] /Contents {content} 0 R{annots}")));
         kids.push(page);
     }
     let font_ids = if fonts.is_empty() { Vec::new() } else { fonts.write(&mut objs, o.compress) };
@@ -981,4 +1100,31 @@ fn assemble(d: &Drawing, pages: &[SheetPage], fonts: &fonts::Fonts, o: &PdfOptio
     let _ = write!(x, "trailer\n<< /Size {} /Root {catalog} 0 R /Info {info} 0 R >>\nstartxref\n{xref}\n%%EOF\n", offsets.len() + 1);
     out.extend_from_slice(x.as_bytes());
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use cadcraft_doc::{EntityKind, Image, Raster};
+    use cadcraft_geom::{Camera, Vec3, ViewDir};
+
+    use super::*;
+
+    #[test]
+    fn a_picture_seen_in_perspective_is_drawn_in_clipped_pieces() {
+        let mut d = Drawing::new_metric();
+        let px = Raster::new(2, 1, vec![200, 30, 30, 255, 30, 30, 200, 255], false);
+        let img = Image { u: Vec3::new(10.0, 0.0, 0.0), v: Vec3::new(0.0, 10.0, 0.0), size: Vec2::new(2.0, 1.0), pixels: px, ..Image::default() };
+        d.add(&Space::Model, Default::default(), EntityKind::Image(img)).unwrap();
+        let dir = ViewDir::named("iso").unwrap();
+        let target = Vec3::new(10.0, 5.0, 0.0);
+        let cam = Camera::new(50.0, dir.depth(target));
+        let view_dir = dir.with_camera(Some(cam), dir.project(target), cam.height_at(40.0));
+        let list = cadcraft_render::build(&d, &Space::Model, &cadcraft_render::Options { view_dir, ..Default::default() });
+        let map = Map { from: list.bounds.min, s: 10.0, to: Vec2::ZERO, k: 1.0 };
+        let (c, alphas, pictures) = content_stream(&list, &map, &Bounds2::new(Vec2::ZERO, Vec2::new(1000.0, 1000.0)), &[], &Default::default());
+        assert_eq!(pictures.len(), 1);
+        assert!(alphas.is_empty());
+        let draws = c.matches("cm /Im0 Do").count();
+        assert!(draws >= 256 && c.matches("h W n").count() == draws, "{draws}");
+    }
 }

@@ -64,6 +64,10 @@ const HEADER: &[(&str, Kind, Def)] = &[
     ("HPDLGMODE", Kind::Choice(&[0, 1]), Def::Int(1)),
     ("HPNAME", Kind::Pattern, Def::Str("ANSI31")),
     ("HPSCALE", Kind::Real { min: 0.0, strict: true }, Def::Real(1.0)),
+    // Raster images: frames 0 hidden, 1 shown and plotted, 2 shown but not plotted; quality
+    // 0 draft (the nearest pixel), 1 high (blended).
+    ("IMAGEFRAME", Kind::Choice(&[0, 1, 2]), Def::Int(1)),
+    ("IMAGEQUALITY", Kind::Choice(&[0, 1]), Def::Int(1)),
     ("INSNAME", Kind::Name, Def::Str("")),
     ("LWDEFAULT", Kind::Choice(&LINEWEIGHTS), Def::Int(25)),
     ("MAXACTVP", Kind::Int(2, 64), Def::Int(64)),

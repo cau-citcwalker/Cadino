@@ -23,6 +23,7 @@ use crate::{Drawing, Handle, RawTag};
 
 mod apply;
 pub mod author;
+pub mod file;
 mod grips;
 mod reference;
 pub use apply::{drag_grip, set_property};
@@ -280,7 +281,19 @@ pub struct LookupColumn {
     pub lookup: bool,
     /// What the reference shows when no row matches ("Custom").
     pub unmatched: String,
+    /// A lookup column: Allow reverse lookup (choosing a lookup value on a reference sets the
+    /// row's inputs), else Read only. Cadino keeps it in its own section ([`OWN_LOOKUP`]); a
+    /// table without one (another program's) allows it.
+    pub reverse: bool,
 }
+
+/// Subclass markers of the sections Cadino adds to elements whose AutoCAD layout it writes:
+/// data AutoCAD's layout has a place for that isn't known, so a file keeps it in Cadino's own
+/// record instead ([`file`]).
+pub(crate) const OWN_SECTION: &str = "Cadcraft";
+/// A lookup action's Cadino section: the column count (90), then each column's Allow reverse
+/// lookup (290).
+pub(crate) const OWN_LOOKUP: &str = "CadcraftLookupAction";
 
 /// The groups of an object split at its subclass markers (100): `(marker, groups after it)`.
 fn sections(tags: &[RawTag]) -> Vec<(&str, &[RawTag])> {
@@ -385,10 +398,15 @@ fn graph_members<'a>(objects: &HashMap<Handle, &'a ForeignObject>, xdict: Handle
 /// The dynamic block data of block `name` (any case; `*Model_Space` for a drawing that is a
 /// block's own drawing), or `None` when it has none.
 pub fn dynamic_block(d: &Drawing, name: &str) -> Option<DynamicBlock> {
-    let xdict = d.foreign.records.get(&("BLOCK_RECORD".to_string(), name.trim().to_ascii_uppercase()))?.xdict?;
     let objects: HashMap<Handle, &ForeignObject> = d.foreign.objects.iter().map(|o| (o.handle, o)).collect();
+    dynamic_block_in(d, &objects, name)
+}
+
+/// [`dynamic_block`] with the drawing's objects by handle already at hand.
+pub(crate) fn dynamic_block_in(d: &Drawing, objects: &HashMap<Handle, &ForeignObject>, name: &str) -> Option<DynamicBlock> {
+    let xdict = d.foreign.records.get(&("BLOCK_RECORD".to_string(), name.trim().to_ascii_uppercase()))?.xdict?;
     let mut out = DynamicBlock::default();
-    for o in graph_members(&objects, xdict)? {
+    for o in graph_members(objects, xdict)? {
         let secs = sections(&o.tags);
         let node = Cursor::new(section(&secs, "AcDbEvalExpr")).int(90);
         let element = Cursor::new(section(&secs, "AcDbBlockElement")).string(300);
@@ -411,16 +429,21 @@ pub fn dynamic_block(d: &Drawing, name: &str) -> Option<DynamicBlock> {
     Some(out)
 }
 
-/// A parameter's grip ids: after a two-point parameter's points, the grip count (170) and the
-/// base and end grips (91); after a one-point parameter's point, its grip (93).
+/// A parameter's grip ids: after a two-point parameter's points, the grip count (170) and its
+/// grips (91: base, end, then an XY parameter's other two corners; unused slots 0, the ones past
+/// the end grip dropped); after a one-point parameter's point, its grip (93).
 fn grip_ids(secs: &[(&str, &[RawTag])]) -> Vec<i32> {
     let two = section(secs, "AcDbBlock2PtParameter");
     if !two.is_empty() {
         let mut c = Cursor::new(two);
         c.point(1010);
         c.point(1011);
-        let n = c.count(170).min(2);
-        return (0..n).map(|_| c.int(91)).collect();
+        let n = c.count(170).min(4);
+        let mut ids: Vec<i32> = (0..n).map(|_| c.int(91)).collect();
+        while ids.len() > 2 && ids.last() == Some(&0) {
+            ids.pop();
+        }
+        return ids;
     }
     let mut c = Cursor::new(section(secs, "AcDbBlock1PtParameter"));
     c.point(1010);
@@ -545,7 +568,7 @@ fn action(handle: Handle, node: i32, name: String, kind: &str, secs: &[(&str, &[
     let at = c.point(1010);
     let (connections, kind) = match kind {
         "BLOCKSTRETCHACTION" => stretch(section(secs, "AcDbBlockStretchAction")),
-        "BLOCKLOOKUPACTION" => (Vec::new(), lookup(section(secs, "AcDbBlockLookupAction"))),
+        "BLOCKLOOKUPACTION" => (Vec::new(), lookup(section(secs, "AcDbBlockLookupAction"), section(secs, OWN_LOOKUP))),
         "BLOCKMOVEACTION" => {
             let tags = section(secs, "AcDbBlockMoveAction");
             let mut c = Cursor::new(tags);
@@ -619,8 +642,8 @@ fn stretch(tags: &[RawTag]) -> (Vec<(i32, String)>, ActionKind) {
 
 /// A lookup table: rows (92) and columns (93), the cells row by row (302, after a 301 header),
 /// then each column: unmatched name (303 then 305), parameter id (94), lookup flag (282) and the
-/// parameter value it stands for (304).
-fn lookup(tags: &[RawTag]) -> ActionKind {
+/// parameter value it stands for (304). `own` is Cadino's section ([`OWN_LOOKUP`]).
+fn lookup(tags: &[RawTag], own: &[RawTag]) -> ActionKind {
     let mut c = Cursor::new(tags);
     let rows = c.count(92);
     let cols = c.count(93);
@@ -628,16 +651,22 @@ fn lookup(tags: &[RawTag]) -> ActionKind {
     let cells = rows.saturating_mul(cols).min(tags.len());
     let flat: Vec<String> = (0..cells).map(|_| c.string(302)).collect();
     let rows = flat.chunks(cols.max(1)).map(<[String]>::to_vec).collect();
-    let columns = (0..cols)
+    let mut columns: Vec<LookupColumn> = (0..cols)
         .map(|_| {
             c.next(303);
             let node = c.int(94);
             let lookup = c.int(282) != 0;
             let unmatched = c.string(305);
             let property = c.string(304);
-            LookupColumn { node, property, lookup, unmatched }
+            LookupColumn { node, property, lookup, unmatched, reverse: true }
         })
         .collect();
+    let mut c = Cursor::new(own);
+    if !own.is_empty() && c.count(90) == columns.len() {
+        for col in &mut columns {
+            col.reverse = c.int(290) != 0;
+        }
+    }
     ActionKind::Lookup { columns, rows }
 }
 

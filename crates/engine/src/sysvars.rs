@@ -69,6 +69,7 @@ const SESSION_VARS: &[&str] = &[
     "TILEMODE",
     "PERSPECTIVE",
     "LENSLENGTH",
+    "FULLOPEN",
 ];
 
 pub fn get(s: &Session, name: &str) -> Option<Value> {
@@ -164,6 +165,8 @@ pub fn get(s: &Session, name: &str) -> Option<Value> {
         // The current view's perspective (DVIEW Distance) and its lens length in millimetres.
         "PERSPECTIVE" => json!(i32::from(s.state().ok()?.screen_dir().persp.is_some())),
         "LENSLENGTH" => json!(s.state().ok()?.camera.map_or(cadcraft_geom::Camera::LENS, |c| c.lens)),
+        // 0 while the drawing is partially open (PARTIALOPEN), else 1.
+        "FULLOPEN" => json!(s.doc().ok()?.header.i64("FULLOPEN", 1)),
         "EXTMIN" | "EXTMAX" => {
             let d = s.doc().ok()?;
             let e = d.extents(&s.space());
@@ -222,6 +225,7 @@ const READ_ONLY: &[&str] = &[
     "UNDOCTL",
     "UNDOMARKS",
     "LENSLENGTH",
+    "FULLOPEN",
 ];
 
 pub fn is_read_only(name: &str) -> bool {
@@ -435,4 +439,35 @@ pub fn list(s: &Session) -> Value {
     }
     table::list(s, &mut m);
     Value::Object(m)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    #[test]
+    fn image_variables_follow_the_image_settings() {
+        let mut s = Session::new();
+        assert_eq!((super::get(&s, "imageframe"), super::get(&s, "IMAGEQUALITY")), (Some(json!(1)), Some(json!(1))));
+        super::set(&mut s, "IMAGEFRAME", &json!(2)).unwrap();
+        super::set(&mut s, "IMAGEQUALITY", &json!("0")).unwrap();
+        // The same settings the IMAGEFRAME and IMAGEQUALITY commands change.
+        let r = s.execute("imageframe", &json!({})).unwrap();
+        assert_eq!(r["IMAGEFRAME"], 2);
+        assert_eq!(s.execute("imagequality", &json!({})).unwrap()["IMAGEQUALITY"], 0);
+        s.execute("imageframe", &json!({ "value": 0 })).unwrap();
+        assert_eq!(super::get(&s, "IMAGEFRAME"), Some(json!(0)));
+        for (n, v) in [("IMAGEFRAME", json!(3)), ("IMAGEQUALITY", json!(2)), ("IMAGEFRAME", json!("high"))] {
+            assert!(super::set(&mut s, n, &v).is_err(), "{n} {v}");
+        }
+        // FULLOPEN reads 1 for a fully open drawing, 0 while it is partially open, and can't be set.
+        assert_eq!(super::get(&s, "FULLOPEN"), Some(json!(1)));
+        s.doc_mut().unwrap().header.set_i64("FULLOPEN", 0);
+        assert_eq!(super::get(&s, "FULLOPEN"), Some(json!(0)));
+        assert!(super::set(&mut s, "FULLOPEN", &json!(1)).unwrap_err().to_string().contains("read-only"));
+        let all = super::list(&s);
+        assert!(all.get("IMAGEFRAME").is_some() && all.get("IMAGEQUALITY").is_some() && all.get("FULLOPEN").is_some());
+    }
 }

@@ -52,7 +52,7 @@ mod flatshot;
 mod furniture;
 mod interfere;
 mod qselect;
-mod rendering;
+pub mod rendering;
 mod section;
 mod selecttools;
 mod settings;

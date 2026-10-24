@@ -41,14 +41,57 @@ impl Mesh3 {
     }
 }
 
-/// A view direction (the unit vector from the target toward the viewer) and, for a perspective
-/// view, its camera.
+/// A view direction (the unit vector from the target toward the viewer), its twist and clipping
+/// planes and, for a perspective view, its camera.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ViewDir {
     pub dir: Vec3,
     /// The perspective camera; `None`: parallel projection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persp: Option<Persp>,
+    /// DVIEW TWist (VIEWTWIST, DXF VPORT 51): the picture turned counter-clockwise about the line
+    /// of sight, in radians ([`Self::axes`]); 0 keeps world Z up the screen.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub twist: f64,
+    /// DVIEW CLip: the front and back clipping planes.
+    #[serde(default, skip_serializing_if = "Clip::is_off")]
+    pub clip: Clip,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+
+/// DVIEW CLip's clipping planes, square to the line of sight, as depths along the view direction
+/// ([`ViewDir::depth`]): nothing nearer than `front` or farther than `back` shows. `None`: that
+/// plane is off.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Clip {
+    #[serde(default)]
+    pub front: Option<f64>,
+    #[serde(default)]
+    pub back: Option<f64>,
+}
+
+impl Clip {
+    pub const OFF: Clip = Clip { front: None, back: None };
+
+    /// The planes at depths `front` and `back`; one that isn't a finite depth is off.
+    pub fn new(front: Option<f64>, back: Option<f64>) -> Clip {
+        Clip { front: front.filter(|f| f.is_finite()), back: back.filter(|b| b.is_finite()) }
+    }
+    pub fn is_off(&self) -> bool {
+        self.front.is_none() && self.back.is_none()
+    }
+    /// The depths kept: from the back plane to the front one (infinite where a plane is off).
+    pub fn range(&self) -> (f64, f64) {
+        (self.back.unwrap_or(f64::NEG_INFINITY), self.front.unwrap_or(f64::INFINITY))
+    }
+    /// Whether a point at depth `d` is between the planes (with any on, NaN is not).
+    pub fn keeps(&self, d: f64) -> bool {
+        let (lo, hi) = self.range();
+        self.is_off() || (lo..=hi).contains(&d)
+    }
 }
 
 /// A perspective view's eye in view coordinates ([`ViewDir::view_of`]: x right and y up in the
@@ -145,7 +188,7 @@ impl Default for ViewDir {
 
 impl ViewDir {
     /// Looking down the Z axis (plan view of the WCS).
-    pub const PLAN: ViewDir = ViewDir { dir: Vec3::Z, persp: None };
+    pub const PLAN: ViewDir = ViewDir { dir: Vec3::Z, persp: None, twist: 0.0, clip: Clip::OFF };
 
     /// A direction from its angle in the XY plane (from +X) and its angle above the XY plane,
     /// as VPOINT's Rotate option takes them. Radians.
@@ -157,7 +200,7 @@ impl ViewDir {
     /// The direction toward the viewer `d`, normalised; a zero or non-finite `d` gives plan.
     pub fn new(d: Vec3) -> ViewDir {
         let n = d.normalized();
-        if n == Vec3::ZERO || !n.is_finite() { ViewDir::PLAN } else { ViewDir { dir: n, persp: None } }
+        if n == Vec3::ZERO || !n.is_finite() { ViewDir::PLAN } else { ViewDir { dir: n, ..ViewDir::PLAN } }
     }
 
     /// The same direction in parallel projection.
@@ -238,28 +281,58 @@ impl ViewDir {
         p.is_finite().then_some(p)
     }
 
-    /// Whether world point `p` is in front of a perspective view's near plane (always, in
-    /// parallel).
+    /// Whether the view sees world point `p`: between its clipping planes and, in perspective, in
+    /// front of the near plane.
     pub fn sees(&self, p: Vec3) -> bool {
-        self.persp.is_none_or(|c| c.eye.z - self.dir.dot(p) >= c.near())
+        self.persp.is_none_or(|c| c.eye.z - self.dir.dot(p) >= c.near()) && self.clip.keeps(self.depth(p))
     }
 
-    /// World segment `a`–`b` cut to what the view sees ([`Self::sees`]): in perspective the part
-    /// in front of the near plane, `None` when all of it is behind; in parallel the segment.
+    /// The depths ([`Self::depth`]) the view sees: between its clipping planes, and in perspective
+    /// in front of the near plane (infinite where nothing limits them).
+    pub fn depth_range(&self) -> (f64, f64) {
+        let (lo, hi) = self.clip.range();
+        (lo, self.persp.map_or(hi, |c| hi.min(c.eye.z - c.near())))
+    }
+
+    /// World segment `a`–`b` cut to what the view sees ([`Self::sees`]); `None` when it sees none
+    /// of it.
     pub fn clip(&self, a: Vec3, b: Vec3) -> Option<(Vec3, Vec3)> {
-        let Some(c) = self.persp else { return Some((a, b)) };
-        // How far in front of the near plane each end is.
-        let (fa, fb) = (c.eye.z - c.near() - self.dir.dot(a), c.eye.z - c.near() - self.dir.dot(b));
-        if !(fa.is_finite() && fb.is_finite()) {
+        let (lo, hi) = self.depth_range();
+        if lo == f64::NEG_INFINITY && hi == f64::INFINITY {
+            return Some((a, b));
+        }
+        // A front plane behind the back one (or behind the eye's near plane) leaves nothing.
+        if lo.partial_cmp(&hi).is_none_or(std::cmp::Ordering::is_gt) {
             return None;
         }
-        let cut = || a + (b - a) * (fa / (fa - fb));
-        match (fa >= 0.0, fb >= 0.0) {
-            (true, true) => Some((a, b)),
-            (false, false) => None,
-            (true, false) => Some((a, cut())),
-            (false, true) => Some((cut(), b)),
+        let (da, db) = (self.depth(a), self.depth(b));
+        if !(da.is_finite() && db.is_finite()) {
+            return None;
         }
+        // The part at depths `da + (db - da) t` in [lo, hi], t in [0, 1].
+        let dd = db - da;
+        let (t0, t1) = if dd == 0.0 {
+            if !(lo..=hi).contains(&da) {
+                return None;
+            }
+            (0.0, 1.0)
+        } else {
+            let (p, q) = ((lo - da) / dd, (hi - da) / dd);
+            (p.min(q).max(0.0), p.max(q).min(1.0))
+        };
+        if t0 > t1 {
+            return None;
+        }
+        let at = |t: f64| {
+            if t <= 0.0 {
+                a
+            } else if t >= 1.0 {
+                b
+            } else {
+                a + (b - a) * t
+            }
+        };
+        Some((at(t0), at(t1)))
     }
 
     /// Angle in the XY plane from +X, and angle above the XY plane (radians). Looking straight
@@ -289,20 +362,27 @@ impl ViewDir {
         Some(ViewDir::new(d))
     }
 
-    /// Looking straight down world Z in parallel projection: AutoCAD's 2D drawing area. A
-    /// perspective view is always a 3D view.
+    /// Looking straight down world Z in parallel projection, upright and unclipped: AutoCAD's 2D
+    /// drawing area. A perspective, twisted or clipped view is a 3D view (picks take what it
+    /// draws).
     pub fn is_plan(&self) -> bool {
-        self.persp.is_none() && self.dir.x.abs() < 1e-12 && self.dir.y.abs() < 1e-12 && self.dir.z > 0.0
+        self.persp.is_none() && self.twist == 0.0 && self.clip.is_off() && self.dir.x.abs() < 1e-12 && self.dir.y.abs() < 1e-12 && self.dir.z > 0.0
     }
 
     /// The view's right and up axes and the direction toward the viewer, in world coordinates.
-    /// Up is the world Z axis projected on the view plane; looking straight down or up, right
-    /// is +X, so plan view is the identity.
+    /// Upright, up is the world Z axis projected on the view plane and, looking straight down or
+    /// up, right is +X, so plan view is the identity. [`Self::twist`] turns both clockwise in the
+    /// view plane, so the picture turns counter-clockwise on the screen.
     pub fn axes(&self) -> (Vec3, Vec3, Vec3) {
         let d = self.dir;
         let x = Vec3::Z.cross(d).normalized();
         let x = if x == Vec3::ZERO { Vec3::new(1.0, 0.0, 0.0) } else { x };
-        (x, d.cross(x).normalized(), d)
+        let y = d.cross(x).normalized();
+        if self.twist == 0.0 || !self.twist.is_finite() {
+            return (x, y, d);
+        }
+        let (s, c) = self.twist.sin_cos();
+        (x * c - y * s, x * s + y * c, d)
     }
 
     /// The view-plane position of a world point; in perspective, where the line from it to the eye
@@ -522,5 +602,61 @@ mod tests {
         // Parallel rays run along the view direction.
         let par = v.parallel();
         assert!((par.ray(Vec2::new(1.0, 2.0)).1 + par.dir).len() < 1e-12);
+    }
+
+    /// A twist turns the picture counter-clockwise about the line of sight: twisted 90°, plan
+    /// shows +X up the screen. A twisted plan is a 3D view; the camera and rays follow the twist.
+    #[test]
+    fn a_twist_turns_the_picture_counter_clockwise() {
+        let v = ViewDir { twist: std::f64::consts::FRAC_PI_2, ..ViewDir::PLAN };
+        assert!(near(v.project(Vec3::new(1.0, 0.0, 0.0)), Vec2::new(0.0, 1.0)));
+        assert!(near(v.project(Vec3::new(0.0, 1.0, 0.0)), Vec2::new(-1.0, 0.0)));
+        assert!(!v.is_plan() && ViewDir::PLAN.is_plan());
+        let p = Vec2::new(3.0, -4.0);
+        assert!(near(v.unproject_xy(v.project(p.to3(0.0))), p));
+        // Twisted 30° from the south-west, world Z leans 30° to the left of up.
+        let iso = ViewDir { twist: 30f64.to_radians(), ..ViewDir::named("iso").unwrap() };
+        let z = iso.project(Vec3::Z);
+        assert!((z.y.atan2(z.x).to_degrees() - 120.0).abs() < 1e-9, "{z:?}");
+        let cam = Camera::new(50.0, 0.0);
+        let persp = iso.with_camera(Some(cam), Vec2::new(2.0, 1.0), 40.0);
+        assert!((persp.twist - iso.twist).abs() < 1e-15 && persp.camera(40.0).is_some());
+        let q = Vec3::new(5.0, -2.0, 3.0);
+        let (o, d) = persp.ray(persp.project(q));
+        assert!((o + d * (q - o).dot(d) - q).len() < 1e-9);
+        // A hostile twist keeps the view upright rather than producing NaN axes.
+        let bad = ViewDir { twist: f64::NAN, ..ViewDir::PLAN };
+        assert!(near(bad.project(Vec3::new(1.0, 2.0, 0.0)), Vec2::new(1.0, 2.0)));
+    }
+
+    /// Clipping planes hide what is nearer than the front one and farther than the back one:
+    /// points and segments (snaps, grips, picks) see only what lies between.
+    #[test]
+    fn clipping_planes_cut_what_the_view_sees() {
+        let front = ViewDir::named("front").unwrap();
+        // Front view: the depth toward the viewer is -y.
+        let v = ViewDir { clip: Clip::new(Some(5.0), Some(-10.0)), ..front };
+        assert!(v.sees(Vec3::ZERO) && !v.sees(Vec3::new(0.0, -6.0, 0.0)) && !v.sees(Vec3::new(0.0, 11.0, 0.0)));
+        assert!(!v.is_plan() && !v.sees(Vec3::new(f64::NAN, 0.0, 0.0)));
+        let (a, b) = v.clip(Vec3::new(0.0, -20.0, 0.0), Vec3::new(0.0, 20.0, 0.0)).unwrap();
+        assert!((a.y + 5.0).abs() < 1e-12 && (b.y - 10.0).abs() < 1e-12);
+        // Wholly in front of the front plane, or square to the line of sight behind the back one.
+        assert_eq!(v.clip(Vec3::new(0.0, -7.0, 0.0), Vec3::new(1.0, -9.0, 3.0)), None);
+        assert_eq!(v.clip(Vec3::new(0.0, 12.0, 0.0), Vec3::new(5.0, 12.0, 0.0)), None);
+        let inside = (Vec3::new(0.0, 1.0, 0.0), Vec3::new(4.0, -1.0, 2.0));
+        assert_eq!(v.clip(inside.0, inside.1), Some(inside));
+        // In perspective the near plane still cuts what the front plane would keep.
+        let cam = Camera::new(50.0, 0.0);
+        let p = ViewDir { clip: Clip::new(Some(1e9), None), ..front }.with_camera(Some(cam), Vec2::ZERO, cam.height_at(100.0));
+        assert!(p.depth_range().1 < 100.0 && !p.sees(Vec3::new(0.0, -150.0, 0.0)));
+        // Planes that aren't finite depths are off.
+        assert!(Clip::new(Some(f64::NAN), Some(f64::INFINITY)).is_off());
+        // A front plane behind the back one sees nothing, so nothing is cut out for snaps.
+        let inverted = ViewDir { clip: Clip::new(Some(-100.0), Some(50.0)), ..front };
+        assert_eq!(inverted.clip(Vec3::new(0.0, -200.0, 0.0), Vec3::new(0.0, 200.0, 0.0)), None);
+        assert!(!inverted.sees(Vec3::ZERO));
+        // So does a back plane behind the eye in perspective.
+        let behind = ViewDir { clip: Clip::new(None, Some(1e9)), ..p };
+        assert_eq!(behind.clip(Vec3::new(0.0, -200.0, 0.0), Vec3::new(0.0, 200.0, 0.0)), None);
     }
 }

@@ -3270,7 +3270,6 @@ menu	Modify	수정
 	3D modelling is not available in this build (no OpenCASCADE kernel)	이 빌드에서는 3D 모델링을 사용할 수 없습니다(OpenCASCADE 커널 없음)
 	<3D Osnap {0}>	<3D 객체 스냅 {0}>
 	A polygon needs at least 3 points.	다각형에는 점이 3개 이상 필요합니다.
-	A view twist isn't available yet: views stay upright.	뷰 비틀기는 아직 사용할 수 없습니다. 뷰는 똑바로 유지됩니다.
 	ATTACH: {0} underlays are not available yet; attach a PNG, JPEG or BMP picture or a DWG/DXF drawing	ATTACH: {0} 언더레이는 아직 사용할 수 없습니다. PNG, JPEG, BMP 그림이나 DWG/DXF 도면을 부착하십시오
 	Action {0} added.	동작 {0}을(를) 추가했습니다.
 	Alignment type = Perpendicular	정렬 유형 = 직교
@@ -3280,7 +3279,6 @@ menu	Modify	수정
 	B-rep read: {e}	B-rep 읽기: {e}
 	B-rep write: {e}	B-rep 쓰기: {e}
 	Base image size: Width: 1.000000, Height: {ratio}, Unitless	기준 이미지 크기: 폭: 1.000000, 높이: {ratio}, 단위 없음
-	Clipping planes aren't available yet.	자르기 평면은 아직 사용할 수 없습니다.
 	Current 3D osnap modes: {0}	현재 3D 객체 스냅 모드: {0}
 	Current layout	현재 배치
 	Current settings: Isolate all layouts={0}	현재 설정: 모든 배치 분리={0}
@@ -3721,3 +3719,56 @@ menu	Modify	수정
 	{i} is not a face or edge index	{i}은(는) 면 또는 모서리 인덱스가 아닙니다
 	{n} object(s) made visible.	객체 {n}개를 표시했습니다.
 	{n} object(s) made invisible.	객체 {n}개를 숨겼습니다.
+# Dynamic block files and lookup tables, the 3D ViewCube, DVIEW TWist and CLip, rendering on a worker, ETRANSMIT nesting.
+	Polar Stretch	극좌표 신축
+	Flip	뒤집기
+	Lookup	조회
+	Flipped	뒤집힘
+	Not Flipped	뒤집히지 않음
+	No errors found.	오류가 없습니다.
+	Property Lookup Table	특성 조회 테이블
+	Action name:	동작 이름:
+	Add Properties...	특성 추가...
+	Add Row	행 추가
+	Input Properties	입력 특성
+	Lookup Properties	조회 특성
+	Remove Properties	특성 제거
+	<Unmatched>	<일치 없음>
+	Allow reverse lookup	역방향 조회 허용
+	Read only	읽기 전용
+	Parameter properties	매개변수 특성
+	Every parameter property is in the table.	모든 매개변수 특성이 테이블에 있습니다.
+	Lookup Table	조회 테이블
+value	Open	열림
+value	Closed	닫힘
+	Fill its table in the Property Lookup Table (BLOOKUPTABLE).	특성 조회 테이블(BLOOKUPTABLE)에서 테이블을 채우십시오.
+	Lookup table of {name} changed.	{name}의 조회 테이블을 변경했습니다.
+	`action` is required: the block has more than one lookup action	`action`이(가) 필요합니다. 블록에 조회 동작이 둘 이상 있습니다
+	the block has no lookup action: add one first (BACTION Lookup)	블록에 조회 동작이 없습니다. 먼저 추가하십시오(BACTION Lookup)
+	`action` must name one of the block's lookup actions	`action`은(는) 블록의 조회 동작 중 하나여야 합니다
+	not a lookup table	조회 테이블이 아닙니다
+	a lookup table needs the lookup parameter's column, and an input column for its rows	조회 테이블에는 조회 매개변수의 열과 행의 입력 열이 필요합니다
+	rows {0} and {1} have the same input values	행 {0}과(와) {1}의 입력 값이 같습니다
+	{label} is read-only: its lookup table doesn't allow reverse lookup.	{label}은(는) 읽기 전용입니다. 조회 테이블이 역방향 조회를 허용하지 않습니다.
+	This dynamic block was made in another program: its lookup tables can't be changed here yet.	이 동적 블록은 다른 프로그램에서 만들어졌습니다. 조회 테이블은 아직 여기서 변경할 수 없습니다.
+	{0} is not a lookup action.	{0}은(는) 조회 동작이 아닙니다.
+	A lookup table column names parameter {0}, which the block doesn't have.	조회 테이블 열이 블록에 없는 매개변수 {0}을(를) 가리킵니다.
+	This dynamic block keeps data saved by a newer version of Cadino: adding or removing its parameters and actions here would lose it.	이 동적 블록에는 최신 버전의 Cadino가 저장한 데이터가 있습니다. 여기서 매개변수와 동작을 추가하거나 제거하면 그 데이터가 손실됩니다.
+	Home: the south-west isometric view	홈: 남서 등각투영 뷰
+	Compass: drag to orbit the view	나침반: 끌어서 뷰를 궤도 회전
+	Hide ViewCube	뷰 큐브 숨기기
+	Coordinate system	좌표계
+	Rendering... {seconds} s	렌더링 중... {seconds}초
+	The render failed.	렌더링에 실패했습니다.
+	The render was cancelled.	렌더링을 취소했습니다.
+	Close DesignCenter	DesignCenter 닫기
+	Specify distance from target	대상으로부터의 거리 지정
+	`{key}` must be a distance from the target, or "off"	`{key}`은(는) 대상으로부터의 거리이거나 "off"여야 합니다
+	`clip` must be "off" (`front` and `back` set the planes)	`clip`은(는) "off"여야 합니다(`front`와 `back`이 평면을 설정합니다)
+	the package would hold more than {MAX_ENTRIES} files	패키지에 파일이 {MAX_ENTRIES}개보다 많이 들어갑니다
+	Drawing Recovery	도면 복구
+	Cadino did not close normally. These drawings were autosaved:	Cadino가 정상적으로 종료되지 않았습니다. 다음 도면이 자동 저장되었습니다:
+	Discard	버리기
+	Opened drawings have no file name: save them to keep them.	연 도면에는 파일 이름이 없습니다. 보관하려면 저장하십시오.
+	Later	나중에
+	Keep the files and ask again next time	파일을 보관하고 다음에 다시 묻기

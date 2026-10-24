@@ -112,12 +112,13 @@ Ranked; detail and the full beta checklist in [docs/roadmap.md](docs/roadmap.md)
 5. Unstub prompt options in TRIM/EXTEND, OFFSET, ROTATE, PLINE, SPLINE, MTEXT, MLEADER (15–25 h).
 6. Autosave, recovery, AUDIT, RECOVER (10–15 h).
 7. Exact ellipse/spline geometry and correct polyline offsets (30–50 h).
-8. Dynamic blocks checked in AutoCAD, array actions on references, in-place xref editing (25–45 h).
+8. Dynamic blocks checked in AutoCAD, in-place xref editing (25–45 h).
 
 ## Progress log
 
 | Date | Entry |
 |---|---|
+| 2026-10-24 | DVIEW TWist and CLip (picks, snaps and RENDER honour the planes), a 3D ViewCube, RENDER on a worker thread with Cancel and XCLIP cuts, pictures in perspective and clipped views and in PDF/SVG output, nested ETRANSMIT, BLOOKUPTABLE and array actions; dynamic blocks made here keep their unverified kinds in Cadino's own record. Readiness numbers not re-measured |
 | 2026-10-24 | Dynamic-block authoring in the Block Editor (BPARAMETER, BACTION, BVSTATE, BTESTBLOCK), raster images (IMAGEATTACH, IMAGECLIP, IMAGEADJUST), ETRANSMIT, PARTIALOPEN, DesignCenter, UCSMAN, LAYVPI, FILTER groups, 3D object snaps, true perspective views with DVIEW, and a quick shaded RENDER. The "Use blocks" gate row narrows (35–55 → 20–35 h); alpha ≈ 110–170 h. Readiness numbers not re-measured |
 | 2026-10-12 | TRIM: a pick after a closed polyline's last cut keeps only the complementary run instead of an extra circuit of the outline (#726) |
 | 2026-10-12 | HATCHEDIT refuses an explicit bad `scale` or `angle` before it edits anything, so a rejected request leaves the drawing, undo and redo as they were (#724) |
@@ -134,6 +135,7 @@ Ranked; detail and the full beta checklist in [docs/roadmap.md](docs/roadmap.md)
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-24 | trivial | Progress log: views, rendering, pictures and dynamic block files round |
 | 2026-10-24 | minor | Progress log and alpha hours for the blocks, images, eTransmit and 3D round; Upcoming item 8 narrowed |
 | 2026-10-12 | trivial | Progress log: closed-polyline TRIM (#726) |
 | 2026-10-12 | trivial | Progress log: HATCHEDIT numeric validation (#724) |

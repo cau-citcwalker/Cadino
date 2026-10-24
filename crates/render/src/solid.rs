@@ -123,11 +123,12 @@ pub(crate) fn draw_mesh(b: &mut Builder, ctx: &Ctx, mesh: &Mesh3, xform: &Mat4, 
     let mut faces: Vec<(f64, f64, [Vec3; 3])> = Vec::with_capacity(mesh.tris.len());
     for t in &mesh.tris {
         let Some(([p, q, r], n)) = face(t) else { continue };
-        // Back faces are culled; a surface shows both sides of its faces, the back lit as the front.
+        // Back faces are culled; a surface shows both sides of its faces, the back lit as the front,
+        // and so does a solid cut open by clipping planes (DVIEW CLip).
         let f = facing(p, n);
         let n = if f > FRONT {
             n
-        } else if mesh.open && f < -FRONT {
+        } else if (mesh.open || !b.opts.view_dir.clip.is_off()) && f < -FRONT {
             -n
         } else {
             continue;
@@ -184,7 +185,7 @@ pub(crate) fn draw_mesh(b: &mut Builder, ctx: &Ctx, mesh: &Mesh3, xform: &Mat4, 
 /// Add an edge over shaded faces ([`crate::DisplayList::edges`]): points `pts` (view plane) at
 /// depths `z`.
 fn edge(b: &mut Builder, ctx: &Ctx, color: Ink, pts: &[Vec2], z: &[f64]) {
-    if let Some(c) = b.opts.view_dir.persp {
+    if let Some(c) = b.lens() {
         let v: Vec<Vec3> = pts.iter().zip(z).map(|(q, z)| q.to3(*z)).collect();
         for run in crate::persp::clip_line(&c, &v) {
             let (q, d): (Vec<Vec2>, Vec<f64>) = run.into_iter().unzip();

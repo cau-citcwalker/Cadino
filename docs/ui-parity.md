@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (DesignCenter, UCS dialog, FILTER groups, dynamic-block grips, typed bare names of the new commands) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (DesignCenter, UCS dialog, FILTER groups, dynamic-block grips, typed bare names of the new commands, 3D ViewCube, Render window on a worker) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
 
 How CADCraft's interaction compares with AutoCAD's: point entry, object snaps, tracking, dynamic
 input, grips, selection, the command line, chrome and navigation. A drafter's speed in AutoCAD
@@ -118,7 +118,7 @@ down-arrow options menu (DYNPROMPT), and DYNDIM.
 | Several hot grips at once (Shift-click) | yes | **no** (one handle) |
 | Multifunctional grip hover menus (Add Vertex, Remove Vertex, Convert to Arc, Lengthen …) | yes | **no** |
 | Grip dimensional input (length/angle fields) | yes | no |
-| Dynamic block grips | yes | yes: references show and drag their dynamic grips (linear, polar, XY, rotation, flip, point, visibility and lookup) and custom properties; the Block Editor draws parameters with their grips and actions with their tags (`dyngrips.rs`, `canvas/blockedit.rs`); alignment parameters have no grip on references |
+| Dynamic block grips | yes | yes: references show and drag their dynamic grips (linear, polar, XY, rotation, flip, point, visibility and lookup) and custom properties; the Block Editor draws parameters with their grips and actions with their tags (`dyngrips.rs`, `canvas/blockedit.rs`), default action names and state values in the interface language; the Property Lookup Table dialog (BLOOKUPTABLE, `bedit.rs`) edits a lookup action's table; alignment parameters have no grip on references |
 | Grip appearance (GRIPSIZE, colours, hover) | yes | GRIPSIZE, GRIPS and GRIPOBJLIMIT honoured (Options ▸ Selection); no grip colours |
 
 ## Selection (≈ 40%)
@@ -164,7 +164,7 @@ down-arrow options menu (DYNPROMPT), and DYNDIM.
 | Layer Properties Manager (filters, states, VP overrides) | yes | yes |
 | Blocks palette, Content | yes | Blocks window (click to insert, #28) |
 | Status bar toggles | ~25 | most toggles; Annotation Visibility and Workspace do nothing |
-| ViewCube | interactive 3D | clickable for 2D (Top/Home → extents); dragging does nothing (#7) |
+| ViewCube | interactive 3D | a shaded 3D cube turned with the view (twisted and perspective views too): face, edge and corner clicks set the view, hovering highlights the part; Home, compass ring drag to orbit; no drag on the cube itself, no rotate arrows, follows the WCS not the UCS (#7) |
 | Navigation bar, SteeringWheels | yes | no |
 | Workspaces | Drafting & Annotation, 3D Modeling | no |
 | Options / Preferences dialog | many tabs | **no** (issue #23) |
@@ -204,6 +204,8 @@ down-arrow options menu (DYNPROMPT), and DYNDIM.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-24 | minor | 3D ViewCube (faces, edges and corners); DesignCenter toggles with Ctrl+2 and ADCENTER, ADCCLOSE closes it; the Render window renders on a worker with a spinner and Cancel |
+| 2026-10-24 | minor | Property Lookup Table dialog (BLOOKUPTABLE: input and lookup properties, rows, Audit, Allow reverse lookup); Block Editor action tags and dynamic property values translated |
 | 2026-10-24 | minor | DesignCenter palette (ADCENTER, Ctrl+2), UCS dialog (UCSMAN), FILTER AND/OR/XOR/NOT groups, LAYTRANS settings, dynamic-block grips and Block Editor parameter display, Visibility States dialog, 3D Object Snap tab (F4); what is behind a perspective view's eye neither snaps nor shows grips |
 | 2026-10-24 | minor | Typed W, C, BOX, WP, CP and F draw their rubber bands; perspective views pick, snap and drag grips through the eye |
 | 2026-10-23 | minor | -PLOT, -PAGESETUP, -PLOTSTYLE, -EXPORT, -PUBLISH, -PARAMETERS, -CONSTRAINTSETTINGS, CHANGE, CHPROP, SCALETEXT, JUSTIFYTEXT, TEXTALIGN, COPYTOLAYER, SKETCH, TRACE, SOLID, 3DFACE, ATTIPEDIT and -ATTEXT at the command line, OOPS; Drafting Settings tabs (Object Snap); DWGPROPS, PASTESPEC, FILTER, LAYWALK and LAYTRANS dialogs; picks and typed selection windows in 3D views pick what is drawn; NEA, PER, INT and APP in 3D; history translated |

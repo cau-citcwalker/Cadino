@@ -250,11 +250,22 @@ pub fn t(source: &str) -> &str {
 /// Menu headings can differ from command or object labels (e.g. Czech Kótování / Kóta).
 /// Catalogs without a `menu` entry retain their ordinary translation.
 pub fn tr_menu<'a>(language: &str, source: &'a str) -> &'a str {
-    catalog(language).and_then(|c| c.get(&("menu", source))).copied().unwrap_or_else(|| tr(language, source))
+    tr_in(language, "menu", source)
 }
 
 pub fn menu(source: &str) -> &str {
     CURRENT.with(|l| tr_menu(l.get(), source))
+}
+
+/// `source`'s translation in `context`, else its ordinary one.
+fn tr_in<'a>(language: &str, context: &str, source: &'a str) -> &'a str {
+    catalog(language).and_then(|c| c.get(&(context, source))).copied().unwrap_or_else(|| tr(language, source))
+}
+
+/// A property value that names a state ("Open" as a door is, not the verb): its `value` row,
+/// else its ordinary translation.
+pub fn value(source: &str) -> &str {
+    CURRENT.with(|l| tr_in(l.get(), "value", source))
 }
 
 /// Named placeholders allow translations to reorder values. Inserted values are never looked up
