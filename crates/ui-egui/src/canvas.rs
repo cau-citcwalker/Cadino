@@ -17,7 +17,8 @@ use crate::theme::Tokens;
 /// The drawing points it gives and takes ([`Xf::to_world`], [`Xf::to_screen`]) are in the
 /// coordinates of its construction plane (CPlane, Rhino's; AutoCAD's UCS): on the CPlane's XY
 /// plane, where the view ray through the cursor meets it. With the World CPlane (the identity)
-/// they are world XY points, as they always were.
+/// they are world XY points, as they always were. In a perspective view the view plane is the
+/// camera's target plane and the rays come from the eye ([`ViewDir::ray`]).
 #[derive(Clone, Copy, Debug)]
 pub struct Xf {
     pub rect: Rect,
@@ -26,7 +27,8 @@ pub struct Xf {
     /// Pixels (points) per drawing unit.
     pub scale: f64,
     /// CPlane XY plane → view plane: the identity in plan view with the World CPlane, the view
-    /// direction's projection of the CPlane in a 3D view.
+    /// direction's projection of the CPlane in a 3D view (its parallel projection: a perspective
+    /// view maps points through the eye instead).
     plane: Mat3,
     /// View plane → CPlane XY plane: `plane` inverted, or where the view sees the CPlane edge-on
     /// the least-squares inverse (the nearest point of the plane's line, [`unproject`]).
@@ -47,13 +49,14 @@ impl Xf {
     }
     /// The same transform drawing on construction plane `c` (CPlane → world).
     pub fn on(self, c: Mat4) -> Self {
+        let par = self.dir.parallel();
         if c == Mat4::IDENTITY {
-            // `unproject_xy` is linear: its matrix is where it takes the axes.
-            let (x, y) = (self.dir.unproject_xy(Vec2::new(1.0, 0.0)), self.dir.unproject_xy(Vec2::new(0.0, 1.0)));
+            // `unproject_xy` is linear in parallel: its matrix is where it takes the axes.
+            let (x, y) = (par.unproject_xy(Vec2::new(1.0, 0.0)), par.unproject_xy(Vec2::new(0.0, 1.0)));
             let unplane = Mat3 { a: x.x, b: x.y, c: y.x, d: y.y, e: 0.0, f: 0.0 };
-            return Xf { plane: self.dir.plane_xf(), unplane, cplane: c, ..self };
+            return Xf { plane: par.plane_xf(), unplane, cplane: c, ..self };
         }
-        let plane = self.dir.rotation().mul(&c).plane_xy();
+        let plane = par.rotation().mul(&c).plane_xy();
         Xf { plane, unplane: unproject(&plane), cplane: c, ..self }
     }
     /// The same view drawing on the World plane: [`Xf::to_screen`] then takes world XY points
@@ -71,7 +74,31 @@ impl Xf {
     }
     /// Screen position of a drawing point (on the CPlane's XY plane).
     pub fn to_screen(&self, p: Vec2) -> Pos2 {
+        if self.dir.persp.is_some() {
+            return self.world_to_screen(self.cplane.apply(p.to3(0.0)));
+        }
         self.view_to_screen(self.plane.apply(p))
+    }
+    /// Where segment `a`–`b` (drawing points, on the CPlane's XY plane) shows on screen: in
+    /// perspective only what is in front of the eye, `None` when none of it is.
+    pub fn segment_to_screen(&self, a: Vec2, b: Vec2) -> Option<[Pos2; 2]> {
+        let Some(c) = self.dir.persp else { return Some([self.to_screen(a), self.to_screen(b)]) };
+        let (mut p, mut q) = (self.dir.view_of(self.cplane.apply(a.to3(0.0))), self.dir.view_of(self.cplane.apply(b.to3(0.0))));
+        let lim = c.eye.z - c.near() * 1.001;
+        if p.z > lim && q.z > lim {
+            return None;
+        }
+        let cut = |s: cadcraft_geom::Vec3, t: cadcraft_geom::Vec3| {
+            let x = s + (t - s) * ((lim - s.z) / (t.z - s.z));
+            cadcraft_geom::Vec3::new(x.x, x.y, lim)
+        };
+        if p.z > lim {
+            p = cut(p, q);
+        } else if q.z > lim {
+            q = cut(q, p);
+        }
+        let (Some((pa, _)), Some((pb, _))) = (c.map(p), c.map(q)) else { return None };
+        Some([self.view_to_screen(pa), self.view_to_screen(pb)])
     }
     /// Screen position of a CPlane point with its height (z along the CPlane's normal).
     pub fn local_to_screen(&self, p: cadcraft_geom::Vec3) -> Pos2 {
@@ -92,15 +119,29 @@ impl Xf {
         Vec2::new(self.center.x + f64::from(p.x - c.x) / self.scale, self.center.y - f64::from(p.y - c.y) / self.scale)
     }
     /// The drawing point under a screen position: where the view ray meets the CPlane, in its
-    /// coordinates (seen edge-on, the nearest point of the plane's line).
+    /// coordinates (seen edge-on, or in perspective above its horizon, the nearest point of the
+    /// plane's line in the parallel view).
     pub fn to_world(&self, p: Pos2) -> Vec2 {
+        if self.dir.persp.is_some()
+            && let Some(w) = self.ray_on(p, self.cplane.col(3), self.cplane.col(2))
+            && let Some(ci) = self.cplane.inverse()
+        {
+            let q = ci.apply(w).xy();
+            if q.is_finite() {
+                return q;
+            }
+        }
         self.unplane.apply(self.to_view(p))
     }
     /// The world point where the view ray under screen position `at` meets the plane through `o`
-    /// with normal `n`; `None` when the view sees that plane edge-on.
+    /// with normal `n`; `None` when the view sees that plane edge-on (or, in perspective, the ray
+    /// meets it behind the eye).
     pub fn ray_on(&self, at: Pos2, o: cadcraft_geom::Vec3, n: cadcraft_geom::Vec3) -> Option<cadcraft_geom::Vec3> {
-        let (x, y, d) = self.dir.axes();
         let v = self.to_view(at);
+        if self.dir.persp.is_some() {
+            return self.dir.ray_hit(v, o, n);
+        }
+        let (x, y, d) = self.dir.axes();
         let p0 = x * v.x + y * v.y;
         let nd = n.dot(d);
         if nd.abs() < 1e-6 * n.len() {
@@ -128,11 +169,18 @@ impl Xf {
     /// Drawing points are view-plane points: plan view with the World CPlane, where the old 2D
     /// shortcuts (an axis-aligned grid, a drag's matrix as it is) hold.
     fn flat(&self) -> bool {
-        self.plane == Mat3::IDENTITY
+        self.plane == Mat3::IDENTITY && self.dir.persp.is_none()
     }
-    /// Whether the view sees the CPlane edge-on: points picked land on its line.
+    /// Whether the view sees the CPlane edge-on: points picked land on its line. In perspective,
+    /// when the eye is in the plane.
     pub fn edge_on(&self) -> bool {
-        self.plane.det().abs() <= 1e-6
+        match self.dir.eye() {
+            Some(e) => {
+                let n = self.cplane.col(2);
+                n.dot(e - self.cplane.col(3)).abs() <= 1e-9 * (1.0 + e.len())
+            }
+            None => self.plane.det().abs() <= 1e-6,
+        }
     }
     /// The visible area in view-plane coordinates.
     pub fn view_bounds(&self) -> Bounds2 {
@@ -189,7 +237,7 @@ fn placed(ents: Vec<cadcraft_doc::Entity>, c: &Mat4) -> Vec<cadcraft_doc::Entity
 /// list's direction about the same point. Plan outside model space (layouts, MSPACE viewports).
 fn view_xfs(app: &CadApp, rect: Rect, view: cadcraft_engine::View) -> (Xf, Xf) {
     let (dir, pivot) = match app.session.state() {
-        Ok(st) if st.space == cadcraft_doc::Space::Model => (st.view_dir, st.orbit_target),
+        Ok(st) if st.space == cadcraft_doc::Space::Model => (st.look().projection(view), st.orbit_target),
         _ => (ViewDir::PLAN, None),
     };
     let cplane = app.session.cplane();
@@ -199,11 +247,16 @@ fn view_xfs(app: &CadApp, rect: Rect, view: cadcraft_engine::View) -> (Xf, Xf) {
     if app.canvas.list.is_none() || built == dir {
         return (now, now);
     }
+    // The same direction through another camera (a perspective view panned or dollied): the
+    // target plane stays, so the current list shows it where it is now.
+    if built.dir == dir.dir {
+        return (now, Xf { dir: built, ..now });
+    }
     // The world point at the centre of the view, as the current list sees it: the point the
     // last orbit turned about, else the one on the CPlane.
     let center = match pivot {
         Some(t) => built.project(t),
-        None if cplane == Mat4::IDENTITY => built.plane_xf().apply(now.unplane.apply(view.center)),
+        None if cplane == Mat4::IDENTITY && built.persp.is_none() => built.plane_xf().apply(now.unplane.apply(view.center)),
         None => built.project(cplane.apply(now.unplane.apply(view.center).to3(0.0))),
     };
     (now, Xf::new(rect, center, scale).looking(built).on(cplane))
@@ -303,6 +356,7 @@ fn window_corner(app: &CadApp, xf: &Xf) -> Option<Vec2> {
     let pw = app.session.pending_window?;
     Some(match app.canvas.window_view {
         Some((w, v, dir)) if w == pw.corner && dir == xf.dir => v,
+        _ if xf.dir.persp.is_some() => xf.dir.project(xf.cplane.apply(pw.corner.to3(0.0))),
         _ => xf.plane.apply(pw.corner),
     })
 }
@@ -331,6 +385,21 @@ pub(crate) const ORBIT_DEG_PER_PX: f64 = 0.4;
 /// detail band, lineweight display, document, active viewport view and visual style, and view
 /// direction (see [`ensure_list`]).
 type ListKey = (u64, u64, i32, i32, bool, bool, usize, u64, [u64; 3]);
+
+/// [`ListKey`]'s last field for projection `v`: its direction's bits, mixed with its camera's in
+/// perspective.
+fn dir_key(v: &ViewDir) -> [u64; 3] {
+    let d = v.dir;
+    let mut k = [d.x.to_bits(), d.y.to_bits(), d.z.to_bits()];
+    if let Some(c) = v.persp {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        [c.eye.x, c.eye.y, c.eye.z, c.focal].map(f64::to_bits).hash(&mut h);
+        let m = h.finish() | 1;
+        k = k.map(|b| b ^ m);
+    }
+    k
+}
 
 /// Whether two list keys are for the same drawing content (they may differ only in the view).
 fn same_content(a: &ListKey, b: &ListKey) -> bool {
@@ -443,6 +512,9 @@ pub struct CanvasState {
     /// construction plane or of a tilted object: the plane (world point, normal) the cursor moves
     /// it in ([`grip_plane`], [`drag_plane`], [`grip_drag_plane`], [`point_at`]).
     pub(crate) grip_plane: Option<(cadcraft_geom::Vec3, cadcraft_geom::Vec3)>,
+    /// While a grip is dragged in a plane of its own: the height above the CPlane of the point
+    /// under the cursor there ([`grip_height`]), sent with an unsnapped point.
+    pub(crate) grip_z: Option<f64>,
     /// The drawing the engine's object snaps run on in a 3D view ([`snap3d::ground_doc`]).
     pub(crate) ground: snap3d::Ground,
 }
@@ -581,8 +653,8 @@ fn ensure_list(app: &mut CadApp, xf: &Xf, views: &[(Bounds2, f64)], ctx: &egui::
     let split = split_viewport(st, stencil_clip(app)).map(|(h, ..)| h);
     let vp_view = list_style(st, split);
     // The view direction is part of the view: orbiting builds in the background (see `view_xfs`).
-    let view_dir = if st.space == cadcraft_doc::Space::Model { st.view_dir } else { cadcraft_geom::ViewDir::PLAN };
-    let d = view_dir.dir;
+    // A perspective view's camera too: panning and zooming it build again.
+    let view_dir = st.screen_dir();
     let (lwdisplay, transparency_display) = (app.session.settings.lwdisplay, app.session.settings.transparency_display);
     let key: ListKey = (
         st.uid,
@@ -593,7 +665,7 @@ fn ensure_list(app: &mut CadApp, xf: &Xf, views: &[(Bounds2, f64)], ctx: &egui::
         transparency_display,
         std::sync::Arc::as_ptr(&st.doc) as usize,
         vp_view,
-        [d.x.to_bits(), d.y.to_bits(), d.z.to_bits()],
+        dir_key(&view_dir),
     );
     // A background build that finished: use it unless the drawing has changed since it started
     // (or the list was dropped to force a rebuild).
@@ -852,6 +924,7 @@ fn ensure_vp_content(app: &mut CadApp, xf_paper: &Xf, ctx: &egui::Context) -> Op
 /// the stencil buffer first.
 fn draw_vp_content(c: &mut VpContent, gpu: bool, p: &egui::Painter, f: &VpFrame, xf_paper: &Xf, bg: Rgb, lwdisplay: bool) {
     let xf = &f.xf;
+    images::paint(p, xf, &c.list);
     if !gpu {
         draw_list(p, xf, &c.list, bg, lwdisplay);
         return;
@@ -1089,7 +1162,8 @@ fn draw_cplane_grid(app: &CadApp, p: &egui::Painter, xf: &Xf) {
         return;
     }
     let (x0, x1, y0, y1) = (i0 * minor, i1 * minor, j0 * minor, j1 * minor);
-    let seg = |a: Vec2, b: Vec2, col: Color32| Shape::line_segment([xf.to_screen(a), xf.to_screen(b)], Stroke::new(1.0, col));
+    // In perspective only what is in front of the eye.
+    let seg = |a: Vec2, b: Vec2, col: Color32| xf.segment_to_screen(a, b).map_or(Shape::Noop, |s| Shape::line_segment(s, Stroke::new(1.0, col)));
     let kind = |v: f64| if ((v / major) - (v / major).round()).abs() < 1e-6 { t.grid_major } else { t.grid_minor };
     let mut lines = Vec::new();
     if s.gridmode {
@@ -1347,18 +1421,20 @@ fn draw_drag_gpu(
 /// that sees the XY plane edge-on. `None`: the GPU drag draws it.
 /// ponytail: rebuilds every dragged object each frame; split the solids out if mixed drags lag.
 /// With a construction plane other than World the drag's matrix is in CPlane coordinates: every
-/// object is rebuilt, moved by it in the world ([`in_world`]).
+/// object is rebuilt, moved by it in the world ([`in_world`]). A perspective view rebuilds every
+/// drag (no 2D transform moves what it shows).
 fn solid_drag_preview(doc: &cadcraft_doc::Drawing, drag: &cadcraft_engine::Drag, clipboard: &[cadcraft_doc::Entity], xf: &Xf) -> Option<DisplayList> {
     let m = drag.matrix;
+    let persp = xf.dir.persp.is_some();
     // Plan view with a level CPlane sees every drag as the 2D transform the GPU drag draws.
     let level = (xf.cplane.apply_vec(cadcraft_geom::Vec3::Z) - cadcraft_geom::Vec3::Z).len() < 1e-9;
-    if (xf.is_plan() && level) || (m.b == 0.0 && m.c == 0.0 && m.a == m.d && m.a > 0.0 && xf.plane.det().abs() > 1e-6) {
+    if !persp && ((xf.is_plan() && level) || (m.b == 0.0 && m.c == 0.0 && m.a == m.d && m.a > 0.0 && xf.plane.det().abs() > 1e-6)) {
         return None;
     }
     let ents: Vec<&cadcraft_doc::Entity> =
         if drag.clipboard { clipboard.iter().collect() } else { drag.handles.iter().filter_map(|h| doc.entity(*h)).map(|e| e.as_ref()).collect() };
     let world = xf.cplane == Mat4::IDENTITY;
-    if world && !ents.iter().any(|e| matches!(e.kind, cadcraft_doc::EntityKind::Solid3d(_))) {
+    if world && !persp && !ents.iter().any(|e| matches!(e.kind, cadcraft_doc::EntityKind::Solid3d(_))) {
         return None;
     }
     let m3 = in_world(&xf.cplane, &m);
@@ -1504,6 +1580,62 @@ fn selection_area_fill(s: &cadcraft_engine::Settings, crossing: bool) -> Option<
     s.selectionarea.then(|| Color32::from_rgb(c.0, c.1, c.2).gamma_multiply(f32::from(s.selectionareaopacity.min(100)) / 100.0))
 }
 
+/// The rubber band of selection mode `m` (typed W, C, BOX, WP, CP or F) with its points so far
+/// and the cursor at `cursor`, as AutoCAD draws them: a window (solid) or crossing (dashed)
+/// rectangle, a window (solid) or crossing (dashed) polygon, filled as the selection area
+/// settings say, or a dashed fence. A point clicked in this view shows where it was clicked.
+fn draw_select_mode(p: &egui::Painter, xf: &Xf, m: &cadcraft_engine::select::SelectMode, cursor: Pos2, s: &cadcraft_engine::Settings) {
+    use cadcraft_engine::select::SelectKind as K;
+    let t = Tokens::get();
+    let at = |(q, seen): (&Vec2, &Option<(ViewDir, Vec2)>)| match seen {
+        Some((d, v)) if *d == xf.dir => xf.view_to_screen(*v),
+        _ => xf.to_screen(*q),
+    };
+    let mut pts: Vec<Pos2> = m.pts.iter().zip(m.seen.iter().chain(std::iter::repeat(&None))).map(at).collect();
+    let Some(first) = pts.first().copied() else { return };
+    pts.push(cursor);
+    let dashed = |p: &egui::Painter, pts: &[Pos2], st: Stroke| p.extend(Shape::dashed_line(pts, st, 5.0, 3.0));
+    match m.kind {
+        K::Window | K::Crossing | K::Box => {
+            let crossing = m.kind == K::Crossing || (m.kind == K::Box && cursor.x < first.x);
+            let r = Rect::from_two_pos(first, cursor);
+            if let Some(fill) = selection_area_fill(s, crossing) {
+                p.rect_filled(r, 0.0, fill);
+            }
+            let corners = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
+            if crossing {
+                dashed(p, &corners, Stroke::new(1.0, t.crossing_stroke));
+            } else {
+                p.rect_stroke(r, 0.0, Stroke::new(1.0, t.window_stroke), egui::StrokeKind::Middle);
+            }
+        }
+        K::WPolygon | K::CPolygon => {
+            let crossing = m.kind == K::CPolygon;
+            if pts.len() >= 3
+                && let Some(fill) = selection_area_fill(s, crossing)
+            {
+                let ring: Vec<Vec2> = pts.iter().map(|q| Vec2::new(f64::from(q.x), f64::from(q.y))).collect();
+                let mut mesh = egui::Mesh::default();
+                for tri in cadcraft_render::triangulate_evenodd(&[ring]).chunks_exact(3) {
+                    for q in tri {
+                        mesh.colored_vertex(pos2(q.x as f32, q.y as f32), fill);
+                    }
+                }
+                mesh.indices = (0..mesh.vertices.len() as u32).collect();
+                p.add(Shape::mesh(mesh));
+            }
+            pts.push(first);
+            if crossing {
+                dashed(p, &pts, Stroke::new(1.0, t.crossing_stroke));
+            } else {
+                p.add(Shape::line(pts, Stroke::new(1.0, t.window_stroke)));
+            }
+        }
+        K::Fence => dashed(p, &pts, Stroke::new(1.0, t.crossing_stroke)),
+        K::Group => {}
+    }
+}
+
 fn draw_snap_marker(p: &egui::Painter, at: Pos2, hit: &SnapHit) {
     snap_glyph(p, at, hit.mode, crate::theme::snap_marker_half(), Stroke::new(2.0, Tokens::get().snap));
     p.text(at + vec2(12.0, 12.0), egui::Align2::LEFT_TOP, crate::i18n::t(hit.name), crate::theme::small(), Color32::BLACK);
@@ -1608,9 +1740,10 @@ fn draw_tracking(p: &egui::Painter, xf: &Xf, acquired: &[snap::tracking::Acquire
         let pts: Vec<Pos2> = match path.shape {
             PathShape::Ray { origin, dir } => {
                 let back = (tr.point - origin).dot(dir).clamp(0.0, far);
-                vec![xf.to_screen(tr.point - dir * back), xf.to_screen(tr.point + dir * far)]
+                xf.segment_to_screen(tr.point - dir * back, tr.point + dir * far).map_or_else(Vec::new, Vec::from)
             }
-            PathShape::Line { dir, .. } => vec![xf.to_screen(tr.point - dir * far), xf.to_screen(tr.point + dir * far)],
+            // In perspective only what is in front of the eye.
+            PathShape::Line { dir, .. } => xf.segment_to_screen(tr.point - dir * far, tr.point + dir * far).map_or_else(Vec::new, Vec::from),
             PathShape::Circle { center, radius, .. } => {
                 let (a0, span) = (center.angle_to(tr.point), (far / radius).min(std::f64::consts::PI));
                 (0..=96).map(|i| xf.to_screen(Vec2::polar(center, radius, a0 - span + span * f64::from(i) / 48.0))).collect()
@@ -1938,6 +2071,8 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     }
 
     let raw_world = hover_pos.filter(|_| inside).map(|p| point_at(app, &xf, p));
+    // A grip dragged in a plane of its own sends the height it is at there with its point.
+    app.canvas.grip_z = hover_pos.filter(|_| inside).and_then(|p| grip_height(app, &xf, p));
     let dyn_frame = crate::cmdline::dyn_frame(app);
     if let Some(w) = raw_world {
         let mut eff = effective_point(app, w, &xf, ui.ctx());
@@ -2149,12 +2284,11 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     let xf_build = if mspace { xf_paper } else { xf_now };
     let mut views = vec![(xf_build.view_bounds(), 1.0 / xf_build.scale)];
     let look = app.session.state().map(|st| st.look()).ok();
-    views.extend(tiles.iter().filter(|(r, tile)| !tile.active && Some(tile.look) == look && r.width() >= 1.0 && r.height() >= 1.0).map(
-        |(r, tile)| {
-            let xf = tile_xf(*r, tile, xf_build.dir);
-            (xf.view_bounds(), 1.0 / xf.scale)
-        },
-    ));
+    let shares = |tile: &cadcraft_engine::ModelTile| Some(tile.look) == look && tile.look.projection(tile.view).persp == xf_build.dir.persp;
+    views.extend(tiles.iter().filter(|(r, tile)| !tile.active && shares(tile) && r.width() >= 1.0 && r.height() >= 1.0).map(|(r, tile)| {
+        let xf = tile_xf(*r, tile, xf_build.dir);
+        (xf.view_bounds(), 1.0 / xf.scale)
+    }));
     ensure_list(app, &xf_build, &views, ui.ctx());
     app.canvas.last_look = look.filter(|_| app.session.state().is_ok_and(|st| st.space == cadcraft_doc::Space::Model));
     tiles::ensure_lists(app, &tiles, ui.ctx());
@@ -2198,6 +2332,9 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         let clipped = painter.with_clip_rect(f.on_screen.intersect(rect));
         draw_vp_content(&mut app.canvas.vp, gpu, &clipped, &f, &xf_paper, bg, app.session.settings.lwdisplay);
         masked = gpu && f.outline.is_some();
+    }
+    if let Some(list) = &app.canvas.list {
+        images::paint(&painter, &xf_paper, list);
     }
     if app.canvas.gpu.is_some() {
         draw_list_gpu(&mut app.canvas, &painter, &xf_paper, bg, app.session.settings.lwdisplay);
@@ -2386,6 +2523,10 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
             painter.rect_stroke(r, 0.0, st, egui::StrokeKind::Middle);
         }
     }
+    // A typed W, C, BOX, WP, CP or F: its outline through the points so far to the cursor.
+    if let (Some(m), Some(b)) = (&app.session.select_mode, hover_pos.filter(|_| raw_world.is_some())) {
+        draw_select_mode(&painter, &xf, m, b, &app.session.settings);
+    }
     // Acquired tracking points and the polar / tracking paths under the cursor.
     if app.canvas.cursor.is_some() {
         draw_tracking(&painter, &xf, &app.session.tracking.acquired, app.canvas.track.as_ref(), view.height * 4.0);
@@ -2406,7 +2547,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     // The view's title (the Model tab's opens the viewport menu); the pointer over it is a hand.
     let mut over_title = false;
     if let Ok(st) = app.session.state() {
-        let look = cadcraft_engine::TileLook { dir: xf.dir, ..st.look() };
+        let look = cadcraft_engine::TileLook { dir: xf.dir.parallel(), ..st.look() };
         let tile = tiles.iter().position(|(_, t)| t.active).map(|i| (i, true));
         over_title = tiles::title(app, ui, rect, tile, look);
     }
@@ -2852,7 +2993,7 @@ pub(crate) fn ucs_icon_arms(rect: Rect, xf: &Xf) -> (Pos2, Vec<(&'static str, Po
         .into_iter()
         .take(n)
         .map(|(label, axis)| {
-            let v = xf.dir.project(xf.cplane.apply_vec(axis).normalized());
+            let v = xf.dir.parallel().project(xf.cplane.apply_vec(axis).normalized());
             (label, o + vec2(v.x as f32, -v.y as f32) * len)
         })
         .collect();
@@ -2978,12 +3119,19 @@ fn grip_menu(app: &mut CadApp, resp: &egui::Response) {
 /// at their height above it, so a raised or tilted object's grips are where it is drawn (not on
 /// its shadow) and the grip under the cursor is the one the engine edits. Plan view with the
 /// World CPlane: AutoCAD's own, where plan draws them.
+/// A grip behind a perspective view's eye is nowhere (NaN: not drawn, never under the cursor).
 fn grip_spots(e: &cadcraft_doc::Entity, xf: &Xf) -> Vec<Pos2> {
     let g = e.grips();
     if xf.flat() {
         return g.into_iter().map(|p| xf.to_screen(p)).collect();
     }
-    g.iter().zip(grip_heights(e, g.len())).map(|(p, z)| xf.local_to_screen(p.to3(z))).collect()
+    g.iter()
+        .zip(grip_heights(e, g.len()))
+        .map(|(p, z)| {
+            let w = xf.cplane.apply(p.to3(z));
+            if xf.dir.sees(w) { xf.world_to_screen(w) } else { Pos2::new(f32::NAN, f32::NAN) }
+        })
+        .collect()
 }
 
 /// The heights above the construction plane of the `n` grips of object `e` (in the plane's
@@ -3001,10 +3149,7 @@ fn grip_heights(e: &cadcraft_doc::Entity, n: usize) -> Vec<f64> {
 /// into that plane, `Entity::plan_to_local`), else level with the CPlane through the grip (the
 /// engine keeps grip heights). While the edit transforms its objects instead, the level one
 /// ([`grip_drag_plane`]).
-/// ponytail: an object standing on the CPlane (its plane square to it) only stretches across, at
-/// the grip's height: a drag sends the CPlane x, y only; upgrade: send the drag point's height
-/// too (`Session::point_z`, which the engine's grip edit takes: line ends and 3D vertices rise,
-/// other grips stay in their object's plane).
+/// A click during the drag sends the point's height in that plane too ([`grip_height`]).
 fn grip_plane(app: &CadApp, xf: &Xf, (h, i): (Handle, usize)) -> Option<(cadcraft_geom::Vec3, cadcraft_geom::Vec3)> {
     if !xf.picks_drawn() {
         return None;
@@ -3086,6 +3231,15 @@ fn point_at(app: &CadApp, xf: &Xf, at: Pos2) -> Vec2 {
         }
     }
     xf.to_world(at)
+}
+
+/// The height above the construction plane of the point under screen point `at` in the plane a
+/// grip is being dragged in ([`grip_drag_plane`]), so an object standing square to the CPlane
+/// stretches in its own plane, up and down too. `None` without such a drag.
+fn grip_height(app: &CadApp, xf: &Xf, at: Pos2) -> Option<f64> {
+    let (o, n) = grip_drag_plane(app, xf)?;
+    let z = xf.cplane.inverse()?.apply(xf.ray_on(at, o, n)?).z;
+    z.is_finite().then_some(z)
 }
 
 /// The grip of a selected object under the cursor, if any: (object, grip index).
@@ -4751,6 +4905,10 @@ pub(crate) mod tests {
         app.session.state_mut().unwrap().shaded_edges = true;
         let text = painted_text(&mut app, &ctx, at);
         assert!(text.contains("+  |  Custom View  |  Shaded with Edges"), "{text}");
+        // A perspective view is Perspective, as in Rhino.
+        app.session.state_mut().unwrap().camera = Some(cadcraft_geom::Camera::new(50.0, 0.0));
+        let text = painted_text(&mut app, &ctx, at);
+        assert!(text.contains("+  |  Perspective  |  Shaded with Edges"), "{text}");
     }
 }
 
@@ -4758,6 +4916,8 @@ pub(crate) mod tests {
 mod blockedit;
 /// The COMPARE overlay.
 mod compare;
+/// Raster images' pictures as textures.
+mod images;
 
 /// Background rebuilds of the display list for a new view.
 mod rebuild;
@@ -4770,6 +4930,9 @@ mod gumball;
 
 /// Rhino-style model tiles: their own lists, titles and right-drag navigation.
 mod tiles;
+
+#[cfg(test)]
+mod persp_tests;
 
 #[cfg(test)]
 mod hatch_pick_tests {

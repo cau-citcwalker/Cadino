@@ -253,6 +253,8 @@ fn fetch(path: &str, dir: Option<&Path>, cx: &mut Ctx, depth: usize) -> Result<(
     }
     cx.files += 1;
     let mut x = read(&file).map_err(|e| (XrefStatus::Unresolved, format!("{}: {e}", file.to_string_lossy())))?;
+    // Its pictures are found from its own folder (an unreadable one shows its frame).
+    let _ = super::super::super::images::load_pictures(&mut x, Some(&file.to_string_lossy()), None);
     cx.chain.push(canon);
     let nested: Vec<String> =
         x.blocks.values().filter(|b| b.xref_path.is_some() && !b.xref_overlay && !b.name.contains('|')).map(|b| b.name.clone()).collect();

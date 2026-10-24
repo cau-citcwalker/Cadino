@@ -175,3 +175,31 @@ fn opening_a_drawing_with_authoring_elements_offers_the_block_editor() {
     assert!(app.ui.dialog.is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// In the Block Editor, the dynamic block's parameters and actions show on the canvas with their
+/// names, BVSTATE typed bare opens the Visibility States dialog (-BVSTATE prompts instead), and
+/// the dialog's changes go through `bvstate`.
+#[test]
+fn the_block_editor_shows_parameters_and_bvstate_opens_the_visibility_states() {
+    let mut app = app_with_blocks();
+    app.run("bedit", json!({ "name": "Window" })).unwrap();
+    app.run("bparameter", json!({ "type": "linear", "base": [0, -1], "end": [2, -1], "label": "Width" })).unwrap();
+    let all: Vec<String> = app.session.doc().unwrap().model.handles().iter().map(|h| h.hex()).collect();
+    app.run("baction", json!({ "type": "move", "parameter": "Width", "handles": all })).unwrap();
+    app.run("bparameter", json!({ "type": "visibility", "at": [1, 2], "states": ["Shown", "Gone"] })).unwrap();
+
+    app.cmdline("BVSTATE");
+    let ctx = egui::Context::default();
+    app.logic(&ctx);
+    painted(&mut app, &ctx);
+    let text = painted(&mut app, &ctx);
+    for s in ["Visibility States", "Shown", "Gone", "Width", "Visibility1", "Move", "Set Current"] {
+        assert!(text.contains(s), "{s} missing from:\n{text}");
+    }
+    assert!(app.session.current_prompt().is_none(), "the dialog, not the command line");
+    app.run("bvstate", json!({ "operation": "set", "name": "Gone" })).unwrap();
+    assert_eq!(bedit::visibility_states(&mut app), Some((vec!["Shown".to_string(), "Gone".to_string()], Some("Gone".to_string()))));
+
+    app.cmdline("-BVSTATE");
+    assert!(app.session.current_prompt().is_some_and(|p| p.message == "Enter an option"), "{:?}", app.session.current_prompt());
+}

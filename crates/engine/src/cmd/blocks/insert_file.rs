@@ -75,7 +75,12 @@ fn read_drawing(path: &str) -> Result<Drawing> {
     let mut last = None;
     for p in candidates {
         match read_file(&p) {
-            Ok(bytes) => return (hooks.read)(&bytes, &p).map_err(|e| bad("insert", format!("{p}: {e}"))),
+            Ok(bytes) => {
+                let mut d = (hooks.read)(&bytes, &p).map_err(|e| bad("insert", format!("{p}: {e}")))?;
+                // Its pictures are found from its own folder.
+                let _ = super::super::images::load_pictures(&mut d, Some(&p), None);
+                return Ok(d);
+            }
             Err(e) => last = Some(e),
         }
     }
@@ -95,7 +100,7 @@ fn read_file(_path: &str) -> Result<Vec<u8>> {
 /// (Re)define block `name` from `src`'s model space with base point `$INSBASE`, adding the
 /// layers, linetypes, styles and blocks of `src` this drawing doesn't have. Nothing changes when
 /// the definition fails (an invalid name, or a block that would contain itself).
-fn define_from(s: &mut Session, src: &Drawing, name: &str) -> Result<String> {
+pub(crate) fn define_from(s: &mut Session, src: &Drawing, name: &str) -> Result<String> {
     if !valid_block_name(name) {
         return Err(bad("insert", format!("\"{name}\" is not a valid block name")));
     }

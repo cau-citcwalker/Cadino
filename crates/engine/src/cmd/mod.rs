@@ -1,6 +1,7 @@
 //! The command registry. Ids are AutoCAD command names in lower case; menu paths follow
 //! AutoCAD's menu bar so the catalog doubles as the parity metric.
 
+pub mod adcenter;
 pub(crate) mod annoscale;
 mod annotate;
 mod array;
@@ -18,15 +19,18 @@ mod draw_legacy;
 mod draworder;
 mod dwgprops;
 mod edit;
+mod etransmit;
 mod exchange;
 pub mod file;
 mod gripcmds;
 mod griphot;
 pub(crate) mod groups;
 pub(crate) mod hatch;
+pub mod images;
 mod inquiry;
 mod layer;
 mod layout;
+mod layvpi;
 mod lisp;
 mod mleader_content;
 mod mleader_edit;
@@ -35,17 +39,20 @@ mod modify2;
 mod mtext_opts;
 pub(crate) mod oops;
 mod overkill;
+mod partialopen;
 mod pline_opts;
 pub mod plotters;
 mod presspull;
 mod props;
 pub use props::MatchProps;
+mod dview;
 mod edgeblend;
 mod exchange3d;
 mod flatshot;
 mod furniture;
 mod interfere;
 mod qselect;
+mod rendering;
 mod section;
 mod selecttools;
 mod settings;
@@ -60,6 +67,7 @@ mod table;
 mod text_tools;
 mod tolerance;
 mod trimextend;
+pub mod ucsman;
 mod utility;
 mod view;
 mod view3d;
@@ -70,6 +78,7 @@ pub mod curves;
 pub mod helpers;
 pub mod machines;
 pub mod options;
+pub mod osnap3d;
 
 use cadcraft_doc::Handle;
 use cadcraft_geom::Vec2;
@@ -204,6 +213,8 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(selecttools::specs());
         v.extend(view::specs());
         v.extend(view3d::specs());
+        v.extend(dview::specs());
+        v.extend(rendering::specs());
         v.extend(solids::specs());
         v.extend(exchange3d::specs());
         v.extend(furniture::specs());
@@ -252,6 +263,13 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(attext::specs());
         v.extend(dwgprops::specs());
         v.extend(display::specs());
+        v.extend(images::specs());
+        v.extend(etransmit::specs());
+        v.extend(partialopen::specs());
+        v.extend(adcenter::specs());
+        v.extend(layvpi::specs());
+        v.extend(ucsman::specs());
+        v.extend(osnap3d::specs());
         v
     })
 }
@@ -373,6 +391,11 @@ const RHINO_NAMES: &[(&str, &str)] = &[
     ("slab", "polysolid"),
     ("4view", "viewports.rhino"),
     ("maxviewport", "viewports.maximize"),
+    // Picture (and PictureFrame) place a raster image on a rectangle, as IMAGEATTACH does.
+    ("picture", "imageattach"),
+    ("pictureframe", "imageattach"),
+    // The Named CPlanes panel saves, restores and deletes construction planes, as UCSMAN.
+    ("namedcplane", "ucsman"),
 ];
 
 // ---------- param helpers ----------
@@ -475,6 +498,10 @@ mod rhino_name_tests {
         assert_eq!(resolve_alias("PlanarSrf"), "planesurf");
         assert_eq!(resolve_alias("MaxViewport"), "viewports.maximize");
         assert_eq!(resolve_alias("4View"), "viewports.rhino");
+        assert_eq!(resolve_alias("Picture"), "imageattach");
+        assert_eq!(resolve_alias("PictureFrame"), "imageattach");
+        assert_eq!(resolve_alias("NamedCPlane"), "ucsman");
+        assert_eq!(resolve_alias("Render"), "render");
         // Ours and AutoCAD's names come first.
         assert_eq!(resolve_alias("box"), "box");
         // A Rhino name whose command doesn't exist yet stays as typed.

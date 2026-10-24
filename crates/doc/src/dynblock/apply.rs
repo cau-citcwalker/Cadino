@@ -8,9 +8,10 @@
 //! `AcDbBlockRepresentation` data holds its values (created when it had none) and its history
 //! says what was done to it (AutoCAD replays the history when the dynamic block is redefined).
 //!
-//! What can change so far: a visibility state, a lookup value, a distance and a position, with
-//! the stretch and move actions they drive and the lookups that follow. The other parameters'
-//! actions come later.
+//! What can change: a visibility state, a lookup value, a flip state, a distance, a position,
+//! a polar or XY parameter's end and an angle, with the move, stretch, polar stretch, scale,
+//! rotate and flip actions they drive (and the actions of parameters those carry along that
+//! chain theirs) and the lookups that follow. Array actions are kept but don't copy yet.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -39,12 +40,6 @@ fn etag(d: &Drawing, h: Handle) -> Option<i64> {
 /// Each object of `b` keyed by its element tag, or by its position when it has none.
 fn by_tag(d: &Drawing, b: &Block) -> Vec<(i64, Handle)> {
     b.entities.iter().enumerate().map(|(i, e)| (etag(d, e.handle).unwrap_or(i as i64 + 1_000_000), e.handle)).collect()
-}
-
-/// The file handle of block `name`'s BLOCK_RECORD, as the kept data refers to it.
-fn record_handle(d: &Drawing, name: &str) -> Option<Handle> {
-    let key = name.to_ascii_uppercase();
-    d.foreign.targets.iter().find(|(_, (k, n))| k == "BLOCK_RECORD" && *n == key).map(|(h, _)| *h)
 }
 
 /// The object entry `key` of dictionary `dict` refers to.
@@ -99,13 +94,14 @@ fn current(m: &DynamicBlock, values: &BTreeMap<i32, Value>, node: i32) -> Option
         (_, Some(Value::Points { base, end })) => Val::Points(*base, *end),
         (ParameterKind::Visibility { states, .. }, None) => Val::Text(states.first().map(|s| s.name.clone()).unwrap_or_default()),
         (ParameterKind::Point { at, .. }, None) => Val::Point(*at),
+        // A flip parameter's value is its state: "0" not flipped, "1" flipped.
+        (ParameterKind::Flip { .. }, None) => Val::Text("0".into()),
         (
             ParameterKind::Linear { base, end, .. }
-            | ParameterKind::Polar { base, end }
-            | ParameterKind::Xy { base, end }
-            | ParameterKind::Rotation { base, end }
-            | ParameterKind::Alignment { base, end }
-            | ParameterKind::Flip { base, end },
+            | ParameterKind::Polar { base, end, .. }
+            | ParameterKind::Xy { base, end, .. }
+            | ParameterKind::Rotation { base, end, .. }
+            | ParameterKind::Alignment { base, end, .. },
             None,
         ) => Val::Points(*base, *end),
         _ => return None,
@@ -260,10 +256,18 @@ pub fn set_property(d: &mut Drawing, insert: Handle, name: &str, value: &str) ->
         .parameters
         .iter()
         .find(|p| {
-            p.show_properties && p.kind.label().is_some_and(|l| l.eq_ignore_ascii_case(want) || (axis.is_some() && l.eq_ignore_ascii_case(label)))
+            p.show_properties
+                && (p.kind.labels().iter().any(|l| l.eq_ignore_ascii_case(want))
+                    || matches!(&p.kind, ParameterKind::Point { label: l, .. } if axis.is_some() && l.eq_ignore_ascii_case(label)))
         })
         .ok_or_else(|| format!("The reference has no property \"{name}\"."))?;
+    // A polar parameter's angle, an XY parameter's vertical distance.
+    let second = p.kind.labels().get(1).is_some_and(|l| l.eq_ignore_ascii_case(want));
     let mut plan = Plan::default();
+    let points = || match current(&m, &r.values, p.node) {
+        Some(Val::Points(b, e)) => Ok((b, e)),
+        _ => Err(format!("{name} has no points.")),
+    };
     match (&p.kind, axis) {
         (ParameterKind::Visibility { states, label, .. }, _) => {
             let s = states.iter().find(|s| s.name.eq_ignore_ascii_case(value.trim())).ok_or_else(|| {
@@ -278,6 +282,17 @@ pub fn set_property(d: &mut Drawing, insert: Handle, name: &str, value: &str) ->
                 return Err(format!("\"{value}\" is not a value of {label}."));
             }
         }
+        (ParameterKind::Flip { states, label, .. }, _) => {
+            let v = value.trim();
+            let flipped = if v.eq_ignore_ascii_case(&states[1]) || v == "1" {
+                "1"
+            } else if v.eq_ignore_ascii_case(&states[0]) || v == "0" {
+                "0"
+            } else {
+                return Err(format!("\"{value}\" is not a state of {label}: {}, {}.", states[0], states[1]));
+            };
+            plan.set.insert(p.node, Val::Text(flipped.into()));
+        }
         (ParameterKind::Linear { values, from_midpoint, .. }, None) => {
             let typed = number(value)? / sx;
             if typed <= 0.0 {
@@ -287,10 +302,38 @@ pub fn set_property(d: &mut Drawing, insert: Handle, name: &str, value: &str) ->
             if dist <= 0.0 {
                 return Err(format!("{name} must be more than 0."));
             }
-            let Some(Val::Points(b, e)) = current(&m, &r.values, p.node) else { return Err(format!("{name} has no points.")) };
+            let (b, e) = points()?;
             let (b2, e2) = linear_points(b, e, dist, *from_midpoint);
             plan.set.insert(p.node, Val::Points(b2, e2));
             plan.chain(&m, &r.values, p.node, "UpdatedDistance")?;
+        }
+        (ParameterKind::Polar { values, values2, .. }, None) => {
+            let (b, e) = points()?;
+            let (len, ang) = ((e - b).len(), (e.xy() - b.xy()).angle());
+            let (len, ang) = if second {
+                (len, allowed(values2, number(value)?.to_radians()))
+            } else {
+                let dist = allowed(values, number(value)? / sx);
+                if dist <= 0.0 {
+                    return Err(format!("{name} must be more than 0."));
+                }
+                (dist, ang)
+            };
+            plan.set.insert(p.node, Val::Points(b, b + Vec2::polar(Vec2::ZERO, len, ang).to3(e.z - b.z)));
+        }
+        (ParameterKind::Xy { values, values2, .. }, None) => {
+            let (b, e) = points()?;
+            let e = if second {
+                Vec3::new(e.x, b.y + allowed(values2, number(value)? / sy), e.z)
+            } else {
+                Vec3::new(b.x + allowed(values, number(value)? / sx), e.y, e.z)
+            };
+            plan.set.insert(p.node, Val::Points(b, e));
+        }
+        (ParameterKind::Rotation { values, base_angle, .. }, None) => {
+            let (b, e) = points()?;
+            let a = allowed(values, number(value)?.to_radians());
+            plan.set.insert(p.node, Val::Points(b, b + Vec2::polar(Vec2::ZERO, (e - b).len(), base_angle + a).to3(e.z - b.z)));
         }
         (ParameterKind::Point { .. }, Some(is_x)) => {
             let Some(Val::Point(at)) = current(&m, &r.values, p.node) else { return Err(format!("{name} has no position.")) };
@@ -359,6 +402,30 @@ pub fn drag_grip(d: &mut Drawing, insert: Handle, node: i32, part: super::GripPa
             let q = block_point(at);
             plan.set.insert(node, Val::Point(Vec3::new(q.x, q.y, at.z)));
         }
+        (ParameterKind::Polar { values, values2, label, .. }, GripPart::End) => {
+            let Some(Val::Points(b, e)) = current(&m, &r.values, node) else { return Err(format!("{label} has no points.")) };
+            let v = block_point(e) - b.xy();
+            let dist = allowed(values, v.len());
+            if !(dist > 0.0 && dist.is_finite()) {
+                return Err(format!("{label} must be more than 0."));
+            }
+            let ang = allowed(values2, v.angle());
+            plan.set.insert(node, Val::Points(b, b + Vec2::polar(Vec2::ZERO, dist, ang).to3(e.z - b.z)));
+        }
+        (ParameterKind::Xy { values, values2, label, .. }, GripPart::End) => {
+            let Some(Val::Points(b, e)) = current(&m, &r.values, node) else { return Err(format!("{label} has no points.")) };
+            let q = block_point(e);
+            plan.set.insert(node, Val::Points(b, Vec3::new(b.x + allowed(values, q.x - b.x), b.y + allowed(values2, q.y - b.y), e.z)));
+        }
+        (ParameterKind::Rotation { values, base_angle, label, .. }, GripPart::End) => {
+            let Some(Val::Points(b, e)) = current(&m, &r.values, node) else { return Err(format!("{label} has no points.")) };
+            let v = block_point(e) - b.xy();
+            if v.len() < 1e-12 {
+                return Err(format!("{label} needs a direction."));
+            }
+            let a = allowed(values, v.angle() - base_angle);
+            plan.set.insert(node, Val::Points(b, b + Vec2::polar(Vec2::ZERO, (e - b).len(), base_angle + a).to3(e.z - b.z)));
+        }
         _ => return Err("That grip can't be dragged.".into()),
     }
     apply(d, insert, &r.definition, &r.values, &plan.set, node)
@@ -382,34 +449,121 @@ fn delta(old: &Val, new: &Val, connection: &str) -> f64 {
     }
 }
 
-/// Move entity `e` by `v`: the listed vertices of a line or polyline, else the whole object.
-fn move_entity(e: &mut Entity, vertices: Option<&[i32]>, v: Vec2) {
+/// Transform entity `e` by `m`: the listed vertices of a line or polyline, else the whole object.
+fn move_entity(e: &mut Entity, vertices: Option<&[i32]>, m: &Mat3) {
     match (&mut e.kind, vertices) {
         (EntityKind::LwPolyline(pl), Some(idx)) => {
             for i in idx {
                 if let Some(p) = usize::try_from(*i).ok().and_then(|i| pl.vertices.get_mut(i)) {
-                    p.p += v;
+                    p.p = m.apply(p.p);
                 }
             }
         }
         (EntityKind::Line(l), Some(idx)) => {
             for i in idx {
-                match i {
-                    0 => l.a = l.a + v.to3(0.0),
-                    1 => l.b = l.b + v.to3(0.0),
-                    _ => {}
-                }
+                let p = match i {
+                    0 => &mut l.a,
+                    1 => &mut l.b,
+                    _ => continue,
+                };
+                let q = m.apply(p.xy());
+                (p.x, p.y) = (q.x, q.y);
             }
         }
-        // A translation is a similarity: it moves an object in any plane.
+        // Moves, rotations, uniform scales and mirrors are similarities: they move an object in
+        // any plane.
         _ => {
-            e.transform(&Mat3::translate(v));
+            e.transform(m);
         }
     }
 }
 
+/// What one action does to its objects for the parameter changes `changed` (old and new values
+/// by parameter graph id): a transform, applied to the vertices inside `frame` (all of them when
+/// the frame is empty), with `vertices` listing the objects only partly inside; the polar stretch
+/// action's rotate-only objects take `rotate_m`.
+struct ActionXf<'a> {
+    m: Mat3,
+    frame: &'a [Vec2],
+    vertices: &'a [(Handle, Vec<i32>)],
+    rotate: &'a [Handle],
+    rotate_m: Mat3,
+}
+
+fn action_xf<'a>(m: &DynamicBlock, a: &'a super::Action, changed: &BTreeMap<i32, (Val, Val)>) -> Option<ActionXf<'a>> {
+    let whole = |m: Mat3| ActionXf { m, frame: &[], vertices: &[], rotate: &[], rotate_m: Mat3::IDENTITY };
+    // The parameter an action follows, its old and new values.
+    let (node, _) = a.connections.iter().find(|(n, _)| changed.contains_key(n))?;
+    let (old, new) = changed.get(node)?;
+    let param = m.parameters.iter().find(|p| p.node == *node)?;
+    let pts = |v: &Val| match v {
+        Val::Points(b, e) => Some((b.xy(), e.xy())),
+        Val::Point(p) => Some((p.xy(), p.xy())),
+        Val::Text(_) => None,
+    };
+    let x = match &a.kind {
+        ActionKind::Stretch { .. } | ActionKind::Move { .. } => {
+            let (mult, angle) = match &a.kind {
+                ActionKind::Stretch { multiplier, angle_offset, .. } | ActionKind::Move { multiplier, angle_offset } => (*multiplier, *angle_offset),
+                _ => (1.0, 0.0),
+            };
+            // The two connections give the change in x and y.
+            let comp = |i: usize| {
+                a.connections.get(i).map_or(0.0, |(n, conn)| match changed.get(n) {
+                    Some((ov, nv)) => delta(ov, nv, conn),
+                    None => 0.0,
+                })
+            };
+            let mult = if mult == 0.0 { 1.0 } else { mult };
+            let v = Vec2::new(comp(0), comp(1)).rotate(angle) * mult;
+            if !(v.x.is_finite() && v.y.is_finite()) || (v.x == 0.0 && v.y == 0.0) {
+                return None;
+            }
+            match &a.kind {
+                ActionKind::Stretch { frame, vertices, .. } => ActionXf { frame, vertices, ..whole(Mat3::translate(v)) },
+                _ => whole(Mat3::translate(v)),
+            }
+        }
+        ActionKind::PolarStretch { frame, vertices, rotate } => {
+            let ((b0, e0), (b1, e1)) = (pts(old)?, pts(new)?);
+            let turn = (e1 - b1).angle() - (e0 - b0).angle();
+            let grow = (e1 - b1).len() - (e0 - b0).len();
+            let u = (e1 - b1).normalized();
+            let rot = Mat3::translate(-b0).then(Mat3::rotate(turn)).then(Mat3::translate(b1));
+            ActionXf { m: rot.then(Mat3::translate(u * grow)), frame, vertices, rotate, rotate_m: rot }
+        }
+        ActionKind::Scale { base } => {
+            let ((b0, e0), (b1, e1)) = (pts(old)?, pts(new)?);
+            let k = (e1 - b1).len() / (e0 - b0).len();
+            if !(k.is_finite() && k > 0.0) || (k - 1.0).abs() < 1e-12 {
+                return None;
+            }
+            whole(Mat3::scale_about(base.map_or(b0, |b| b.xy()), k))
+        }
+        ActionKind::Rotate { base } => {
+            let ((b0, e0), (b1, e1)) = (pts(old)?, pts(new)?);
+            let turn = (e1 - b1).angle() - (e0 - b0).angle();
+            if !turn.is_finite() || turn.abs() < 1e-12 {
+                return None;
+            }
+            whole(Mat3::rotate_about(base.map_or(b0, |b| b.xy()), turn))
+        }
+        ActionKind::Flip => {
+            if old == new {
+                return None;
+            }
+            let ParameterKind::Flip { base, end, .. } = &param.kind else { return None };
+            whole(Mat3::mirror(base.xy(), end.xy()))
+        }
+        // ponytail: an array action is kept and written but doesn't copy objects on references
+        // yet; add the copies (marked so the next change can replace them) when it's wanted.
+        ActionKind::Array { .. } | ActionKind::Lookup { .. } | ActionKind::Other { .. } => return None,
+    };
+    Some(x)
+}
+
 /// Whether point `p` lies inside a stretch frame (two corners, or a polygon).
-fn in_frame(frame: &[Vec2], p: Vec2) -> bool {
+pub(super) fn in_frame(frame: &[Vec2], p: Vec2) -> bool {
     match frame {
         [a, b] => p.x >= a.x.min(b.x) && p.x <= a.x.max(b.x) && p.y >= a.y.min(b.y) && p.y <= a.y.max(b.y),
         f if f.len() >= 3 => {
@@ -450,58 +604,64 @@ fn apply(
     let copy_of = |dh: &Handle| def_tags.get(dh).and_then(|t| src_by_tag.get(t)).copied();
     // New values, starting from the change; actions add the parameters they carry along.
     let mut new: BTreeMap<i32, Val> = set.clone();
-    let mut moves: HashMap<Handle, Vec<(Option<Vec<i32>>, Vec2)>> = HashMap::new();
+    let mut moves: HashMap<Handle, Vec<(Option<Vec<i32>>, Mat3)>> = HashMap::new();
     let param_of: HashMap<Handle, i32> = m.parameters.iter().map(|p| (p.handle, p.node)).collect();
-    for a in &m.actions {
-        let changed: Vec<&(i32, String)> = a.connections.iter().filter(|(n, _)| set.contains_key(n)).collect();
+    // The parameters whose change runs their actions: (old value, new value). After the changed
+    // ones, those another action moved that chain their actions (Chain Actions), round by round;
+    // each action runs once.
+    let mut changed: BTreeMap<i32, (Val, Val)> = set.iter().filter_map(|(n, v)| Some((*n, (current(&m, values, *n)?, v.clone())))).collect();
+    let mut ran: HashSet<usize> = HashSet::new();
+    for _ in 0..=m.parameters.len().min(64) {
         if changed.is_empty() {
-            continue;
+            break;
         }
-        let (mult, angle, frame, vertices): (f64, f64, &[Vec2], &[(Handle, Vec<i32>)]) = match &a.kind {
-            ActionKind::Stretch { frame, vertices, multiplier, angle_offset } => (*multiplier, *angle_offset, frame, vertices),
-            ActionKind::Move { multiplier, angle_offset } => (*multiplier, *angle_offset, &[], &[]),
-            _ => continue,
-        };
-        // The two connections give the change in x and y.
-        let comp = |i: usize| {
-            a.connections.get(i).map_or(0.0, |(n, conn)| match (set.get(n), current(&m, values, *n)) {
-                (Some(nv), Some(ov)) => delta(&ov, nv, conn),
-                _ => 0.0,
-            })
-        };
-        let mult = if mult == 0.0 { 1.0 } else { mult };
-        let v = Vec2::new(comp(0), comp(1)).rotate(angle) * mult;
-        if !(v.x.is_finite() && v.y.is_finite()) || (v.x == 0.0 && v.y == 0.0) {
-            continue;
-        }
-        for h in &a.selection {
-            if let Some(node) = param_of.get(h) {
-                // A parameter in the selection is carried along: its points in the frame. Which
-                // points are in it is decided where the dynamic block has them (AutoCAD evaluates
-                // the actions from the block itself, so a point another action has moved out of
-                // the frame still follows).
-                if set.contains_key(node) {
-                    continue;
-                }
-                let Some(cur) = new.get(node).cloned().or_else(|| current(&m, values, *node)) else { continue };
-                let home = current(&m, &BTreeMap::new(), *node);
-                let shift = |p: Vec3, at: Option<Vec3>| {
-                    if frame.is_empty() || in_frame(frame, at.unwrap_or(p).xy()) { p + v.to3(0.0) } else { p }
-                };
-                let moved = match (cur, home) {
-                    (Val::Point(p), Some(Val::Point(h))) => Val::Point(shift(p, Some(h))),
-                    (Val::Point(p), _) => Val::Point(shift(p, None)),
-                    (Val::Points(b, e), Some(Val::Points(hb, he))) => Val::Points(shift(b, Some(hb)), shift(e, Some(he))),
-                    (Val::Points(b, e), _) => Val::Points(shift(b, None), shift(e, None)),
-                    (t, _) => t,
-                };
-                new.insert(*node, moved);
+        let mut carried: BTreeMap<i32, (Val, Val)> = BTreeMap::new();
+        for (i, a) in m.actions.iter().enumerate() {
+            if ran.contains(&i) || !a.connections.iter().any(|(n, _)| changed.contains_key(n)) {
                 continue;
             }
-            let Some(c) = copy_of(h) else { continue };
-            let idx = vertices.iter().find(|(vh, _)| vh == h).map(|(_, i)| i.clone());
-            moves.entry(c).or_default().push((idx, v));
+            ran.insert(i);
+            let Some(x) = action_xf(&m, a, &changed) else { continue };
+            for h in &a.selection {
+                if let Some(node) = param_of.get(h) {
+                    // A parameter in the selection is carried along: its points in the frame. Which
+                    // points are in it is decided where the dynamic block has them (AutoCAD evaluates
+                    // the actions from the block itself, so a point another action has moved out of
+                    // the frame still follows).
+                    if set.contains_key(node) {
+                        continue;
+                    }
+                    let Some(cur) = new.get(node).cloned().or_else(|| current(&m, values, *node)) else { continue };
+                    let home = current(&m, &BTreeMap::new(), *node);
+                    let shift = |p: Vec3, at: Option<Vec3>| {
+                        if x.frame.is_empty() || in_frame(x.frame, at.unwrap_or(p).xy()) {
+                            let q = x.m.apply(p.xy());
+                            Vec3::new(q.x, q.y, p.z)
+                        } else {
+                            p
+                        }
+                    };
+                    let moved = match (cur.clone(), home) {
+                        (Val::Point(p), Some(Val::Point(h))) => Val::Point(shift(p, Some(h))),
+                        (Val::Point(p), _) => Val::Point(shift(p, None)),
+                        (Val::Points(b, e), Some(Val::Points(hb, he))) => Val::Points(shift(b, Some(hb)), shift(e, Some(he))),
+                        (Val::Points(b, e), _) => Val::Points(shift(b, None), shift(e, None)),
+                        (t, _) => t,
+                    };
+                    if moved != cur && m.parameters.iter().any(|p| p.node == *node && p.chain) {
+                        let was = carried.get(node).map_or(cur, |(o, _)| o.clone());
+                        carried.insert(*node, (was, moved.clone()));
+                    }
+                    new.insert(*node, moved);
+                    continue;
+                }
+                let Some(c) = copy_of(h) else { continue };
+                let idx = x.vertices.iter().find(|(vh, _)| vh == h).map(|(_, i)| i.clone());
+                let xm = if x.rotate.contains(h) { x.rotate_m } else { x.m };
+                moves.entry(c).or_default().push((idx, xm));
+            }
         }
+        changed = carried;
     }
     // Visibility states.
     let mut shown: HashMap<Handle, bool> = HashMap::new();
@@ -529,13 +689,13 @@ fn apply(
     }
     // How far each attribute definition moves (block coordinates): the reference's attribute of
     // that tag moves with it, as AutoCAD moves it.
-    let attrib_moves: HashMap<String, Vec2> = src
+    let attrib_moves: HashMap<String, Mat3> = src
         .entities
         .iter()
         .filter_map(|e| match &e.kind {
             EntityKind::AttDef(ad) => {
-                let v = moves.get(&e.handle).into_iter().flatten().fold(Vec2::ZERO, |acc, (_, v)| acc + *v);
-                (v != Vec2::ZERO).then(|| (ad.tag.to_ascii_uppercase(), v))
+                let m = moves.get(&e.handle).into_iter().flatten().fold(Mat3::IDENTITY, |acc, (_, m)| acc.then(*m));
+                (m != Mat3::IDENTITY).then(|| (ad.tag.to_ascii_uppercase(), m))
             }
             _ => None,
         })
@@ -547,8 +707,8 @@ fn apply(
         if let Some(v) = shown_copy.get(&e.handle) {
             c.common.visible = *v;
         }
-        for (idx, v) in moves.get(&e.handle).into_iter().flatten() {
-            move_entity(&mut c, idx.as_deref(), *v);
+        for (idx, m) in moves.get(&e.handle).into_iter().flatten() {
+            move_entity(&mut c, idx.as_deref(), m);
         }
         if let EntityKind::Hatch(h) = &mut c.kind {
             for l in &mut h.loops {
@@ -558,12 +718,7 @@ fn apply(
         b.entities.push(c);
     }
     refill_hatches(&mut b);
-    let def_record = Some(record_handle(d, definition).unwrap_or_else(|| {
-        let h = d.new_handle();
-        let f = std::sync::Arc::make_mut(&mut d.foreign);
-        f.targets.insert(h, ("BLOCK_RECORD".to_string(), definition.to_ascii_uppercase()));
-        h
-    }));
+    let def_record = Some(super::author::record_target(d, definition));
     let old = ins.block.clone();
     d.blocks.insert(name.clone(), std::sync::Arc::new(b));
     let f = std::sync::Arc::make_mut(&mut d.foreign);
@@ -588,15 +743,15 @@ fn apply(
     // The block-to-drawing transform's linear part turns a block-coordinate move into the move of
     // the reference's attribute.
     let to_world = ins.transform(src.base.xy());
-    let origin = to_world.apply(Vec2::ZERO);
+    let from_world = to_world.inverse().unwrap_or(Mat3::IDENTITY);
     d.modify_entity(insert, |e| {
         if let EntityKind::Insert(i) = &mut e.kind {
             i.block = name.clone();
             for a in &mut i.attribs {
-                if let Some(v) = attrib_moves.get(&a.tag.to_ascii_uppercase()) {
-                    let w = to_world.apply(*v) - origin;
+                if let Some(m) = attrib_moves.get(&a.tag.to_ascii_uppercase()) {
+                    let w = from_world.then(*m).then(to_world);
                     let mut k = EntityKind::Text(a.text.clone());
-                    k.transform(&Mat3::translate(w));
+                    k.transform(&w);
                     if let EntityKind::Text(t) = k {
                         a.text = t;
                     }

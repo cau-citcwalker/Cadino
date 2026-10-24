@@ -28,6 +28,7 @@ fn table() -> Table {
     cells[0][0].merged = Some((1, 3));
     Table {
         insert: Vec3::new(5.0, 20.0, 0.0),
+        direction: Vec3::X,
         col_widths: vec![1.5, 2.5, 4.0],
         row_heights: vec![0.5, 0.4, 0.4],
         cells,

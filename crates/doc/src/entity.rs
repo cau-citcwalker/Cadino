@@ -618,10 +618,13 @@ impl DimMarks {
         *self == DimMarks::default()
     }
 
-    /// Transform the points and angles (part of [`EntityKind::transform`]).
+    /// Transform the points and angles (part of [`EntityKind::transform`]). A mirror maps the
+    /// x axis to `rot` (twice the mirror line's angle), so it maps any direction `a` to `rot - a`:
+    /// the extension lines are geometry, mirrored with the rest whatever MIRRTEXT says (it only
+    /// keeps text readable).
     fn transform(&mut self, t3: &dyn Fn(&mut Vec3), rot: f64, s: f64, mirror: bool) {
         if let Some(a) = &mut self.oblique {
-            *a = cadcraft_geom::norm_angle(if mirror { rot - (*a - rot) } else { *a + rot });
+            *a = cadcraft_geom::norm_angle(if mirror { rot - *a } else { *a + rot });
         }
         if let Some(a) = &mut self.horizontal {
             *a = cadcraft_geom::norm_angle(if mirror { rot - *a } else { *a + rot });
@@ -900,7 +903,16 @@ pub struct Image {
     pub pixel_size: Vec2,
     #[serde(default)]
     pub resolution_units: u8,
+    /// The definition is unloaded (-IMAGE Unload; IMAGEDEF group 280 = 0): only its frame shows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unloaded: bool,
+    /// The picture, once the engine has read the file (never saved; `None`: not found, not read
+    /// yet, or unloaded).
+    #[serde(skip)]
+    pub pixels: Option<std::sync::Arc<Raster>>,
 }
+mod image;
+pub use image::*;
 fn image_display() -> u16 {
     7
 }
@@ -927,6 +939,8 @@ impl Default for Image {
             fade: 0,
             pixel_size: image_pixel(),
             resolution_units: 0,
+            unloaded: false,
+            pixels: None,
         }
     }
 }
@@ -955,6 +969,11 @@ pub struct TableCell {
 #[serde(rename_all = "camelCase")]
 pub struct Table {
     pub insert: Vec3,
+    /// The direction its rows run in (DXF 11, the horizontal direction vector): columns go along
+    /// it, rows down its clockwise perpendicular ([`Table::axis`]). World X by default; a table
+    /// made in a turned UCS runs along the UCS's X axis.
+    #[serde(default = "x_axis", skip_serializing_if = "is_x_axis")]
+    pub direction: Vec3,
     pub col_widths: Vec<f64>,
     pub row_heights: Vec<f64>,
     pub cells: Vec<Vec<TableCell>>,
@@ -980,6 +999,12 @@ pub struct Table {
 }
 fn default_text_h() -> f64 {
     0.18
+}
+fn x_axis() -> Vec3 {
+    Vec3::X
+}
+fn is_x_axis(v: &Vec3) -> bool {
+    *v == Vec3::X
 }
 mod region;
 pub use region::*;
@@ -1212,7 +1237,11 @@ impl EntityKind {
                 .flat_map(|l| l.windows(2).filter_map(|w| Some(Prim::Seg(Segment::Line(GLine::new(w.first()?.xy(), w.get(1)?.xy()))))))
                 .chain(m.block.iter().map(|b| Prim::Point(b.insert.xy())))
                 .collect(),
-            EntityKind::Image(i) => vec![Prim::Point(i.insert.xy())],
+            // Its frame: picked, snapped to and selected by it.
+            EntityKind::Image(i) => {
+                let o = i.outline();
+                o.iter().zip(o.iter().cycle().skip(1)).map(|(a, b)| Prim::Seg(Segment::Line(GLine::new(*a, *b)))).collect()
+            }
             EntityKind::Table(t) => vec![Prim::Point(t.insert.xy())],
             EntityKind::Tolerance(t) => vec![Prim::Point(t.insert.xy())],
             EntityKind::Unknown(_) => Vec::new(),
@@ -1338,6 +1367,11 @@ impl EntityKind {
                 if let DimKind::Linear { rotation } = &mut d.kind {
                     *rotation = cadcraft_geom::norm_angle(*rotation + rot);
                 }
+                // An ordinate dimension made in World stores no axis (it measures along world X):
+                // turned, it keeps measuring along the axis it was made with.
+                if matches!(d.kind, DimKind::Ordinate { .. }) && (rot != 0.0 || mirror) {
+                    d.marks.horizontal.get_or_insert(0.0);
+                }
                 d.marks.transform(&t3, rot, s, mirror);
                 d.block = None;
             }
@@ -1414,9 +1448,14 @@ impl EntityKind {
                     b.height *= s;
                     b.spacing *= s;
                     b.heights.iter_mut().for_each(|h| *h *= s);
-                    b.offsets.iter_mut().for_each(|o| *o = m.apply_vec(*o));
+                    // Part moves are in the table's own axes: they turn with it.
+                    b.offsets.iter_mut().for_each(|o| *o = *o * s);
                 }
                 t3(&mut t.insert);
+                // Like text with MIRRTEXT = 0, a mirrored table keeps reading left to right.
+                if !mirror {
+                    t.direction = t.axis().rotate(rot).to3(0.0);
+                }
                 t.col_widths.iter_mut().for_each(|w| *w *= s);
                 t.row_heights.iter_mut().for_each(|h| *h *= s);
                 t.text_height *= s;
@@ -1497,7 +1536,7 @@ impl EntityKind {
                 let h = Vec2::new(v.width / 2.0, v.height / 2.0);
                 Bounds2::new(c - h, c + h).corners().to_vec()
             }
-            EntityKind::Image(i) => vec![i.insert.xy()],
+            EntityKind::Image(i) => i.corners().to_vec(),
             EntityKind::Wipeout(w) => w.boundary.clone(),
             EntityKind::Table(t) => vec![t.insert.xy()],
             EntityKind::Tolerance(t) => vec![t.insert.xy()],

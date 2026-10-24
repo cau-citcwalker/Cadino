@@ -119,8 +119,9 @@ fn save(s: &mut Session, name: &str, window: Option<(Vec2, Vec2)>, snapshot: boo
     let dir = st.screen_dir();
     let (center, height, width) = match window {
         Some((a, b)) => {
-            let m = dir.plane_xf();
-            let b = Bounds2::new(m.apply(a), m.apply(b));
+            // Where the screen shows the corners (through the eye in perspective).
+            let m = |p: Vec2| dir.project(p.to3(0.0));
+            let b = Bounds2::new(m(a), m(b));
             if !(b.width() > 1e-12 && b.height() > 1e-12 && b.min.is_finite() && b.max.is_finite()) {
                 return Err(EngineError::Other("The window has no area.".into()));
             }
@@ -188,7 +189,7 @@ fn restore(s: &mut Session, name: &str) -> Result<Value> {
             let (w, h) = s.viewport_px;
             let st = s.state_mut()?;
             let aspect = st.zoom_aspect(w / h.max(1.0)).max(1e-9);
-            let center = st.screen_dir().plane_xf().apply(v.center);
+            let center = st.screen_dir().project(v.center.to3(0.0));
             st.set_zoom_frame(View { center, height: v.height.max(v.width / aspect) });
         }
     }

@@ -68,11 +68,13 @@ pub(super) fn aim(s: &Session, i: &Input, kind: Sub) -> Option<Aim> {
         return Some(Aim::At(s.cplane().apply(p.to3(z))));
     }
     if let (Some((dir, v)), Input::Point(_) | Input::Pick(_)) = (s.view_at, i) {
-        let (x, y, d) = dir.axes();
-        return Some(Aim::Ray(x * v.x + y * v.y, -d));
+        // In perspective, from the eye.
+        let (o, d) = dir.ray(v);
+        return Some(Aim::Ray(o, d));
     }
     let Input::Point(p) = i else { return None };
-    Some(Aim::Ray(s.cplane().apply(p.to3(0.0)), -s.state().ok()?.screen_dir().dir))
+    let at = s.cplane().apply(p.to3(0.0));
+    Some(Aim::Ray(at, -s.state().ok()?.screen_dir().toward(at)))
 }
 
 /// Where the line from `o` along unit `d` first meets the solid's mesh (any side, any distance

@@ -102,7 +102,11 @@ pub fn render(list: &DisplayList, view: &View, o: &RasterOptions) -> Option<Pixm
     // Depths relative to one of the list's own, so f32 keeps them precise far from the origin.
     let zref = list.tri_depth.first().copied().unwrap_or(0.0);
     let mut zbuf = if list.faces.is_empty() { None } else { depth_buffer(view) };
+    let mut images = list.images.iter().peekable();
     for (i, p) in list.prims.iter().enumerate() {
+        while let Some(im) = images.next_if(|im| im.at as usize <= i) {
+            crate::image::raster(&mut pm, im, view);
+        }
         let c = p.display_rgb(o.background);
         let mut paint = Paint::default();
         // A transparent object blends with what is drawn under it.
@@ -188,6 +192,9 @@ pub fn render(list: &DisplayList, view: &View, o: &RasterOptions) -> Option<Pixm
                 }
             }
         }
+    }
+    for im in images {
+        crate::image::raster(&mut pm, im, view);
     }
     if let Some(z) = &zbuf {
         draw_edges(&mut pm, z, list, view, o, zref, edge);

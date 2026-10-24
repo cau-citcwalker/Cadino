@@ -63,7 +63,8 @@ pub struct DataLink {
     pub start_row: usize,
 }
 
-/// One part of a (broken) table: the rows it shows, top to bottom, and its insertion point.
+/// One part of a (broken) table: the rows it shows, top to bottom, and its insertion point (in
+/// the world; the part runs along the table's [`Table::axis`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TablePart {
     pub rows: Vec<usize>,
@@ -85,10 +86,35 @@ impl Table {
         self.breaks.as_ref().is_some_and(|b| b.enabled && (size(b.height) > 0.0 || b.heights.iter().any(|h| size(*h) > 0.0)))
     }
 
+    /// The unit direction its rows run in, in plan: [`Table::direction`]'s XY, world X when that
+    /// has none.
+    pub fn axis(&self) -> Vec2 {
+        let d = self.direction.xy().normalized();
+        if d == Vec2::ZERO { Vec2::X } else { d }
+    }
+
+    /// The world point of table point `q`: `x` along the rows, `y` up (rows go to negative `y`),
+    /// from the insertion point.
+    pub fn to_world(&self, q: Vec2) -> Vec2 {
+        let u = self.axis();
+        self.insert.xy() + u * q.x + u.perp() * q.y
+    }
+
+    /// The table point of world point `p` (the inverse of [`Table::to_world`]).
+    pub fn to_local(&self, p: Vec2) -> Vec2 {
+        let (u, d) = (self.axis(), p - self.insert.xy());
+        Vec2::new(d.dot(u), d.dot(u.perp()))
+    }
+
     /// The parts the table is drawn in (one part when it isn't broken).
     pub fn parts(&self) -> Vec<TablePart> {
+        self.local_parts().into_iter().map(|p| TablePart { origin: self.to_world(p.origin), ..p }).collect()
+    }
+
+    /// [`Table::parts`] with their origins in table points ([`Table::to_world`]).
+    fn local_parts(&self) -> Vec<TablePart> {
         let rows = self.row_heights.len().min(10_000);
-        let o = self.insert.xy();
+        let o = Vec2::ZERO;
         let all = || TablePart { rows: (0..rows).collect(), origin: o };
         let Some(b) = self.breaks.as_ref().filter(|_| self.is_broken()) else { return vec![all()] };
         let h = |r: usize| size(self.row_heights.get(r).copied().unwrap_or(0.0));
@@ -150,21 +176,28 @@ impl Table {
         out
     }
 
-    /// The area the table covers, all parts included.
-    pub fn bounds(&self) -> Bounds2 {
+    /// The outline of each part in the world: its corners counterclockwise from the top left.
+    pub fn outlines(&self) -> Vec<[Vec2; 4]> {
         let w: f64 = self.col_widths.iter().map(|w| size(*w)).sum();
-        let mut b = Bounds2::EMPTY;
-        for p in self.parts() {
-            let h: f64 = p.rows.iter().map(|r| size(self.row_heights.get(*r).copied().unwrap_or(0.0))).sum();
-            b.add(p.origin);
-            b.add(p.origin + Vec2::new(w, -h));
-        }
-        b
+        self.local_parts()
+            .into_iter()
+            .map(|p| {
+                let h: f64 = p.rows.iter().map(|r| size(self.row_heights.get(*r).copied().unwrap_or(0.0))).sum();
+                let o = p.origin;
+                [o, o - Vec2::new(0.0, h), o + Vec2::new(w, -h), o + Vec2::new(w, 0.0)].map(|q| self.to_world(q))
+            })
+            .collect()
     }
 
-    /// The cell (row, col) under `p`, in any part.
+    /// The area the table covers, all parts included.
+    pub fn bounds(&self) -> Bounds2 {
+        Bounds2::from_points(self.outlines().into_iter().flatten())
+    }
+
+    /// The cell (row, col) under world point `p`, in any part.
     pub fn cell_at_point(&self, p: Vec2) -> Option<(usize, usize)> {
-        for part in self.parts() {
+        let p = self.to_local(p);
+        for part in self.local_parts() {
             let (x, y) = (p.x - part.origin.x, part.origin.y - p.y);
             if !(x.is_finite() && y.is_finite()) || x < 0.0 || y < 0.0 {
                 continue;
@@ -253,6 +286,22 @@ mod tests {
         let rows: Vec<Vec<usize>> = p.iter().map(|x| x.rows.clone()).collect();
         assert_eq!(rows, vec![vec![0, 1, 2, 3, 7], vec![4, 5, 7], vec![6, 7]]);
         assert_eq!(p[1].origin, Vec2::new(1.0, -5.5));
+    }
+
+    /// A table turned 90°: its columns run up world Y, its rows towards world +X.
+    #[test]
+    fn a_turned_table_lays_out_along_its_direction() {
+        let mut t = table(2);
+        t.direction = cadcraft_geom::Vec3::new(0.0, 2.0, 0.0);
+        assert_eq!(t.to_world(Vec2::new(5.0, -2.0)), Vec2::new(2.0, 5.0));
+        assert_eq!(t.to_local(Vec2::new(2.0, 5.0)), Vec2::new(5.0, -2.0));
+        let b = t.bounds();
+        assert_eq!((b.min, b.max), (Vec2::ZERO, Vec2::new(2.0, 5.0)));
+        assert_eq!(t.cell_at_point(Vec2::new(1.5, 4.0)), Some((1, 1)));
+        assert_eq!(t.cell_at_point(Vec2::new(-0.5, 4.0)), None);
+        // No direction (or a hostile one): world X.
+        t.direction = cadcraft_geom::Vec3::new(f64::NAN, 0.0, 0.0);
+        assert_eq!(t.axis(), Vec2::X);
     }
 
     #[test]

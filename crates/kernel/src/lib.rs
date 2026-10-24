@@ -56,7 +56,8 @@ pub enum KernelError {
     Unavailable,
     #[error("{0}")]
     Invalid(String),
-    #[error("the modelling kernel failed: {0}")]
+    // `why` names the cause, so the command line's translation translates it in turn.
+    #[error("the modelling kernel failed: {why}", why = .0)]
     Failed(String),
 }
 

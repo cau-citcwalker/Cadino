@@ -87,14 +87,18 @@ pub fn stretch_grip(kind: &EntityKind, index: usize, to: Vec2) -> Option<EntityK
     // The further parts of a broken table move on their own.
     if index > 0
         && let EntityKind::Table(t) = &mut k
-        && let Some(b) = &mut t.breaks
+        && t.breaks.is_some()
     {
         let i = index - 1;
-        if b.offsets.len() <= i {
-            b.offsets.resize(i + 1, Vec2::ZERO);
-        }
-        if let Some(o) = b.offsets.get_mut(i) {
-            *o += delta;
+        // Part moves are kept in the table's own axes.
+        let along = t.to_local(t.insert.xy() + delta);
+        if let Some(b) = &mut t.breaks {
+            if b.offsets.len() <= i {
+                b.offsets.resize(i + 1, Vec2::ZERO);
+            }
+            if let Some(o) = b.offsets.get_mut(i) {
+                *o += along;
+            }
         }
         return Some(k);
     }
@@ -104,6 +108,8 @@ pub fn stretch_grip(kind: &EntityKind, index: usize, to: Vec2) -> Option<EntityK
             1 => return Some(translated(kind, delta)),
             _ => set_xy(&mut l.b, to),
         },
+        // An image's other corners scale it about the opposite one, keeping its shape.
+        EntityKind::Image(i) if index > 0 => return i.stretched(index, to).map(EntityKind::Image),
         EntityKind::Point(_) | EntityKind::Text(_) | EntityKind::MText(_) | EntityKind::AttDef(_) | EntityKind::Image(_) | EntityKind::Table(_) => {
             return Some(translated(kind, delta));
         }
@@ -532,14 +538,17 @@ fn moves_whole(k: &EntityKind, index: usize) -> bool {
         EntityKind::Line(_) => index == 1,
         EntityKind::Arc(_) => index >= 3,
         EntityKind::Table(t) => index == 0 || t.breaks.is_none(),
-        EntityKind::Circle(_) | EntityKind::Ellipse(_) | EntityKind::Helix(_) | EntityKind::Ray(_) | EntityKind::XLine(_) | EntityKind::Insert(_) => {
-            index == 0
-        }
+        EntityKind::Circle(_)
+        | EntityKind::Ellipse(_)
+        | EntityKind::Helix(_)
+        | EntityKind::Ray(_)
+        | EntityKind::XLine(_)
+        | EntityKind::Insert(_)
+        | EntityKind::Image(_) => index == 0,
         EntityKind::Point(_)
         | EntityKind::Text(_)
         | EntityKind::MText(_)
         | EntityKind::AttDef(_)
-        | EntityKind::Image(_)
         | EntityKind::Hatch(_)
         | EntityKind::Tolerance(_)
         | EntityKind::Region(_)
@@ -551,9 +560,19 @@ fn moves_whole(k: &EntityKind, index: usize) -> bool {
 /// [`stretch_grip_plan`] with the grip also raised by `dz` along the plane's normal (a point given
 /// with a height): a line's end or a 3D polyline's or 3D face's vertex moves in Z, and a grip that
 /// moves its whole object (a line's midpoint, a circle's centre, a text...) moves it in 3D, as
-/// MOVE does. `None` also for a grip that can't leave its object's plane (a polyline's vertex, an
-/// arc's end) and an object that can't move in Z (a region).
+/// MOVE does. A grip of an object in a tilted or standing plane (a polyline's vertex, a circle's
+/// quadrant) takes the point with its height into that plane, so the object stretches in its own
+/// plane, up and down too. `None` for a grip of a level object that can't leave its plane and an
+/// object that can't move in Z (a region).
 pub fn stretch_grip_3d(e: &Entity, kind: &EntityKind, index: usize, to: Vec2, dz: f64) -> Option<EntityKind> {
+    if dz != 0.0
+        && e.plan_xf().is_some()
+        && !moves_whole(kind, index)
+        && let Some(pl) = e.plane()
+    {
+        let local = pl.inverse()?.apply(to.to3(grips3(e).get(index)?.z + dz));
+        return local.is_finite().then(|| stretch_grip(kind, index, local.xy())).flatten();
+    }
     let mut k = stretch_grip_plan(e, kind, index, to)?;
     if dz == 0.0 {
         return Some(k);

@@ -11,16 +11,19 @@ pub mod clip;
 mod dim;
 mod fill;
 mod hatch;
+pub mod image;
 mod linetype;
 mod linetype_text;
 mod mline;
 mod outline;
 pub mod paper;
 pub mod pen;
+mod persp;
 mod plane;
 mod plotstyle;
 mod point;
 pub mod raster;
+pub mod shade;
 mod solid;
 mod text;
 mod tolerance;
@@ -121,6 +124,13 @@ pub struct DisplayList {
     /// zero for other lists. A depth-buffered canvas gives wide lines' corners their depth with
     /// it, so a line keeps its whole width over a sloped wipeout.
     pub plane_slope: [f64; 2],
+    /// Raster images' pictures, in draw order (each drawn just before primitive
+    /// [`image::ImagePrim::at`]); their frames are ordinary primitives.
+    pub images: Vec<image::ImagePrim>,
+    /// [`Options::render`]: the solids' and meshes' triangles to render ([`shade`]).
+    pub shade: Vec<shade::ShadeTri>,
+    /// [`Options::render`]: their edges, in view coordinates, with their objects' colours.
+    pub shade_edges: Vec<(Vec<cadcraft_geom::Vec3>, Rgb)>,
 }
 
 /// A glyph of plotted text: the font glyph and, in world coordinates, where it sits. It is
@@ -262,6 +272,9 @@ pub struct Options {
     /// objects' colours, so a depth-buffered canvas shows the visible lines only (VSCURRENT
     /// Hidden, HIDE).
     pub hidden: bool,
+    /// RENDER: collect the solids' and meshes' triangles and edges in view coordinates with
+    /// their materials' colours ([`DisplayList::shade`]) instead of drawing anything.
+    pub render: bool,
 }
 
 impl Options {
@@ -297,6 +310,7 @@ impl Default for Options {
             shaded: false,
             edges: false,
             hidden: false,
+            render: false,
         }
     }
 }
@@ -380,6 +394,9 @@ struct Builder<'a> {
 
 /// The depth gradient of [`Builder::depth`] for a build of model space (`model`) with `opts`.
 fn plane_depth(opts: &Options, model: bool) -> Option<[f64; 2]> {
+    if let Some(c) = opts.view_dir.persp.filter(|_| opts.shaded && model) {
+        return Some(persp::xy_slope(&opts.view_dir, &c));
+    }
     // ponytail: seen exactly edge-on (Front, Left...) the view plane loses the XY plane's depth,
     // so 2D objects all sit at the depth of the origin; carry world points if that matters.
     let v = opts.view_dir;
@@ -429,6 +446,10 @@ impl Builder<'_> {
         if pts.len() < 2 {
             return;
         }
+        if let Some(c) = self.opts.view_dir.persp {
+            let v = self.view_points(ctx, pts, xf, z);
+            return self.persp_polyline(ctx, &c, color, lw, &v);
+        }
         self.note_pen(color);
         let (color, lw) = self.styled(color, lw);
         let start = self.list.verts.len() as u32;
@@ -458,6 +479,10 @@ impl Builder<'_> {
     fn tris_at(&mut self, ctx: &Ctx, color: Ink, tris: &[Vec2], xf: Mat3, z: &[f64]) {
         if tris.len() < 3 {
             return;
+        }
+        if let Some(c) = self.opts.view_dir.persp {
+            let v = self.view_points(ctx, tris, xf, z);
+            return self.persp_tris(ctx, &c, color, &v);
         }
         self.note_pen(color);
         let (color, _) = self.styled(color, 0.0);
@@ -525,10 +550,17 @@ impl Builder<'_> {
         }
     }
     fn point(&mut self, ctx: &Ctx, color: Ink, p: Vec2) {
+        if let Some(c) = self.opts.view_dir.persp {
+            return self.persp_point(ctx, &c, color, ctx.xf3.apply(p.to3(0.0)));
+        }
         self.point_at(ctx, color, ctx.xf.apply(p), None);
     }
     /// A point marker at view-plane point `q`, at depth `z` (a 3D point) or on the local plane.
     fn point_at(&mut self, ctx: &Ctx, color: Ink, q: Vec2, z: Option<f64>) {
+        if let Some(c) = self.opts.view_dir.persp {
+            let v = self.view_points(ctx, &[q], Mat3::IDENTITY, z.as_slice());
+            return v.into_iter().for_each(|v| self.persp_point(ctx, &c, color, v));
+        }
         let (color, _) = self.styled(color, 0.0);
         self.list.bounds.add(q);
         let start = self.list.verts.len() as u32;
@@ -548,6 +580,9 @@ impl Builder<'_> {
         });
     }
     fn infinite(&mut self, ctx: &Ctx, color: Ink, base: Vec2, dir: Vec2, ray: bool) {
+        if let Some(c) = self.opts.view_dir.persp {
+            return self.persp_infinite(ctx, &c, color, ctx.xf3.apply(base.to3(0.0)), ctx.xf3.apply_vec(dir.to3(0.0)), ray);
+        }
         self.infinite_at(ctx, color, ctx.xf.apply(base), ctx.xf.apply_vec(dir).normalized(), ray, None);
     }
     /// An infinite line or ray through view-plane point `q` along unit `dir`, `z` as for
@@ -737,6 +772,12 @@ fn append(dst: &mut DisplayList, src: DisplayList) {
     dst.pens.extend(src.pens);
     dst.bounds = dst.bounds.union(&src.bounds);
     dst.expanded = dst.expanded.saturating_add(src.expanded);
+    dst.images.extend(src.images.into_iter().map(|mut im| {
+        im.at += prims;
+        im
+    }));
+    dst.shade.extend(src.shade);
+    dst.shade_edges.extend(src.shade_edges);
 }
 
 /// The plot style table a build draws with: the one in `opts`, else (on screen) the layout's
@@ -756,6 +797,10 @@ fn style_table(d: &Drawing, space: &Space, opts: &Options, plotting: bool) -> Op
 /// and points draw as figures sized relative to the view.
 fn with_point_view(d: &Drawing, space: &Space, opts: &Options) -> Options {
     let mut o = opts.clone();
+    // Layouts are drawn in plan: a perspective camera is for model space.
+    if !matches!(space, Space::Model) {
+        o.view_dir = o.view_dir.parallel();
+    }
     let relative = d.header.f64("PDSIZE", 0.0) <= 0.0 && point::sized(d.header.i64("PDMODE", 0));
     if !(o.view_height.is_finite() && o.view_height > 0.0) && relative {
         let ext = d.extents(space);
@@ -962,7 +1007,21 @@ enum Clip<'a> {
 
 /// Append `src` to `dst`, clipped to `clip`.
 fn append_clipped(dst: &mut DisplayList, src: &DisplayList, clip: &Clip) {
-    for p in &src.prims {
+    let mut images = src.images.iter().peekable();
+    // Pictures keep their place in the draw order and are clipped like the rest.
+    let put = |dst: &mut DisplayList, im: &image::ImagePrim| {
+        let outline = match clip {
+            Clip::Rect(r) => r.corners().to_vec(),
+            Clip::Poly(c) => c.polygon().to_vec(),
+        };
+        let mut clips = im.clips.clone();
+        clips.push(outline);
+        dst.images.push(image::ImagePrim { at: dst.prims.len() as u32, clips, ..im.clone() });
+    };
+    for (i, p) in src.prims.iter().enumerate() {
+        while let Some(im) = images.next_if(|im| im.at as usize <= i) {
+            put(dst, im);
+        }
         let pts = src.points(p);
         match (p.kind, clip) {
             (Kind::Polyline, Clip::Rect(rect)) => {
@@ -1010,6 +1069,14 @@ fn append_clipped(dst: &mut DisplayList, src: &DisplayList, clip: &Clip) {
             }
         }
     }
+    for im in images {
+        put(dst, im);
+    }
+    // RENDER's shaded triangles (world 3D) go along whole.
+    // ponytail: not cut by the clip boundary, so an XCLIPped reference renders its solids whole;
+    // cut them by the boundary's prism if clipped furniture renders wrong.
+    dst.shade.extend(src.shade.iter().cloned());
+    dst.shade_edges.extend(src.shade_edges.iter().cloned());
 }
 
 fn push_raw(dst: &mut DisplayList, p: &DPrim, kind: Kind, pts: &[Vec2]) {
@@ -1172,6 +1239,10 @@ fn entity(b: &mut Builder, ctx: &Ctx, e: &Entity) {
     if ctx.d.is_hidden_object(e.handle) || b.opts.cancelled() {
         return;
     }
+    // A render takes solids and meshes only (in block references too).
+    if b.opts.render && !matches!(e.kind, EntityKind::Solid3d(_) | EntityKind::PolyMesh(_) | EntityKind::Insert(_)) {
+        return;
+    }
     // The entity's named plot style and transparency (set by `entity_parts`), for everything it
     // draws (block contents set their own).
     let (saved, saved_transparency) = (b.named, b.transparency);
@@ -1238,7 +1309,8 @@ fn entity_parts(b: &mut Builder, ctx: &Ctx, e: &Entity) {
             own = plane::with_plane(ctx, &p);
             &own
         }
-        None if !ctx.flat() => return plane::free(b, ctx, e, rgb, lw, lt.as_ref(), ltscale, tol),
+        // In perspective heights show even looking straight down.
+        None if !ctx.flat() || b.opts.view_dir.persp.is_some() => return plane::free(b, ctx, e, rgb, lw, lt.as_ref(), ltscale, tol),
         _ => ctx,
     };
     // Stroke a polyline with the entity's linetype.
@@ -1369,14 +1441,7 @@ fn entity_parts(b: &mut Builder, ctx: &Ctx, e: &Entity) {
                 b.polyline(ctx, rgb, lw, &pts);
             }
         }
-        EntityKind::Image(i) => {
-            let o = i.insert.xy();
-            let u = i.u.xy() * i.size.x;
-            let v = i.v.xy() * i.size.y;
-            b.polyline(ctx, rgb, lw, &[o, o + u, o + u + v, o + v, o]);
-            b.polyline(ctx, rgb, lw, &[o, o + u + v]);
-            b.polyline(ctx, rgb, lw, &[o + u, o + v]);
-        }
+        EntityKind::Image(i) => image::build(b, ctx, i, rgb, lw),
         EntityKind::Table(t) => table(b, ctx, t, rgb, lw),
         EntityKind::Tolerance(t) => tolerance::draw(b, ctx, e, t, lw, tol),
         EntityKind::Leader(l) => {
@@ -1768,7 +1833,12 @@ fn insert(b: &mut Builder, ctx: &Ctx, e: &Entity, ins: &cadcraft_doc::Insert, rg
 // their plot layers, pens, plotted-text glyphs and shaded-face depth order; front/back clipping
 // planes (Clipdepth) are kept but not drawn. Clip in the block's own pass if those matter.
 fn xclipped(b: &mut Builder, sub: &Ctx, blk: &cadcraft_doc::Block, x: &cadcraft_doc::xclip::XClip, ink: Ink) {
-    let outline: Vec<Vec2> = x.polygon().iter().map(|p| sub.xf.apply(*p)).collect();
+    let persp = b.opts.view_dir.persp;
+    let outline: Vec<Vec2> = match persp {
+        // ponytail: in perspective a boundary reaching behind the eye loses those corners.
+        Some(c) => b.view_points(sub, &x.polygon(), sub.xf, &[]).into_iter().filter_map(|v| c.map(v).map(|m| m.0)).collect(),
+        None => x.polygon().iter().map(|p| sub.xf.apply(*p)).collect(),
+    };
     let Some(pc) = clip::PolyClip::new(&outline) else { return };
     let mut part = Builder { list: DisplayList::default(), depth: b.depth, ..*b };
     part.list.expanded = b.list.expanded;
@@ -1785,13 +1855,26 @@ fn xclipped(b: &mut Builder, sub: &Ctx, blk: &cadcraft_doc::Block, x: &cadcraft_
     append_clipped(&mut b.list, &part.list, &Clip::Poly(&pc));
     let frame = sub.d.header.i64("XCLIPFRAME", 2);
     if frame == 1 || (frame == 2 && !b.plotting) {
-        let mut closed = pc.polygon().to_vec();
-        closed.extend(closed.first().copied());
-        b.polyline_at(sub, ink, 0.0, &closed, Mat3::IDENTITY, &[]);
+        if persp.is_some() {
+            // The boundary in the block, seen through the eye (and cut at its near plane) once.
+            let mut closed = x.polygon();
+            closed.extend(closed.first().copied());
+            b.polyline(sub, ink, 0.0, &closed);
+        } else {
+            let mut closed = pc.polygon().to_vec();
+            closed.extend(closed.first().copied());
+            b.polyline_at(sub, ink, 0.0, &closed, Mat3::IDENTITY, &[]);
+        }
     }
     // Shaded lists keep a depth per vertex: the clipped pieces lie in the block's plane.
     if b.depth.is_some() {
-        let g = sub.grad;
+        let g = match persp {
+            Some(c) => {
+                use cadcraft_geom::Vec3;
+                persp::plane_gradient(&c, sub.xf3.apply(Vec3::ZERO), sub.xf3.apply_vec(Vec3::X).cross(sub.xf3.apply_vec(Vec3::Y)))
+            }
+            None => sub.grad,
+        };
         let at = |q: &Vec2| g[0] * q.x + g[1] * q.y + g[2];
         let v: Vec<f64> = b.list.verts.get(b.list.vert_depth.len()..).unwrap_or(&[]).iter().map(at).collect();
         b.list.vert_depth.extend(v);

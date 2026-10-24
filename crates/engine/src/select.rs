@@ -9,15 +9,15 @@ use crate::{Accept, Prompt};
 /// Polylines approximating an entity for hit testing, tessellated at `tol`.
 pub fn hit_polylines(d: &Drawing, e: &Entity, tol: f64) -> Vec<Vec<Vec2>> {
     match &e.kind {
+        // A table is hit round its parts, turned with it.
+        EntityKind::Table(t) => t.outlines().into_iter().map(|[a, b, c, d]| vec![a, b, c, d, a]).collect(),
         EntityKind::Text(_)
         | EntityKind::MText(_)
         | EntityKind::Insert(_)
         | EntityKind::Dimension(_)
         | EntityKind::AttDef(_)
-        | EntityKind::Table(_)
         | EntityKind::Tolerance(_)
-        | EntityKind::MLeader(_)
-        | EntityKind::Image(_) => {
+        | EntityKind::MLeader(_) => {
             // Text-like objects are hit inside their box.
             let b = entity_bounds(d, e, 0);
             if b.is_empty() {
@@ -89,9 +89,12 @@ fn dist_to_polyline(pts: &[Vec2], p: Vec2) -> f64 {
 pub fn entity_distance(d: &Drawing, e: &Entity, p: Vec2, tol: f64) -> f64 {
     let polys = hit_polylines(d, e, tol);
     let mut best = polys.iter().map(|pl| dist_to_polyline(pl, p)).fold(f64::INFINITY, f64::min);
-    let filled = matches!(e.kind, EntityKind::Text(_) | EntityKind::MText(_) | EntityKind::AttDef(_) | EntityKind::Table(_))
-        || matches!(e.kind, EntityKind::Tolerance(_));
-    if (filled && entity_bounds(d, e, 0).contains(p)) || in_text(d, e, p) {
+    let filled = matches!(e.kind, EntityKind::Text(_) | EntityKind::MText(_) | EntityKind::AttDef(_)) || matches!(e.kind, EntityKind::Tolerance(_));
+    let inside = match &e.kind {
+        EntityKind::Table(t) => t.cell_at_point(p).is_some(),
+        _ => filled && entity_bounds(d, e, 0).contains(p),
+    };
+    if inside || in_text(d, e, p) {
         best = 0.0;
     }
     // A solid hatch fills its loops with odd parity under its island style, as it is drawn, not

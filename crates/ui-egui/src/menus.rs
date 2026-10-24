@@ -47,6 +47,8 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("ui.gumball.snap", "Snappy Dragging", &["View", "Gumball", "Snappy Dragging"], None),
     // VISUALSTYLES and VSM typed or from the menu open the manager; with parameters they are VSCURRENT.
     ("visualstyles", "Visual Styles Manager...", &["View", "Visual Styles", "Visual Styles Manager..."], None),
+    // RENDER typed or from the menu opens the Render window; with parameters it is the command.
+    ("render", "Render", &["View", "Render", "Render"], None),
     ("ui.theme.system", "Use System Setting", &["View", "Interface Theme", "Use System Setting"], None),
     ("ui.theme.light", "Light", &["View", "Interface Theme", "Light"], None),
     ("ui.theme.dark", "Dark", &["View", "Interface Theme", "Dark"], None),
@@ -119,9 +121,17 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
     if id == "ui.panel.quickcalc" || (matches!(id, "quickcalc" | "qc") && params.is_null()) {
         return Some(crate::palettes::quickcalc::open(app));
     }
+    // ADCENTER, ADC or DC typed, Window ▸ DesignCenter or Ctrl+2: the DesignCenter palette.
+    if let Some(r) = crate::designcenter::route(app, id, params) {
+        return Some(r);
+    }
     // ASSISTANT or AI typed, or Tools ▸ AI Assistant: the AI Assistant palette.
     if matches!(id, "assistant" | "ai") {
         return Some(crate::assistant::open(app));
+    }
+    // RENDER or RR typed or from the menu: the Render window; with parameters the command.
+    if let Some(r) = crate::render_window::route(app, id, params) {
+        return Some(r);
     }
     if let Some(r) = crate::plotstyles::route(app, id, params) {
         return Some(r);
@@ -493,6 +503,11 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
             app.ui.dialog = Some("dsettings:osnap".into());
             Ok(Value::Null)
         }
+        // 3DOSNAP typed opens its 3D Object Snap tab; F4 toggles the 3D snaps (`{}`).
+        "3dosnap" if params.is_null() => {
+            app.ui.dialog = Some("dsettings:3dosnap".into());
+            Ok(Value::Null)
+        }
         // Typed or from a menu (no parameters): the Hatch and Gradient dialog (HPDLGMODE 1) and the
         // Hatch Edit dialog. -HATCH, -HATCHEDIT and JSON calls keep the command line and the JSON form.
         "hatch" | "h" | "bh" | "gradient" | "gd" if params.is_null() && crate::hatchdlg::dialog_on(app) => {
@@ -716,11 +731,13 @@ pub fn shortcuts(app: &mut CadApp, ctx: &egui::Context) {
         (sc(cmd_shift, Key::V), "pasteblock"),
         (sc(cmd, Key::V), "pasteclip"),
         (sc(cmd, Key::Num1), "ui.panel.properties"),
+        (sc(cmd, Key::Num2), "adcenter"),
         (sc(cmd, Key::Num3), "ui.toggle.toolsets"),
         (sc(cmd, Key::Num9), "ui.toggle.cmdline"),
         (sc(Modifiers::NONE, Key::F1), "ui.dialog.commands"),
         (sc(Modifiers::NONE, Key::F2), "ui.toggle.history"),
         (sc(Modifiers::NONE, Key::F3), "osnap"),
+        (sc(Modifiers::NONE, Key::F4), "3dosnap"),
         (sc(Modifiers::NONE, Key::F5), "isoplane"),
         (sc(cmd, Key::E), "isoplane"),
         (sc(Modifiers::NONE, Key::F7), "grid"),
@@ -753,7 +770,7 @@ pub fn shortcuts(app: &mut CadApp, ctx: &egui::Context) {
             continue;
         }
         // Toggles run transparently (they don't cancel the active command).
-        let transparent = ["osnap", "grid", "ortho", "snap", "polar", "otrack", "dynmode", "pickstyle"].contains(&id);
+        let transparent = ["osnap", "3dosnap", "grid", "ortho", "snap", "polar", "otrack", "dynmode", "pickstyle"].contains(&id);
         if transparent || id.starts_with("ui.") {
             match app.session.execute(id, &json!({})) {
                 Ok(v) => {

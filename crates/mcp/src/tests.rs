@@ -257,6 +257,8 @@ fn file_commands_are_real_and_complete() {
         ("loft", "`path` is a curve's handle"),
         ("flatshot", "`path` is a file key; otherwise a block of this drawing"),
         ("xref", "lists the attached files; typed XREF is refused as -XREF"),
+        ("image", "lists the attached images (their paths and status); reads no file"),
+        ("imageadjust", "\"as the file\" is prose: it adjusts a picture already read"),
     ];
     let catalog = crate::Backend::call(&mut Headless::default(), "engine.commands", json!({})).unwrap();
     let catalog = catalog.as_array().unwrap();

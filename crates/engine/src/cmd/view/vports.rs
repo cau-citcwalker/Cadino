@@ -51,7 +51,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("vports.activate", "Set Current Viewport", run_activate).params("{index: tile number from 1}").noundo(),
         CommandSpec::new("viewports.rhino", "Four Rhino Views", run_rhino)
             .menu(&["View", "Viewports", "Four Rhino Views"])
-            .params("{} (Model tab): Top (current), Perspective (a south-west isometric, parallel projection), Front and Right, each zoomed to extents"),
+            .params("{} (Model tab): Top (current), Perspective (from the south-west through a 50 mm lens), Front and Right, each zoomed to extents"),
         CommandSpec::new("viewports.single", "Maximize Viewport", run_single)
             .menu(&["View", "Viewports", "Maximize Viewport"])
             .params("{} (Model tab): the current tile alone, with its view; VIEWPORTS.MAXIMIZE brings the others back"),
@@ -143,14 +143,14 @@ fn look_of(t: &VportTile) -> TileLook {
     let [x, y, z] = t.view_dir;
     let v = Vec3::new(x, y, z);
     // A unit direction as stored, so a round trip keeps it bit for bit; anything else normalised.
-    let dir = if v.is_finite() && (v.len() - 1.0).abs() < 1e-12 { ViewDir { dir: v } } else { ViewDir::new(v) };
-    TileLook { dir, shaded: t.shaded, edges: t.edges }
+    let dir = if v.is_finite() && (v.len() - 1.0).abs() < 1e-12 { ViewDir { dir: v, persp: None } } else { ViewDir::new(v) };
+    TileLook { dir, shaded: t.shaded, edges: t.edges, camera: t.camera }
 }
 
 /// Tile `t` with look `l` stored in it.
 fn with_look(t: VportTile, l: TileLook) -> VportTile {
     let d = l.dir.dir;
-    VportTile { view_dir: [d.x, d.y, d.z], shaded: l.shaded, edges: l.edges, ..t }
+    VportTile { view_dir: [d.x, d.y, d.z], shaded: l.shaded, edges: l.edges, camera: l.camera, ..t }
 }
 
 /// The model view shows view `v` along look `l`; from a layout too (undo or redo there), for
@@ -599,9 +599,7 @@ fn run_vports(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Rhino's four views (4VIEW), quadrant by quadrant as [`split`] makes them: Top, Perspective,
 /// Front, Right (directions toward the viewer), with their construction planes (World, World,
-/// Front, Right).
-/// ponytail: "Perspective" is a parallel south-west isometric; a perspective camera needs a
-/// projection in `ViewDir`, the render crate and the canvas.
+/// Front, Right). Perspective looks from the south-west through a 50 mm lens.
 const RHINO_VIEWS: [([f64; 3], &str); 4] =
     [([0.0, 0.0, 1.0], "top"), ([-1.0, -1.0, 1.0], "world"), ([0.0, -1.0, 0.0], "front"), ([1.0, 0.0, 0.0], "right")];
 
@@ -615,12 +613,21 @@ fn run_rhino(s: &mut Session, _p: &Value) -> Result<Value> {
     let (w, h) = (s.viewport_px.0 / (cur.max.x - cur.min.x).max(EPS), s.viewport_px.1.max(1.0) / (cur.max.y - cur.min.y).max(EPS));
     let parts = split((Vec2::ZERO, Vec2::new(1.0, 1.0)), 4, "").unwrap_or_default();
     let mut out: Vec<Tile> = Vec::with_capacity(4);
-    for ((min, max), ([x, y, z], plane)) in parts.into_iter().zip(RHINO_VIEWS) {
+    for (i, ((min, max), ([x, y, z], plane))) in parts.into_iter().zip(RHINO_VIEWS).enumerate() {
         let dir = ViewDir::new(Vec3::new(x, y, z));
         let aspect = ((max.x - min.x) * w / ((max.y - min.y) * h).max(EPS)).max(EPS);
-        let v = s.extents_frame_along(dir, aspect)?;
+        // The second is Rhino's Perspective view: a real perspective.
+        let (v, camera) = if i == 1 {
+            let (v, cam) = super::super::view3d::persp_frame(&s.state()?.doc, dir, cadcraft_geom::Camera::LENS, aspect);
+            (v, Some(cam))
+        } else {
+            (s.extents_frame_along(dir, aspect)?, None)
+        };
         let cplane = super::cplane::preset(plane).unwrap_or(Mat4::IDENTITY);
-        out.push((VportTile { min, max, center: v.center, height: v.height, aspect, cplane, ..Default::default() }, TileLook { dir, ..look }));
+        out.push((
+            VportTile { min, max, center: v.center, height: v.height, aspect, cplane, ..Default::default() },
+            TileLook { dir, camera, ..look },
+        ));
     }
     apply(s, out, 0)?;
     summary(s)

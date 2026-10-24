@@ -9,6 +9,8 @@ mod table;
 const SESSION_VARS: &[&str] = &[
     "OSMODE",
     "OSNAPHATCH",
+    "3DOSMODE",
+    "OSNAPZ",
     "ANNOAUTOSCALE",
     "ORTHOMODE",
     "POLARMODE",
@@ -65,6 +67,8 @@ const SESSION_VARS: &[&str] = &[
     "SAVETIME",
     "SAVEFILEPATH",
     "TILEMODE",
+    "PERSPECTIVE",
+    "LENSLENGTH",
 ];
 
 pub fn get(s: &Session, name: &str) -> Option<Value> {
@@ -73,6 +77,8 @@ pub fn get(s: &Session, name: &str) -> Option<Value> {
     let v = match n.as_str() {
         "OSMODE" => json!(st.osmode),
         "OSNAPHATCH" => json!(i32::from(st.osnaphatch)),
+        "3DOSMODE" => json!(st.osmode3d),
+        "OSNAPZ" => json!(i32::from(st.osnapz)),
         // AutoCAD's values: positive on, negative off (4 = every annotative object).
         "ANNOAUTOSCALE" => json!(if st.annoautoscale { 4 } else { -4 }),
         // Paper units per drawing unit of the current annotation scale (1:50 → 0.02).
@@ -155,6 +161,9 @@ pub fn get(s: &Session, name: &str) -> Option<Value> {
             json!([v.center.x, v.center.y, 0.0])
         }
         "VIEWSIZE" => json!(s.state().ok()?.view().height),
+        // The current view's perspective (DVIEW Distance) and its lens length in millimetres.
+        "PERSPECTIVE" => json!(i32::from(s.state().ok()?.screen_dir().persp.is_some())),
+        "LENSLENGTH" => json!(s.state().ok()?.camera.map_or(cadcraft_geom::Camera::LENS, |c| c.lens)),
         "EXTMIN" | "EXTMAX" => {
             let d = s.doc().ok()?;
             let e = d.extents(&s.space());
@@ -199,8 +208,21 @@ fn as_pt(v: &Value) -> Option<cadcraft_geom::Vec2> {
 }
 
 /// Variables `get` reports from session or drawing state that `set` can't change.
-const READ_ONLY: &[&str] =
-    &["CMDNAMES", "DWGNAME", "DBMOD", "BLOCKEDITOR", "CTAB", "LASTPOINT", "VIEWCTR", "VIEWSIZE", "EXTMIN", "EXTMAX", "UNDOCTL", "UNDOMARKS"];
+const READ_ONLY: &[&str] = &[
+    "CMDNAMES",
+    "DWGNAME",
+    "DBMOD",
+    "BLOCKEDITOR",
+    "CTAB",
+    "LASTPOINT",
+    "VIEWCTR",
+    "VIEWSIZE",
+    "EXTMIN",
+    "EXTMAX",
+    "UNDOCTL",
+    "UNDOMARKS",
+    "LENSLENGTH",
+];
 
 pub fn is_read_only(name: &str) -> bool {
     READ_ONLY.iter().any(|r| r.eq_ignore_ascii_case(name.trim())) || table::is_read_only(&name.trim().to_ascii_uppercase())
@@ -229,6 +251,9 @@ pub fn set(s: &mut Session, name: &str, v: &Value) -> Result<()> {
     match n.as_str() {
         "OSMODE" => st.osmode = v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())).ok_or_else(bad)? as u32 & 0x7fff,
         "OSNAPHATCH" => st.osnaphatch = as_bool(v).ok_or_else(bad)?,
+        "PERSPECTIVE" => s.set_perspective(as_bool(v).ok_or_else(bad)?, None)?,
+        "3DOSMODE" => st.osmode3d = as_i(v).filter(|b| (0..=127).contains(b)).ok_or_else(bad)? as u32,
+        "OSNAPZ" => st.osnapz = as_bool(v).ok_or_else(bad)?,
         "ANNOAUTOSCALE" => st.annoautoscale = as_i(v).filter(|i| (-4..=4).contains(i)).ok_or_else(bad)? > 0,
         // A scale of the drawing's list; ANNOAUTOSCALE adds it to the annotative objects.
         "CANNOSCALE" => crate::cmd::annoscale::set_current(s, v.as_str().ok_or_else(bad)?)?,

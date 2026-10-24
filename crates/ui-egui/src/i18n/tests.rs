@@ -131,6 +131,9 @@ fn missing_marked_ui_literals(language: &str) -> BTreeSet<String> {
         include_str!("../context_menu.rs"),
         include_str!("../plotstyles.rs"),
         include_str!("../spacemouse.rs"),
+        include_str!("../designcenter.rs"),
+        include_str!("../managers/ucsman.rs"),
+        include_str!("../render_window.rs"),
     ];
     let mut missing = BTreeSet::new();
     for source in sources {
@@ -178,6 +181,18 @@ fn engine_prompts_and_messages_are_translated() {
     for must in ["Specify first point", "Command: {0}", "Select objects", "*Cancel*", "nothing selected"] {
         assert!(messages.contains_key(must), "the scanner missed {must:?}");
     }
+    // The 3D kernel's Rust errors and refusals, its C++ failures (a concatenation as a template)
+    // and operation names, a `map_err` refusal and a result message set by index.
+    for must in [
+        "the modelling kernel failed: {why}",
+        "the box has no volume",
+        "{what} left nothing",
+        "rounding the edges",
+        "Parameters, actions and visibility states are added in the Block Editor (BEDIT).",
+        "Added {kind} \"{found}\".",
+    ] {
+        assert!(messages.contains_key(must), "the scanner missed {must:?}");
+    }
     let mut report = String::new();
     for language in ["ko", "uk"] {
         let catalog = catalog(language).unwrap();
@@ -192,14 +207,15 @@ fn engine_prompts_and_messages_are_translated() {
     assert!(report.is_empty(), "command-line text without a translation (add the rows):{report}");
 }
 
-/// English that stays English on the command line: a keyword, a command name, the xref list's
-/// aligned column headings and a plural ending a message inserts.
-const ENGLISH_ONLY: &[&str] = &["Current", "MSPACE", "Xref name", "{0} {1} {2} Path", "s were"];
+/// English that stays English on the command line: a keyword, a command name, the xref and image
+/// lists' aligned column headings and a plural ending a message inserts.
+const ENGLISH_ONLY: &[&str] = &["Current", "MSPACE", "Xref name", "Image name", "Refs", "{0} {1} {2} Path", "s were", "ZNONe"];
 
 /// The command-line text in the engine's and the UI's sources, as catalog keys (a `format!`
 /// string with its `{}` numbered `{0}`, `{1}`…, as [`line`] matches it), with a file it is in.
 /// It is what the sources pass to `Prompt::new`, `echo`, `EngineError::Other`, the `other(…)`
-/// helpers and `Err(…)`, and a result's `"message"`; tests are left out.
+/// helpers, `Err(…)` and `map_err(|_| …)`, and a result's `"message"` (also set as
+/// `r["message"] = json!(…)`); tests are left out.
 fn command_line_messages() -> std::collections::BTreeMap<String, String> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut files = Vec::new();
@@ -223,7 +239,11 @@ fn command_line_messages() -> std::collections::BTreeMap<String, String> {
         let ui = file.starts_with("ui-egui/");
         let text = std::fs::read_to_string(&path).unwrap();
         let src = without_tests(&text);
-        let sinks: &[&str] = if ui { &[".echo("] } else { &["Prompt::new(", ".echo(", "EngineError::Other(", "other(", "Err(", "\"message\":"] };
+        let sinks: &[&str] = if ui {
+            &[".echo("]
+        } else {
+            &["Prompt::new(", ".echo(", "EngineError::Other(", "other(", "Err(", "\"message\":", "[\"message\"] = json!(", "map_err(|_| "]
+        };
         for sink in sinks {
             let mut from = 0;
             while let Some(at) = src[from..].find(sink).map(|i| i + from) {
@@ -246,7 +266,104 @@ fn command_line_messages() -> std::collections::BTreeMap<String, String> {
             }
         }
     }
+    for (key, file) in kernel_messages(&root) {
+        found.entry(key).or_insert(file);
+    }
     found
+}
+
+/// The 3D kernel's messages, which reach the command line as the engine's errors: its Rust
+/// refusals (`KernelError::Invalid`, `bad(…)`), its failures and error texts, and what its C++
+/// operations throw (`fail(…)`, whose `a + "b"` concatenations become `{a}b` templates) and the
+/// operation names they report with (`finish(…, "rounding the edges")`).
+fn kernel_messages(root: &std::path::Path) -> Vec<(String, String)> {
+    let mut files = vec![root.join("kernel/occt/src/ops.cpp")];
+    let mut dirs = vec![root.join("kernel/src")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let (path, name) = (entry.path(), entry.file_name().to_string_lossy().to_string());
+            if path.is_dir() {
+                dirs.push(path);
+            } else if name.ends_with(".rs") && !name.ends_with("tests.rs") {
+                files.push(path);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for path in files {
+        let file = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+        let cpp = file.ends_with(".cpp");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let src = if cpp { text.as_str() } else { without_tests(&text) };
+        let sinks: &[&str] =
+            if cpp { &["fail(", "finish(", "return \""] } else { &["KernelError::Invalid(", "KernelError::Failed(", "bad(", "#[error("] };
+        for sink in sinks {
+            let mut from = 0;
+            while let Some(at) = src[from..].find(sink).map(|i| i + from) {
+                from = at + sink.len();
+                let before = src[..at].chars().next_back().unwrap_or(' ');
+                if ["bad(", "fail(", "finish("].contains(sink) && (before.is_alphanumeric() || "_.:".contains(before)) {
+                    continue;
+                }
+                let keys = match *sink {
+                    "return \"" => literal(&src[from - 1..]).map(|(v, _)| v).into_iter().collect(),
+                    "fail(" => cpp_keys(&src[from..]),
+                    _ => literals(&src[from..], false),
+                };
+                out.extend(keys.into_iter().filter(|k| prose(k)).map(|k| (k, file.clone())));
+            }
+        }
+    }
+    out
+}
+
+/// The message keys of the C++ call argument at the start of `src`: a concatenation `a + "b" +
+/// f(c)` as the template `{a}b{0}` (a plain name keeps its name, so `{what}` is translated in
+/// turn), else its string literals (`x ? "one" : "other"`).
+fn cpp_keys(src: &str) -> Vec<String> {
+    let (mut depth, mut pieces, mut piece, mut chars) = (1usize, Vec::new(), String::new(), src.char_indices().peekable());
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '"' => {
+                let Some((_, len)) = literal(&src[i..]) else { break };
+                piece.push_str(&src[i..i + len]);
+                while chars.peek().is_some_and(|(j, _)| *j < i + len) {
+                    chars.next();
+                }
+                continue;
+            }
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            '+' if depth == 1 => {
+                pieces.push(std::mem::take(&mut piece));
+                continue;
+            }
+            _ => {}
+        }
+        piece.push(c);
+    }
+    pieces.push(piece);
+    if pieces.len() == 1 {
+        return literals(src, false);
+    }
+    let mut key = String::new();
+    let mut n = 0;
+    for p in pieces.iter().map(|p| p.trim()) {
+        if p.starts_with('"') {
+            key.push_str(&literal(p).map(|(v, _)| v).unwrap_or_default());
+        } else if !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            key.push_str(&format!("{{{p}}}"));
+        } else {
+            key.push_str(&format!("{{{n}}}"));
+            n += 1;
+        }
+    }
+    vec![key]
 }
 
 /// A source file up to its `#[cfg(test)] mod …`.
@@ -398,6 +515,9 @@ fn the_message_scanner_reads_rust_literals() {
     assert!(prose("Specify first point") && prose("Constant?") && prose("{0} object(s) found") && prose("*Cancel*"));
     assert!(!prose("path") && !prose("{0}") && !prose(", ") && !prose("x\ty"));
     assert_eq!(without_tests("a\n#[cfg(test)]\nmod tests {\nb"), "a\n");
+    assert_eq!(cpp_keys("what + \" left nothing\");"), ["{what} left nothing"]);
+    assert_eq!(cpp_keys("\"no face \" + std::to_string(i) + \" (of \" + std::to_string(n) + \")\");"), ["no face {0} (of {1})"]);
+    assert_eq!(cpp_keys("plus ? \"inside\" : \"on no face\");"), ["inside", "on no face"]);
 }
 
 /// History lines are English in the log and translated as they are drawn: a whole-line row, a
@@ -416,6 +536,17 @@ fn history_lines_are_translated_as_drawn() {
             "команда `erase` зараз недоступна: нічого не вибрано",
         ),
         ("Enter layer name(s) to freeze", "동결할 도면층 이름 입력", "Введіть назви шарів, які заморозити"),
+        // The kernel's failure inside a refusal, and the operation inside the failure.
+        (
+            "invalid parameters for `filletedge`: the modelling kernel failed: rounding the edges left nothing",
+            "`filletedge`의 매개변수가 잘못되었습니다: 모델링 커널 오류: 모서리 모깎기: 결과가 비어 있습니다",
+            "неправильні параметри для `filletedge`: помилка ядра моделювання: заокруглення ребер: нічого не лишилося",
+        ),
+        (
+            "invalid parameters for `box`: the box has no volume",
+            "`box`의 매개변수가 잘못되었습니다: 상자에 부피가 없습니다",
+            "неправильні параметри для `box`: паралелепіпед не має об'єму",
+        ),
         (
             "Reset Model space limits:\nInvalid point.",
             "모형 공간 한계 재설정:\n잘못된 점입니다.",

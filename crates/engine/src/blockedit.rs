@@ -60,6 +60,12 @@ pub struct BlockEdit {
     base: Vec2,
     /// The editor is open on the drawing itself ([`CURRENT_DRAWING`]).
     pub current: bool,
+    /// The visibility state the editor shows (BVSTATE Set); `None` is the first state, the one a
+    /// new reference shows.
+    pub vstate: Option<String>,
+    /// The test block window (BTESTBLOCK) is open: the editor as it was (its drawing, undo
+    /// history and selection), put back when the window closes.
+    pub testing: Option<Box<DocState>>,
 }
 
 /// Why a block can't be opened in the Block Editor, if it can't.
@@ -104,6 +110,16 @@ fn refers_to(d: &Drawing, store: &EntityStore, name: &str) -> bool {
 }
 
 impl BlockEdit {
+    /// The name the block's dynamic data goes by: the block's, or `*Model_Space` when the editor
+    /// is open on the drawing itself.
+    pub fn dynamic_name(&self) -> &str {
+        if self.current { "*Model_Space" } else { &self.name }
+    }
+    /// The block's base point: block coordinates are the editor's moved by it.
+    pub fn base(&self) -> Vec2 {
+        self.base
+    }
+
     /// The editor's objects in block coordinates, ready to be the block's: unchanged objects are
     /// the block's own, the others are moved back from the editor's origin to the base point.
     fn block_objects(&self, editor: &Drawing) -> EntityStore {
@@ -166,6 +182,16 @@ impl BlockEdit {
         }
         b.base.x = self.base.x;
         b.base.y = self.base.y;
+        // The block shows its first visibility state, the one a new reference shows, whichever
+        // the editor shows.
+        let mut entities = entities;
+        if let Some(m) = cadcraft_doc::dynblock::dynamic_block(editor, &self.name) {
+            for (h, shown) in cadcraft_doc::dynblock::author::state_visibility(&m, None) {
+                if entities.get(h).is_some_and(|e| e.common.visible != shown) {
+                    entities.modify(h, |e| e.common.visible = shown);
+                }
+            }
+        }
         b.entities = entities;
         d.blocks.insert(key, Arc::new(b));
         Ok(d)
@@ -191,15 +217,26 @@ impl DocState {
     pub fn block_editor(&self) -> Option<&str> {
         self.block_edit.as_ref().map(|b| b.name.as_str())
     }
+    /// The Block Editor's drawing: the editor's own while the test block window is open.
+    fn editor_doc(&self) -> &Arc<Drawing> {
+        match self.block_edit.as_ref().and_then(|b| b.testing.as_ref()) {
+            Some(t) => &t.doc,
+            None => &self.doc,
+        }
+    }
     /// The Block Editor has changes not yet saved into the block.
     pub fn block_unsaved(&self) -> bool {
-        self.block_edit.as_ref().is_some_and(|b| !Arc::ptr_eq(&b.saved, &self.doc))
+        self.block_edit.as_ref().is_some_and(|b| !Arc::ptr_eq(&b.saved, self.editor_doc()))
+    }
+    /// The test block window (BTESTBLOCK) is open.
+    pub fn block_testing(&self) -> bool {
+        self.block_edit.as_ref().is_some_and(|b| b.testing.is_some())
     }
     /// The drawing to keep for recovery (autosave): with the Block Editor's unsaved changes in the
     /// block, so a crash doesn't lose them.
     pub fn recovery_drawing(&self) -> Arc<Drawing> {
         match &self.block_edit {
-            Some(be) if self.block_unsaved() => be.compose(&self.doc, &be.name).map(Arc::new).unwrap_or_else(|_| be.host.doc.clone()),
+            Some(be) if self.block_unsaved() => be.compose(self.editor_doc(), &be.name).map(Arc::new).unwrap_or_else(|_| be.host.doc.clone()),
             Some(be) => be.host.doc.clone(),
             None => self.doc.clone(),
         }
@@ -221,6 +258,8 @@ impl DocState {
                 original: EntityStore::new(),
                 base: Vec2::ZERO,
                 current: true,
+                vstate: None,
+                testing: None,
             });
             return Ok(());
         }
@@ -243,7 +282,16 @@ impl DocState {
         let host = Box::new(self.clone());
         let editor = Arc::new(d);
         self.doc = editor.clone();
-        self.enter_block_editor(BlockEdit { name: block.name.clone(), host, saved: editor, original: block.entities.clone(), base, current: false });
+        self.enter_block_editor(BlockEdit {
+            name: block.name.clone(),
+            host,
+            saved: editor,
+            original: block.entities.clone(),
+            base,
+            current: false,
+            vstate: None,
+            testing: None,
+        });
         Ok(())
     }
 
@@ -264,9 +312,60 @@ impl DocState {
         self.revision += 1;
     }
 
+    /// Open the test block window (BTESTBLOCK): a drawing holding one reference to the block as
+    /// the editor has it now, at the editor's origin, to try its dynamic grips on. The editor
+    /// waits; [`DocState::end_block_test`] puts it back and nothing done in the window is kept.
+    /// Returns the block's name, for the reference.
+    pub fn start_block_test(&mut self) -> Result<String> {
+        let Some(be) = &self.block_edit else { return Err(EngineError::Other("The Block Editor is not open.".into())) };
+        if be.current {
+            return Err(EngineError::Other("The test block window tests a block; the Block Editor is open on the drawing itself.".into()));
+        }
+        if be.testing.is_some() {
+            return Err(EngineError::Other("The test block window is already open.".into()));
+        }
+        let mut d = be.compose(&self.doc, &be.name)?;
+        let name = d.block(&be.name).map_or_else(|| be.name.clone(), |b| b.name.clone());
+        d.model = EntityStore::new();
+        d.groups.clear();
+        d.constraints.clear();
+        d.hidden_objects.clear();
+        let mut editor = self.clone();
+        editor.block_edit = None;
+        self.doc = Arc::new(d);
+        self.undo.clear();
+        self.redo.clear();
+        self.undo_ctl = Default::default();
+        self.selection.clear();
+        self.previous_selection.clear();
+        self.revision += 1;
+        if let Some(be) = &mut self.block_edit {
+            be.testing = Some(Box::new(editor));
+        }
+        Ok(name)
+    }
+
+    /// Close the test block window: the editor as it was. False when it isn't open.
+    pub fn end_block_test(&mut self) -> bool {
+        let Some(t) = self.block_edit.as_mut().and_then(|b| b.testing.take()) else { return false };
+        let t = *t;
+        self.set_look(t.look());
+        self.doc = t.doc;
+        self.undo = t.undo;
+        self.redo = t.redo;
+        self.undo_ctl = t.undo_ctl;
+        self.selection = t.selection;
+        self.previous_selection = t.previous_selection;
+        self.views = t.views;
+        self.view_history = t.view_history;
+        self.revision += 1;
+        true
+    }
+
     /// Save the Block Editor's objects into the block (BSAVE), or into a new block `as_name`
     /// (BSAVEAS), which the editor then edits. One undo step in the drawing.
     pub fn save_block_editor(&mut self, as_name: Option<&str>) -> Result<()> {
+        self.end_block_test();
         let Some(be) = &self.block_edit else { return Err(EngineError::Other("The Block Editor is not open.".into())) };
         let name = as_name.unwrap_or(&be.name).to_string();
         let d = be.compose(&self.doc, &name)?;
@@ -291,11 +390,14 @@ impl DocState {
         if self.block_edit.is_none() {
             return Err(EngineError::Other("The Block Editor is not open.".into()));
         }
+        self.end_block_test();
         if save && self.block_unsaved() {
             self.save_block_editor(None)?;
         }
         let Some(be) = self.block_edit.take() else { return Ok(()) };
         let host = *be.host;
+        // The direction the model view centres are in, the camera, and how solids were shown.
+        self.set_look(host.look());
         self.doc = host.doc;
         self.undo = host.undo;
         self.redo = host.redo;
@@ -308,11 +410,7 @@ impl DocState {
         self.tiles = host.tiles;
         self.views = host.views;
         self.view_history = host.view_history;
-        // The direction the model view centres are in, and how solids were shown.
-        self.view_dir = host.view_dir;
         self.orbit_target = None;
-        self.shaded = host.shaded;
-        self.shaded_edges = host.shaded_edges;
         self.revision += 1;
         Ok(())
     }

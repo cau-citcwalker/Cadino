@@ -44,7 +44,7 @@ const OPERATORS: &[(&str, &str)] =
     &[("=", "= Equals"), ("!=", "<> Not Equal"), (">", "> Greater than"), ("<", "< Less than"), ("*", "* Wildcard Match")];
 
 /// Friendly label for a property key (`centerX` → `Center X`).
-fn pretty(k: &str) -> String {
+pub(crate) fn pretty(k: &str) -> String {
     let mut out = String::new();
     for (i, c) in k.chars().enumerate() {
         if i == 0 {
@@ -245,6 +245,16 @@ fn ro_row(ui: &mut egui::Ui, label: &str, v: String) {
     ui.end_row();
 }
 
+/// The Quick Properties palette's title: the objects' type in the interface language (with their
+/// count when there are several), or All and the count for mixed types.
+fn title(ty: &str, n: usize, same_type: bool) -> String {
+    match (n, same_type) {
+        (1, _) => crate::i18n::t(ty).to_string(),
+        (_, true) => format!("{} ({n})", crate::i18n::t(ty)),
+        _ => format!("{} ({n})", crate::tl!("All")),
+    }
+}
+
 /// The Quick Properties palette, near where the selection was made.
 pub fn quick_properties(app: &mut CadApp, ctx: &egui::Context) {
     let sid = egui::Id::new("qp_state");
@@ -276,13 +286,7 @@ pub fn quick_properties(app: &mut CadApp, ctx: &egui::Context) {
     let Some(first) = ents.first() else { return };
     let ty = first.kind.type_name();
     let same_type = ents.iter().all(|e| e.kind.type_name() == ty);
-    let title = if ents.len() == 1 {
-        ty.to_string()
-    } else if same_type {
-        format!("{} ({})", crate::i18n::t(ty), ents.len())
-    } else {
-        format!("{} ({})", crate::tl!("All"), ents.len())
-    };
+    let title = title(ty, ents.len(), same_type);
     let same = |f: &dyn Fn(&cadcraft_doc::Entity) -> String| -> String {
         let v0 = ents.first().map(|e| f(e)).unwrap_or_default();
         if ents.iter().all(|e| f(e) == v0) { v0 } else { "*VARIES*".into() }
@@ -421,5 +425,14 @@ mod tests {
     fn pretty_names() {
         assert_eq!(super::pretty("centerX"), "Center X");
         assert_eq!(super::pretty("layer"), "Layer");
+    }
+
+    /// One selected object's type is translated too (it showed in English).
+    #[test]
+    fn the_title_is_in_the_interface_language() {
+        let ko = |ty, n, same| crate::i18n::with_language("ko", || super::title(ty, n, same));
+        assert_eq!(ko("Block Reference", 1, true), "블록 참조");
+        assert_eq!(ko("Block Reference", 2, true), "블록 참조 (2)");
+        assert_eq!(super::title("Block Reference", 1, true), "Block Reference");
     }
 }

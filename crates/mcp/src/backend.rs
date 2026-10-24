@@ -318,7 +318,7 @@ impl Backend for Headless {
                 let opts = cadcraft_render::Options {
                     view: window,
                     transparency: s.settings.transparency_display,
-                    view_dir: named.unwrap_or(if st.space.is_paper() { Default::default() } else { st.view_dir }),
+                    view_dir: named.unwrap_or_else(|| st.screen_dir()),
                     ..style
                 };
                 let list = cadcraft_render::build(&st.doc, &space, &opts);

@@ -336,7 +336,7 @@ pub fn line(text: &str) -> String {
         if cache.done.len() > 10_000 {
             cache.done.clear();
         }
-        let s = text.split('\n').map(|l| line_in(catalog, &cache.templates, l, true)).collect::<Vec<_>>().join("\n");
+        let s = text.split('\n').map(|l| line_in(catalog, &cache.templates, l, NESTING)).collect::<Vec<_>>().join("\n");
         cache.done.insert(text.to_string(), s.clone());
         s
     })
@@ -366,7 +366,12 @@ fn literal_letters(key: &str) -> usize {
 /// a file) is shown as it is.
 const NESTED: [&str; 4] = ["reason", "why", "what", "op"];
 
-fn line_in(catalog: &Catalog<'static>, templates: &[&'static str], text: &str, nested: bool) -> String {
+/// How deep [`NESTED`] values are translated: a refusal's reason can hold the kernel's failure,
+/// which holds the operation that failed ("… not available right now: the modelling kernel
+/// failed: rounding the edges left nothing").
+const NESTING: u8 = 3;
+
+fn line_in(catalog: &Catalog<'static>, templates: &[&'static str], text: &str, depth: u8) -> String {
     // A bare word is a name a list echoes (a layout "Model", a device "None", a style
     // "Standard"), never a message: shown as it is, it can be typed back.
     if !text.is_empty() && text.chars().all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '$')) {
@@ -378,8 +383,8 @@ fn line_in(catalog: &Catalog<'static>, templates: &[&'static str], text: &str, n
     for template in templates {
         if let Some(mut values) = filled(template, text) {
             for (name, value) in &mut values {
-                if nested && NESTED.contains(name) {
-                    *value = line_in(catalog, templates, value, false);
+                if depth > 0 && NESTED.contains(name) {
+                    *value = line_in(catalog, templates, value, depth - 1);
                 }
             }
             return format(template, &values);

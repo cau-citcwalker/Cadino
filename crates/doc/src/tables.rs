@@ -843,6 +843,10 @@ pub struct VportTile {
     /// to write back; not a construction plane.
     #[serde(default)]
     pub ucs: Mat4,
+    /// A perspective view's camera: lens length and the depth of its target along the view
+    /// direction (DXF VIEWMODE 71 bit 1, lens 42, target 17); `None` for parallel projection.
+    #[serde(default)]
+    pub camera: Option<cadcraft_geom::Camera>,
 }
 
 fn plan_dir() -> [f64; 3] {
@@ -862,6 +866,7 @@ impl Default for VportTile {
             edges: false,
             cplane: Mat4::IDENTITY,
             ucs: Mat4::IDENTITY,
+            camera: None,
         }
     }
 }

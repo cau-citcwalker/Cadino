@@ -429,16 +429,26 @@ pub const FILE_COMMANDS: &[&str] = &[
     "igesout",
     "rhinoout",
     "3dprint",
+    // RENDER writes the picture to a PNG with `path`.
+    "render",
     "xattach",
     "-xref",
     "xopen",
     "attach",
+    "imageattach",
+    "-image",
+    "etransmit",
+    "-etransmit",
+    "partialopen",
+    "-partialopen",
     "datalink",
     "attext",
     "appload",
     "lisp",
     "aliasedit",
     "reinit",
+    // DesignCenter reads other drawings (`file`), and its typed form opens the palette.
+    "adcenter",
 ];
 
 /// Parameters that name a file or folder (except `path` of SWEEP, LOFT and the path arrays: a

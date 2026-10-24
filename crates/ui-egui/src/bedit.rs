@@ -2,11 +2,16 @@
 //! block reference selected. It lists the drawing's blocks with a preview and description; a name
 //! no block has yet starts a new block. OK runs BEDIT with that name; the dialog itself never
 //! changes the drawing. JSON calls (`bedit {name}`) and a selected block reference skip it.
+//!
+//! Also the Visibility States dialog (BVSTATE typed bare in the Block Editor), which runs
+//! `bvstate` for each change, and the dynamic block the editor's canvas shows
+//! ([`authored`]).
 
 use std::sync::Arc;
 
 use cadcraft_color::Rgb;
 use cadcraft_engine::blockedit::CURRENT_DRAWING;
+use cadcraft_engine::doc::dynblock::{DynamicBlock, ParameterKind};
 use cadcraft_engine::doc::{Drawing, EntityKind};
 use cadcraft_geom::Vec2;
 use cadcraft_render::DisplayList;
@@ -26,6 +31,21 @@ pub struct State {
     pub error: Option<String>,
     /// The preview of the block named, for (drawing uid, revision, block name).
     preview: Option<((u64, u64, String), Arc<DisplayList>)>,
+    /// The dynamic block the Block Editor shows and its base point, for (drawing uid, revision).
+    authored: Option<((u64, u64), Option<(Arc<DynamicBlock>, Vec2)>)>,
+    /// The Visibility States dialog, while it is open.
+    vstates: Option<VStates>,
+}
+
+/// The Visibility States dialog's state.
+#[derive(Default)]
+struct VStates {
+    /// The state selected in the list.
+    selected: String,
+    /// New or Rename asking for a name: (renaming, name typed, how a new state shows the
+    /// objects: hide, show or current).
+    form: Option<(bool, String, &'static str)>,
+    error: Option<String>,
 }
 
 /// The blocks the dialog offers: named blocks that aren't external references, sorted by name.
@@ -87,7 +107,14 @@ pub fn authoring_dialog(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) 
 
 /// BEDIT typed or from a menu without parameters opens the dialog, unless exactly one block
 /// reference is selected (it opens at once) or the Block Editor is open (BEDIT says why not).
+/// BVSTATE typed bare in the Block Editor opens the Visibility States dialog (with no visibility
+/// parameter, the command says why not).
 pub fn route(app: &mut CadApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
+    if id == "bvstate" && params.is_null() {
+        visibility_states(app)?;
+        open_visibility_states(app);
+        return Some(Ok(Value::Null));
+    }
     if !matches!(id, "bedit" | "be") || !params.is_null() {
         return None;
     }
@@ -249,5 +276,177 @@ pub fn confirm(app: &mut CadApp) -> bool {
             app.bedit.error = Some(e);
             false
         }
+    }
+}
+
+/// The dynamic block the Block Editor authors (its parameters and actions) and the editor's
+/// offset (the block's base point), worked out once per drawing revision. `None` outside the
+/// editor or for a block without dynamic data.
+pub(crate) fn authored(app: &mut CadApp) -> Option<(Arc<DynamicBlock>, Vec2)> {
+    let st = app.session.state().ok()?;
+    let key = (st.uid, st.revision);
+    if let Some((k, v)) = &app.bedit.authored
+        && *k == key
+    {
+        return v.clone();
+    }
+    // The test block window shows a reference, not the authoring.
+    let v = st.block_edit.as_ref().filter(|be| be.testing.is_none()).and_then(|be| {
+        let m = cadcraft_engine::doc::dynblock::dynamic_block(&st.doc, be.dynamic_name())?;
+        Some((Arc::new(m), be.base()))
+    });
+    app.bedit.authored = Some((key, v.clone()));
+    v
+}
+
+/// The block's visibility states and the one the Block Editor shows, when it has a visibility
+/// parameter.
+pub fn visibility_states(app: &mut CadApp) -> Option<(Vec<String>, Option<String>)> {
+    let (m, _) = authored(app)?;
+    let names: Vec<String> = m.parameters.iter().find_map(|p| match &p.kind {
+        ParameterKind::Visibility { states, .. } => Some(states.iter().map(|s| s.name.clone()).collect()),
+        _ => None,
+    })?;
+    let vstate = app.session.state().ok()?.block_edit.as_ref()?.vstate.clone();
+    let current = vstate.and_then(|v| names.iter().find(|n| n.eq_ignore_ascii_case(&v)).cloned()).or_else(|| names.first().cloned());
+    Some((names, current))
+}
+
+/// Open the Visibility States dialog on the state the editor shows.
+pub(crate) fn open_visibility_states(app: &mut CadApp) {
+    let selected = visibility_states(app).and_then(|(_, c)| c).unwrap_or_default();
+    app.bedit.vstates = Some(VStates { selected, ..VStates::default() });
+}
+
+/// The Visibility States dialog: the block's states (the one shown in bold, the first is a new
+/// reference's), Set Current, New, Rename, Delete, Move Up and Move Down; each runs `bvstate`.
+pub(crate) fn visibility_states_dialog(app: &mut CadApp, ctx: &egui::Context) {
+    if app.bedit.vstates.is_none() {
+        return;
+    }
+    let Some((names, current)) = visibility_states(app) else {
+        app.bedit.vstates = None;
+        return;
+    };
+    let t = Tokens::get();
+    let mut open = true;
+    let mut run: Option<Value> = None;
+    let mut close = false;
+    let Some(v) = app.bedit.vstates.as_mut() else { return };
+    if !names.contains(&v.selected) {
+        v.selected = current.clone().unwrap_or_default();
+    }
+    egui::Window::new(crate::tl!("Visibility States"))
+        .id(egui::Id::new("Visibility States"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(ctx.content_rect().center())
+        .show(ctx, |ui| {
+            ui.set_max_width(400.0);
+            ui.horizontal_top(|ui| {
+                egui::Frame::new().fill(t.field).stroke(Stroke::new(1.0, t.border)).corner_radius(4.0).inner_margin(4.0).show(ui, |ui| {
+                    ui.set_min_size(vec2(222.0, 200.0));
+                    egui::ScrollArea::vertical().id_salt("bvstate-list").max_height(200.0).min_scrolled_height(200.0).show(ui, |ui| {
+                        ui.set_width(222.0);
+                        ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+                            for n in &names {
+                                let text = if current.as_deref() == Some(n.as_str()) { RichText::new(n).strong() } else { RichText::new(n) };
+                                let row = ui.selectable_label(v.selected == *n, text);
+                                if row.clicked() {
+                                    v.selected = n.clone();
+                                    v.error = None;
+                                }
+                                if row.double_clicked() {
+                                    run = Some(json!({ "operation": "set", "name": n }));
+                                }
+                            }
+                        });
+                    });
+                });
+                ui.vertical(|ui| {
+                    ui.set_min_width(120.0);
+                    let sel = v.selected.clone();
+                    if ui.button(crate::tl!("Set Current")).clicked() {
+                        run = Some(json!({ "operation": "set", "name": sel }));
+                    }
+                    if ui.button(crate::tl!("New...")).clicked() {
+                        v.form = Some((false, String::new(), "current"));
+                    }
+                    if ui.button(crate::tl!("Rename...")).clicked() {
+                        v.form = Some((true, sel.clone(), "current"));
+                    }
+                    if ui.add_enabled(names.len() > 1, egui::Button::new(crate::tl!("Delete"))).clicked() {
+                        run = Some(json!({ "operation": "delete", "name": sel }));
+                    }
+                    if ui.button(crate::tl!("Move Up")).clicked() {
+                        run = Some(json!({ "operation": "up", "name": sel }));
+                    }
+                    if ui.button(crate::tl!("Move Down")).clicked() {
+                        run = Some(json!({ "operation": "down", "name": sel }));
+                    }
+                });
+            });
+            let mut cancel_form = false;
+            if let Some((renaming, name, how)) = v.form.as_mut() {
+                ui.separator();
+                ui.label(if *renaming { crate::tl!("New name") } else { crate::tl!("Visibility state name") });
+                ui.text_edit_singleline(name);
+                if !*renaming {
+                    ui.radio_value(how, "hide", crate::tl!("Hide all existing objects in new state"));
+                    ui.radio_value(how, "show", crate::tl!("Show all existing objects in new state"));
+                    ui.radio_value(how, "current", crate::tl!("Leave visibility of existing objects unchanged in new state"));
+                }
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(!name.trim().is_empty(), egui::Button::new(crate::tl!("OK"))).clicked() {
+                        run = Some(if *renaming {
+                            json!({ "operation": "rename", "name": v.selected, "newName": name.trim() })
+                        } else {
+                            json!({ "operation": "new", "name": name.trim(), "visibility": how })
+                        });
+                    }
+                    if ui.button(crate::tl!("Cancel")).clicked() {
+                        cancel_form = true;
+                    }
+                });
+            }
+            if cancel_form {
+                v.form = None;
+            }
+            if let Some(e) = &v.error {
+                ui.colored_label(t.warn, e);
+            }
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(crate::tl!("OK")).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        });
+    if let Some(p) = run {
+        let made = p.get("operation").and_then(Value::as_str).is_some_and(|o| o == "new" || o == "rename");
+        let name = p.get("newName").or_else(|| p.get("name")).and_then(Value::as_str).unwrap_or_default().to_string();
+        match app.run("bvstate", p) {
+            Ok(_) => {
+                if let Some(v) = app.bedit.vstates.as_mut() {
+                    v.error = None;
+                    if made {
+                        v.form = None;
+                        v.selected = name;
+                    }
+                }
+            }
+            Err(e) => {
+                if let Some(v) = app.bedit.vstates.as_mut() {
+                    v.error = Some(e);
+                }
+            }
+        }
+    }
+    if close || !open {
+        app.bedit.vstates = None;
     }
 }

@@ -1,7 +1,7 @@
-//! The External References palette: the drawing's xrefs with their status, type and path, and
-//! Attach, Reload, Unload, Detach, Bind, Path and Open. A thin view over the engine's XREF
-//! commands (`xref`, `-xref`, `xattach`, `xopen`): it reads the drawing and acts through
-//! [`CadApp::run`] / [`CadApp::start`].
+//! The External References palette: the drawing's xrefs and attached images with their status,
+//! type and path, and Attach, Reload, Unload, Detach, Bind, Path and Open. A thin view over the
+//! engine's XREF and IMAGE commands (`xref`, `-xref`, `xattach`, `xopen`, `imageattach`,
+//! `-image`): it reads the drawing and acts through [`CadApp::run`] / [`CadApp::start`].
 
 use egui::RichText;
 use serde_json::{Value, json};
@@ -17,7 +17,7 @@ pub fn route(app: &mut CadApp, id: &str, params: &Value) -> Option<Result<Value,
         return None;
     }
     match cadcraft_engine::cmd::resolve_alias(id).as_str() {
-        "xref" => Some(open_palette(app)),
+        "xref" | "image" => Some(open_palette(app)),
         "xattach" => {
             let picked = app.services.pick_open.as_ref().and_then(|f| f())?;
             let path = relative_to_host(app, &picked);
@@ -65,6 +65,8 @@ struct Row {
     overlay: bool,
     path: String,
     references: usize,
+    /// An attached image (an IMAGE definition), not an xref.
+    image: bool,
 }
 
 /// The xrefs of the active drawing (cached per drawing revision: counting references walks it).
@@ -106,8 +108,17 @@ fn rows(app: &CadApp, ui: &egui::Ui) -> Vec<Row> {
                 overlay: b.xref_overlay,
                 path: b.xref_path.clone().unwrap_or_default(),
                 references,
+                image: false,
             }
         })
+        .chain(cadcraft_engine::cmd::images::image_defs(d, st.path.as_deref()).into_iter().map(|i| Row {
+            name: i.name,
+            status: i.status.into(),
+            overlay: false,
+            path: i.path,
+            references: i.references,
+            image: true,
+        }))
         .collect();
     ui.data_mut(|d| d.insert_temp(id, (key, rows.clone())));
     rows
@@ -136,6 +147,9 @@ pub fn section(app: &mut CadApp, ui: &mut egui::Ui) {
         if ui.button(crate::tl!("Attach DWG...")).clicked() {
             act = Some(Act::Start("xattach"));
         }
+        if ui.button(crate::tl!("Attach Image...")).clicked() {
+            act = Some(Act::Start("imageattach"));
+        }
         if ui.add_enabled(!rows.is_empty(), egui::Button::new(crate::tl!("Reload All"))).clicked() {
             act = Some(Act::Run("-xref", json!({ "option": "reload", "names": "*" })));
         }
@@ -162,7 +176,13 @@ pub fn section(app: &mut CadApp, ui: &mut egui::Ui) {
                     }
                     let bad = matches!(r.status.as_str(), "Not Found" | "Unresolved");
                     ui.label(RichText::new(crate::i18n::t(&r.status)).color(if bad { t.warn } else { t.text }));
-                    ui.label(crate::i18n::t(if r.overlay { "Overlay" } else { "Attach" }));
+                    if r.image {
+                        // The picture's file type (PNG, JPG...).
+                        let ext = r.path.rsplit(['/', '\\']).next().and_then(|f| f.rsplit_once('.')).map(|(_, e)| e.to_ascii_uppercase());
+                        ui.label(ext.unwrap_or_default());
+                    } else {
+                        ui.label(crate::i18n::t(if r.overlay { "Overlay" } else { "Attach" }));
+                    }
                     ui.label(&r.path).on_hover_text(crate::tf!("References: {n}", n = r.references));
                     ui.end_row();
                 }
@@ -193,6 +213,9 @@ pub fn section(app: &mut CadApp, ui: &mut egui::Ui) {
 
 /// The selected xref: its actions, type and path.
 fn details(ui: &mut egui::Ui, r: &Row, path_id: egui::Id, act: &mut Option<Act>) {
+    if r.image {
+        return image_details(ui, r, path_id, act);
+    }
     let name = r.name.clone();
     let loaded = r.status == "Loaded" || r.status == "Unreferenced";
     let op = |option: &str| json!({ "option": option, "names": name });
@@ -236,6 +259,30 @@ fn details(ui: &mut egui::Ui, r: &Row, path_id: egui::Id, act: &mut Option<Act>)
             *act = Some(Act::Run("-xref", json!({ "option": "type", "names": name, "overlay": overlay })));
         }
     });
+    path_row(ui, r, path_id, act, "-xref");
+}
+
+/// The selected image: Reload, Unload, Detach and its path.
+fn image_details(ui: &mut egui::Ui, r: &Row, path_id: egui::Id, act: &mut Option<Act>) {
+    // An array names the image exactly (its name may hold commas or wildcard characters).
+    let op = |option: &str| json!({ "option": option, "names": [r.name] });
+    ui.horizontal_wrapped(|ui| {
+        ui.add_space(8.0);
+        if ui.button(crate::tl!("Reload")).clicked() {
+            *act = Some(Act::Run("-image", op("reload")));
+        }
+        if ui.add_enabled(r.status != "Unloaded", egui::Button::new(crate::tl!("Unload"))).clicked() {
+            *act = Some(Act::Run("-image", op("unload")));
+        }
+        if ui.button(crate::tl!("Detach")).clicked() {
+            *act = Some(Act::Run("-image", op("detach")));
+        }
+    });
+    path_row(ui, r, path_id, act, "-image");
+}
+
+/// The saved path of the selected xref or image, edited and applied with `cmd`'s Path option.
+fn path_row(ui: &mut egui::Ui, r: &Row, path_id: egui::Id, act: &mut Option<Act>, cmd: &'static str) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         ui.add_space(8.0);
@@ -246,7 +293,8 @@ fn details(ui: &mut egui::Ui, r: &Row, path_id: egui::Id, act: &mut Option<Act>)
         let apply = ui.add_enabled(!text.trim().is_empty() && text != r.path, egui::Button::new(crate::tl!("Apply"))).clicked()
             || (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && text != r.path);
         if apply {
-            *act = Some(Act::Run("-xref", json!({ "option": "path", "names": name, "path": text.trim() })));
+            let names = if cmd == "-image" { json!([r.name]) } else { json!(r.name) };
+            *act = Some(Act::Run(cmd, json!({ "option": "path", "names": names, "path": text.trim() })));
             ui.data_mut(|d| d.remove::<String>(path_id));
         } else if text != r.path {
             ui.data_mut(|d| d.insert_temp(path_id, text));

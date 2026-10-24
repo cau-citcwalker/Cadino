@@ -25,6 +25,9 @@ use crate::theme::Tokens;
 /// The display list of the tiles that look one way (see the module docs).
 pub(crate) struct TileList {
     look: TileLook,
+    /// The projection it is built with: the look's direction, through the tile's camera in
+    /// perspective (whose eye follows the tile's view).
+    dir: cadcraft_geom::ViewDir,
     key: ListKey,
     list: Option<DisplayList>,
     window: Option<Bounds2>,
@@ -36,6 +39,14 @@ impl super::CanvasState {
     /// tile's look draws the canvas's list).
     pub fn tile_list(&self, look: &TileLook) -> Option<&DisplayList> {
         self.tile_lists.iter().find(|l| l.look == *look).and_then(|l| l.list.as_ref())
+    }
+
+    /// The list tile `t` draws with its own (not the current tile's) and the projection it was
+    /// built with.
+    fn tile_list_of(&self, t: &ModelTile) -> Option<(&DisplayList, cadcraft_geom::ViewDir)> {
+        let proj = t.look.projection(t.view);
+        let mine = |l: &&TileList| l.look == t.look && (l.dir == proj || t.look.camera.is_none());
+        self.tile_lists.iter().find(mine).and_then(|l| l.list.as_ref().map(|list| (list, l.dir)))
     }
 
     /// Whether a tile's list is still building in the background.
@@ -64,7 +75,7 @@ pub(super) fn trade(app: &mut CadApp) {
     let fresh = |k: &ListKey| (k.0, k.1, k.6) == (st.uid, st.revision, Arc::as_ptr(&st.doc) as usize);
     let c = &mut app.canvas;
     // The canvas's list must be the one built for the look it is leaving (an orbit's builds lag).
-    let Some(was) = c.last_look.filter(|w| *w != now && c.list_dir == w.dir) else { return };
+    let Some(was) = c.last_look.filter(|w| *w != now && c.list_dir.parallel() == w.dir.parallel()) else { return };
     if c.list.is_none() || !fresh(&c.key) {
         return;
     }
@@ -75,9 +86,10 @@ pub(super) fn trade(app: &mut CadApp) {
     old.7 = style_bits(&was);
     let list = std::mem::replace(&mut c.list, tl.list.take());
     let window = std::mem::replace(&mut c.window, tl.window);
-    *tl = TileList { look: was, key: old, list, window, job: None };
+    let dir = tl.dir;
+    *tl = TileList { look: was, dir: c.list_dir, key: old, list, window, job: None };
     // A build in flight for the old look is no longer wanted (dropping it cancels it).
-    (c.key, c.list_dir, c.job, c.last_look) = (key, now.dir, None, Some(now));
+    (c.key, c.list_dir, c.job, c.last_look) = (key, dir, None, Some(now));
     c.list_gen = c.list_gen.wrapping_add(1);
 }
 
@@ -108,7 +120,7 @@ pub(super) fn click(app: &mut CadApp, ui: &egui::Ui, canvas: &egui::Response, ti
     // ponytail: right after an edit, before the tile's background rebuild lands, the click only
     // makes the tile current (the next click picks); build the list on the UI thread here, or
     // pick plan tiles without one, if that is missed.
-    Some(app.session.state().is_ok_and(|st| app.canvas.list.is_some() && app.canvas.list_dir == st.view_dir))
+    Some(app.session.state().is_ok_and(|st| app.canvas.list.is_some() && app.canvas.list_dir == st.screen_dir()))
 }
 
 /// Make sure every tile that looks another way than the current one has a list for its view:
@@ -119,25 +131,27 @@ pub(super) fn click(app: &mut CadApp, ui: &egui::Ui, canvas: &egui::Response, ti
 pub(super) fn ensure_lists(app: &mut CadApp, tiles: &[(Rect, ModelTile)], ctx: &egui::Context) {
     let Ok(st) = app.session.state() else { return };
     let current = st.look();
-    // Each look other than the current one, with the views showing it.
-    let mut looks: Vec<(TileLook, Vec<(Bounds2, f64)>)> = Vec::new();
+    // Each look other than the current one (and in perspective each camera), with the views
+    // showing it.
+    let mut looks: Vec<(TileLook, cadcraft_geom::ViewDir, Vec<(Bounds2, f64)>)> = Vec::new();
     for (r, t) in tiles.iter().filter(|(r, t)| !t.active && t.look != current && r.width() >= 1.0 && r.height() >= 1.0) {
-        let xf = tile_xf(*r, t, t.look.dir);
+        let proj = t.look.projection(t.view);
+        let xf = tile_xf(*r, t, proj);
         let v = (xf.view_bounds(), 1.0 / xf.scale);
-        match looks.iter_mut().find(|(l, _)| *l == t.look) {
-            Some((_, vs)) => vs.push(v),
-            None => looks.push((t.look, vec![v])),
+        match looks.iter_mut().find(|(l, d, _)| *l == t.look && *d == proj) {
+            Some((.., vs)) => vs.push(v),
+            None => looks.push((t.look, proj, vec![v])),
         }
     }
     let lists = &mut app.canvas.tile_lists;
-    lists.retain(|l| looks.iter().any(|(k, _)| *k == l.look));
+    lists.retain(|l| looks.iter().any(|(k, d, _)| *k == l.look && *d == l.dir));
     let (lwdisplay, transparency) = (app.session.settings.lwdisplay, app.session.settings.transparency_display);
     let band = |px: f64| px.max(1e-300).log2().floor() as i32;
-    for (look, views) in looks {
-        let tl = match lists.iter().position(|l| l.look == look) {
+    for (look, proj, views) in looks {
+        let tl = match lists.iter().position(|l| l.look == look && l.dir == proj) {
             Some(i) => lists.get_mut(i),
             None => {
-                lists.push(TileList { look, key: ListKey::default(), list: None, window: None, job: None });
+                lists.push(TileList { look, dir: proj, key: ListKey::default(), list: None, window: None, job: None });
                 lists.last_mut()
             }
         };
@@ -162,18 +176,8 @@ pub(super) fn ensure_lists(app: &mut CadApp, tiles: &[(Rect, ModelTile)], ctx: &
         // Inactive tiles draw a tessellation band coarser than the finest zoom showing them.
         let finest = views.iter().map(|v| v.1).fold(f64::INFINITY, f64::min);
         let b = band(finest).saturating_add(1);
-        let d = look.dir.dir;
-        let key: ListKey = (
-            st.uid,
-            st.revision,
-            b,
-            b,
-            lwdisplay,
-            transparency,
-            std::sync::Arc::as_ptr(&st.doc) as usize,
-            style_bits(&look),
-            [d.x.to_bits(), d.y.to_bits(), d.z.to_bits()],
-        );
+        let key: ListKey =
+            (st.uid, st.revision, b, b, lwdisplay, transparency, std::sync::Arc::as_ptr(&st.doc) as usize, style_bits(&look), super::dir_key(&proj));
         let visible = views.iter().fold(Bounds2::EMPTY, |acc, v| acc.union(&v.0));
         let inside = tl.window.is_none_or(|w| visible.is_empty() || w.contains_box(&visible));
         if (tl.list.is_some() && tl.key == key && inside) || tl.job.as_ref().is_some_and(|j| j.serves(&key, &visible)) {
@@ -187,7 +191,7 @@ pub(super) fn ensure_lists(app: &mut CadApp, tiles: &[(Rect, ModelTile)], ctx: &
             lineweights: lwdisplay,
             view: build_window(&views),
             transparency,
-            view_dir: look.dir,
+            view_dir: proj,
             ..cadcraft_render::Options::look(look.shaded, look.edges, false)
         };
         // Dropping a job for an older key cancels it.
@@ -206,10 +210,14 @@ pub(super) fn ensure_lists(app: &mut CadApp, tiles: &[(Rect, ModelTile)], ctx: &
 /// The list and view direction tile `t` draws with: the canvas's for the current tile's look,
 /// else its own (none until its first build lands).
 pub(super) fn list_for<'a>(app: &'a CadApp, t: &ModelTile) -> (Option<&'a DisplayList>, cadcraft_geom::ViewDir) {
-    if app.session.state().is_ok_and(|st| st.look() == t.look) {
+    // A perspective tile shares the canvas's list only through the same camera.
+    if app.session.state().is_ok_and(|st| st.look() == t.look && (t.look.camera.is_none() || t.look.projection(t.view) == app.canvas.list_dir)) {
         (app.canvas.list.as_ref(), app.canvas.list_dir)
     } else {
-        (app.canvas.tile_list(&t.look), t.look.dir)
+        match app.canvas.tile_list_of(t) {
+            Some((list, dir)) => (Some(list), dir),
+            None => (None, t.look.projection(t.view)),
+        }
     }
 }
 
@@ -237,8 +245,8 @@ pub(super) fn right_drag(app: &mut CadApp, ui: &egui::Ui, canvas: &egui::Respons
         }
         let other = tiles.iter().position(|(r, t)| !t.active && r.contains(from));
         let dir = match other.and_then(|i| tiles.get(i)) {
-            Some((_, t)) => Some(t.look.dir),
-            None if rect.contains(from) => app.session.state().ok().filter(|st| st.space == Space::Model).map(|st| st.view_dir),
+            Some((_, t)) => Some(t.look.projection(t.view)),
+            None if rect.contains(from) => app.session.state().ok().filter(|st| st.space == Space::Model).map(|st| st.screen_dir()),
             None => None,
         };
         if dir.is_none_or(|d| d.is_plan()) || app.session.layout_space() != Space::Model {
@@ -300,9 +308,10 @@ fn style_label(l: &TileLook) -> &'static str {
     }
 }
 
-/// The title text of a tile looking `l`'s way.
+/// The title text of a tile looking `l`'s way: a perspective view is Perspective, as in Rhino.
 pub(super) fn title_text(l: &TileLook) -> String {
-    format!("+  |  {}  |  {}", crate::viewcube::view_name(l.dir), style_label(l))
+    let name = if l.camera.is_some() { crate::tl!("Perspective") } else { crate::viewcube::view_name(l.dir) };
+    format!("+  |  {}  |  {}", name, style_label(l))
 }
 
 /// Where the title of the tile drawn in `r` sits.
@@ -364,6 +373,14 @@ pub(super) fn title(app: &mut CadApp, ui: &egui::Ui, r: Rect, tile: Option<(usiz
         for (label, style, on) in styles {
             if ui.radio(on, label).clicked() {
                 chosen = Some(("vscurrent", json!({ "style": style })));
+            }
+        }
+        ui.separator();
+        // Rhino's projections: PERSPECTIVE 0 or 1.
+        let persp = look.camera.is_some();
+        for (label, on, value) in [(crate::tl!("Parallel"), !persp, 0), (crate::tl!("Perspective"), persp, 1)] {
+            if ui.radio(on, label).clicked() {
+                chosen = Some(("setvar", json!({ "name": "PERSPECTIVE", "value": value })));
             }
         }
         ui.separator();

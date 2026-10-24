@@ -709,6 +709,7 @@ dependencies = [
  "cadcraft-io",
  "cadcraft-kernel",
  "cadcraft-render",
+ "image",
  "log",
  "rstar",
  "serde",

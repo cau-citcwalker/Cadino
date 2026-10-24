@@ -182,8 +182,10 @@ fn corners(d: &Drawing, e: &Entity) -> Vec<Vec3> {
 }
 
 /// World vector `v` on screen (one unit: one point).
+/// ponytail: in perspective, as the parallel view shows it (the same everywhere on screen); take
+/// it at the gumball's centre if its handles feel off in wide-angle views.
 fn screen_dir(xf: &Xf, v: Vec3) -> egui::Vec2 {
-    let p = xf.dir().project(v);
+    let p = xf.dir().parallel().project(v);
     vec2(p.x as f32, -p.y as f32)
 }
 

@@ -564,3 +564,75 @@ fn space_names_its_tab() {
     assert_eq!(p.layout(), Some("Sheet A"));
     assert_eq!(p.tab_name(), "Sheet A");
 }
+
+fn plain_dim(kind: DimKind) -> Dimension {
+    Dimension {
+        kind,
+        defpt: Vec3::ZERO,
+        text_mid: Vec3::ZERO,
+        p13: Vec3::new(3.0, 1.0, 0.0),
+        p14: Vec3::new(3.0, 4.0, 0.0),
+        p15: Vec3::ZERO,
+        p16: Vec3::ZERO,
+        text: String::new(),
+        style: "Standard".into(),
+        measurement: 0.0,
+        text_rotation: 0.0,
+        user_text_pos: false,
+        block: None,
+        overrides: Default::default(),
+        assoc: vec![],
+        marks: Default::default(),
+    }
+}
+
+fn near_angle(a: f64, b: f64) -> bool {
+    let d = (a - b).rem_euclid(std::f64::consts::TAU);
+    d < 1e-9 || std::f64::consts::TAU - d < 1e-9
+}
+
+/// MIRROR maps a direction at `a` to `2θ - a` (θ the mirror line's angle): oblique extension
+/// lines are geometry and mirror with the dimension (MIRRTEXT only keeps text readable), as a
+/// block reference's rotation does.
+#[test]
+fn mirrored_oblique_extension_lines_follow_the_mirror_line() {
+    let mut d = plain_dim(DimKind::Aligned);
+    d.marks.oblique = Some(30f64.to_radians());
+    let mut k = EntityKind::Dimension(d);
+    // About the 45° line: 30° goes to 60°.
+    k.transform(&Mat3::mirror(Vec2::ZERO, Vec2::new(1.0, 1.0)));
+    let EntityKind::Dimension(d) = &k else { panic!() };
+    assert!(near_angle(d.marks.oblique.unwrap(), 60f64.to_radians()), "{:?}", d.marks.oblique.map(f64::to_degrees));
+    // A block reference turned 30° goes the same way.
+    let mut ins = EntityKind::Insert(Insert {
+        block: "B".into(),
+        insert: Vec3::ZERO,
+        scale: Vec3::new(1.0, 1.0, 1.0),
+        rotation: 30f64.to_radians(),
+        attribs: vec![],
+        cols: 1,
+        rows: 1,
+        col_spacing: 0.0,
+        row_spacing: 0.0,
+    });
+    ins.transform(&Mat3::mirror(Vec2::ZERO, Vec2::new(1.0, 1.0)));
+    let EntityKind::Insert(i) = &ins else { panic!() };
+    assert!(near_angle(i.rotation, 60f64.to_radians()), "{}", i.rotation.to_degrees());
+}
+
+/// An ordinate dimension made in World (no stored axis) keeps measuring along the axis it was
+/// made with when it is rotated or mirrored; a move leaves it without one.
+#[test]
+fn a_turned_world_ordinate_dimension_keeps_its_axis() {
+    let mut k = EntityKind::Dimension(plain_dim(DimKind::Ordinate { x_type: true }));
+    k.transform(&Mat3::translate(Vec2::new(5.0, 1.0)));
+    let EntityKind::Dimension(d) = &k else { panic!() };
+    assert_eq!(d.marks.horizontal, None);
+    k.transform(&Mat3::rotate(90f64.to_radians()));
+    let EntityKind::Dimension(d) = &k else { panic!() };
+    assert!(near_angle(d.marks.horizontal.unwrap(), 90f64.to_radians()), "{:?}", d.marks.horizontal);
+    let mut m = EntityKind::Dimension(plain_dim(DimKind::Ordinate { x_type: false }));
+    m.transform(&Mat3::mirror(Vec2::ZERO, Vec2::new(1.0, 1.0)));
+    let EntityKind::Dimension(d) = &m else { panic!() };
+    assert!(near_angle(d.marks.horizontal.unwrap(), 90f64.to_radians()), "{:?}", d.marks.horizontal);
+}

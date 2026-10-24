@@ -679,7 +679,10 @@ fn acad_table(tags: &[Tag]) -> Table {
         // Their text height is resolved to the table style's once the styles are read (`apply`).
         None => (cols > 1 && cells.first().and_then(|r| r.first()).and_then(|c| c.merged) == Some((1, cols as u32)), false, 0.0, "Standard".into()),
     };
-    let mut t = Table { insert: T(tags).p(10), col_widths, row_heights, cells, style, text_height, title, header, ..Table::default() };
+    // Group 11, the horizontal direction (inside AcDbTable: the block reference has none).
+    let d = head.p(11).xy().normalized();
+    let direction = if d == Vec2::ZERO { Vec3::X } else { d.to3(0.0) };
+    let mut t = Table { insert: T(tags).p(10), direction, col_widths, row_heights, cells, style, text_height, title, header, ..Table::default() };
     crate::dxf_table::read_table_xdata(tags, &mut t);
     t
 }
@@ -1632,7 +1635,7 @@ fn tables(tags: &[Tag], d: &mut Drawing, rx: &mut Rx) {
     }
     // One *Active viewport is no tiling: the view is the editor's (it zooms to the extents),
     // unless it looks along a direction or in a style of its own (kept for the editor to show).
-    let own_look = |t: &VportTile| t.shaded || t.edges || !matches!(t.view_dir, [x, y, z] if x == 0.0 && y == 0.0 && z > 0.0);
+    let own_look = |t: &VportTile| t.shaded || t.edges || t.camera.is_some() || !matches!(t.view_dir, [x, y, z] if x == 0.0 && y == 0.0 && z > 0.0);
     d.vports.retain(|c| c.tiles.len() > usize::from(c.is_active()) || c.tiles.first().is_some_and(own_look));
 }
 
@@ -1685,7 +1688,16 @@ fn vport_record(d: &mut Drawing, t: &T) {
     // 2 is hidden line: unshaded with edges here (the Hidden style).
     let (shaded, edges) = (matches!(mode, 3..=6), matches!(mode, 2 | 5 | 6));
     let (ucs, cplane) = if cplane_marked(t) { (Mat4::IDENTITY, vport_ucs(t)) } else { (vport_ucs(t), Mat4::IDENTITY) };
-    let tile = VportTile { min: clamp(min), max: clamp(max), center, height, aspect, view_dir, shaded, edges, cplane, ucs };
+    // VIEWMODE (71) bit 1: a perspective view through a lens of 42 mm, its camera as far from the
+    // target (17) as the direction (16) is long; the view's height follows from those two.
+    let persp = t.i(71).unwrap_or(0) & 1 != 0;
+    let camera =
+        persp.then(|| cadcraft_geom::Camera::new(t.f(42).filter(|l| *l > 0.0).unwrap_or(cadcraft_geom::Camera::LENS), ViewDir::new(v).depth(target)));
+    let height = match camera.map(|c| c.height_at(v.len())) {
+        Some(h) if h.is_finite() && h > 0.0 => h,
+        _ => height,
+    };
+    let tile = VportTile { min: clamp(min), max: clamp(max), center, height, aspect, view_dir, shaded, edges, cplane, ucs, camera };
     let name = if name.eq_ignore_ascii_case(VportConfig::ACTIVE) { VportConfig::ACTIVE.to_string() } else { name };
     let room = d.vports.len() < MAX_OBJECTS;
     match d.vports.iter_mut().find(|c| c.name.eq_ignore_ascii_case(&name)) {

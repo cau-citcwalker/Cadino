@@ -399,8 +399,8 @@ fn run_recalc(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The table and cell (row, col) under `p` (a construction plane point) in the current space.
 fn cell_under(s: &Session, p: Vec2) -> Option<(Handle, usize, usize)> {
-    // Tables stay level and square to world X, so a level plane's point is looked up in the world
-    // (the plane's view of a table turns its corner but not its grid); a tilted plane sees none.
+    // Tables stay level, so a level plane's point is looked up in the world (where each table's
+    // grid runs along its own direction); a tilted plane sees none.
     let c = s.cplane();
     let (p, d) = if crate::cplane::tilted(&c) { (p, s.pick_doc().ok()?) } else { (crate::cplane::plane_to_plan(&c, p), s.state().ok()?.doc.clone()) };
     let space = d.space(&s.space())?;

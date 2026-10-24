@@ -1,12 +1,14 @@
-//! Dynamic blocks made in another program, read from the data CADCraft keeps for them.
+//! Dynamic blocks: their parameters and actions, read from the data kept for them and written by
+//! the Block Editor's authoring commands ([`author`]).
 //!
-//! A dynamic block's behaviour lives in objects CADCraft does not write itself and keeps as
-//! [`Foreign`](crate::foreign::Foreign) data: the block's BLOCK_RECORD has an extension dictionary
+//! A dynamic block's behaviour lives in objects kept as [`Foreign`](crate::foreign::Foreign)
+//! data, as a file has them: the block's BLOCK_RECORD has an extension dictionary
 //! whose `ACAD_ENHANCEDBLOCK` entry is an evaluation graph (`ACAD_EVALUATION_GRAPH`), and the
 //! graph lists the block's *parameters* (a distance, a point, visibility states, a lookup…) and
 //! *actions* (what changing a parameter does to the block's objects: stretch, move, look up…).
 //! [`dynamic_block`] reads them into the model below without changing the kept data, so a drawing
-//! saved again still carries them exactly as read.
+//! saved again still carries them exactly as read. Authoring writes objects of the same layout
+//! (see [`author`]), so the reader, the references' runtime and the file round trip are shared.
 //!
 //! Every count and index here comes from the file: they are capped by the data actually present
 //! and unknown or damaged objects are skipped, never trusted.
@@ -20,6 +22,7 @@ use crate::foreign::ForeignObject;
 use crate::{Drawing, Handle, RawTag};
 
 mod apply;
+pub mod author;
 mod grips;
 mod reference;
 pub use apply::{drag_grip, set_property};
@@ -66,6 +69,8 @@ pub struct Parameter {
     pub element: String,
     /// The parameter's properties appear in a reference's Properties palette.
     pub show_properties: bool,
+    /// Chain Actions: its actions also run when another action moves it.
+    pub chain: bool,
     pub kind: ParameterKind,
     /// Graph ids of its grips: a two-point parameter's base and end grips (0 for none), a
     /// one-point parameter's grip. A reference's history records grip drags by these.
@@ -87,16 +92,20 @@ pub enum ParameterKind {
         /// The value changes the end point (`false`) or both points from the midpoint (`true`).
         from_midpoint: bool,
     },
-    /// A distance and an angle from a base point.
-    Polar { base: Vec3, end: Vec3 },
-    /// Horizontal and vertical distances from a base point.
-    Xy { base: Vec3, end: Vec3 },
-    /// An angle about a base point.
-    Rotation { base: Vec3, end: Vec3 },
+    /// A distance (`label`, `values`) and an angle (`label2`, `values2`, radians) from a base
+    /// point.
+    Polar { base: Vec3, end: Vec3, label: String, description: String, label2: String, description2: String, values: ValueSet, values2: ValueSet },
+    /// Horizontal (`label`, `values`) and vertical (`label2`, `values2`) distances from a base
+    /// point.
+    Xy { base: Vec3, end: Vec3, label: String, description: String, label2: String, description2: String, values: ValueSet, values2: ValueSet },
+    /// An angle about a base point: the end point is at the radius, at the default angle; the
+    /// value shown is measured from `base_angle` (radians, as `values`).
+    Rotation { base: Vec3, end: Vec3, label: String, description: String, base_angle: f64, values: ValueSet },
     /// Aligns the reference with nearby geometry.
-    Alignment { base: Vec3, end: Vec3 },
-    /// Mirrors the objects about a reflection line.
-    Flip { base: Vec3, end: Vec3 },
+    Alignment { base: Vec3, end: Vec3, perpendicular: bool },
+    /// Mirrors the objects about a reflection line; `states` are the names of its two states (not
+    /// flipped, flipped).
+    Flip { base: Vec3, end: Vec3, label: String, description: String, label_at: Vec3, states: [String; 2] },
     /// A position (Position1).
     Point { at: Vec3, label: String, description: String },
     /// Named sets of visible objects.
@@ -123,8 +132,37 @@ impl ParameterKind {
             ParameterKind::Linear { label, .. }
             | ParameterKind::Point { label, .. }
             | ParameterKind::Visibility { label, .. }
-            | ParameterKind::Lookup { label, .. } => Some(label),
+            | ParameterKind::Lookup { label, .. }
+            | ParameterKind::Polar { label, .. }
+            | ParameterKind::Xy { label, .. }
+            | ParameterKind::Rotation { label, .. }
+            | ParameterKind::Flip { label, .. } => Some(label),
             _ => None,
+        }
+    }
+    /// Every property name it gives a reference: a polar parameter's angle and an XY
+    /// parameter's vertical distance besides [`ParameterKind::label`].
+    pub fn labels(&self) -> Vec<&str> {
+        match self {
+            ParameterKind::Polar { label, label2, .. } | ParameterKind::Xy { label, label2, .. } => vec![label, label2],
+            k => k.label().into_iter().collect(),
+        }
+    }
+    /// Its definition points: a two-point parameter's base and end, a one-point parameter's
+    /// point twice.
+    pub fn points(&self) -> Option<(Vec3, Vec3)> {
+        match self {
+            ParameterKind::Linear { base, end, .. }
+            | ParameterKind::Polar { base, end, .. }
+            | ParameterKind::Xy { base, end, .. }
+            | ParameterKind::Rotation { base, end, .. }
+            | ParameterKind::Alignment { base, end, .. }
+            | ParameterKind::Flip { base, end, .. } => Some((*base, *end)),
+            ParameterKind::Point { at, .. }
+            | ParameterKind::Visibility { at, .. }
+            | ParameterKind::Lookup { at, .. }
+            | ParameterKind::BasePoint { at } => Some((*at, *at)),
+            ParameterKind::Other { .. } => None,
         }
     }
 }
@@ -203,24 +241,31 @@ pub enum ActionKind {
         angle_offset: f64,
     },
     /// A table: each row sets the listed parameter values together.
-    Lookup {
-        columns: Vec<LookupColumn>,
-        rows: Vec<Vec<String>>,
-    },
+    Lookup { columns: Vec<LookupColumn>, rows: Vec<Vec<String>> },
     /// Moves the objects by the change of the parameter values it follows.
-    Move {
-        multiplier: f64,
-        angle_offset: f64,
-    },
-    Scale,
-    Rotate,
+    Move { multiplier: f64, angle_offset: f64 },
+    /// Scales the objects by the change of a distance, about the parameter's base point or an
+    /// independent `base`.
+    Scale { base: Option<Vec3> },
+    /// Rotates the objects by the change of an angle, about the parameter's base point or an
+    /// independent `base`.
+    Rotate { base: Option<Vec3> },
+    /// Mirrors the objects about the flip parameter's reflection line when its state changes.
     Flip,
-    Array,
-    PolarStretch,
-    /// An action type not modelled yet.
-    Other {
-        dxf_type: String,
+    /// Copies the objects along the parameter's distance, `column` apart (and `row` apart
+    /// across, for an XY parameter).
+    Array { column: f64, row: f64 },
+    /// Moves the vertices inside `frame` with the polar parameter's end point (rotating them
+    /// about its base) and rotates the objects of `rotate`.
+    PolarStretch {
+        frame: Vec<Vec2>,
+        #[serde(serialize_with = "hex_vertices")]
+        vertices: Vec<(Handle, Vec<i32>)>,
+        #[serde(serialize_with = "hexes")]
+        rotate: Vec<Handle>,
     },
+    /// An action type not modelled yet.
+    Other { dxf_type: String },
 }
 
 /// A lookup table column: the parameter value it reads or sets.
@@ -349,9 +394,11 @@ pub fn dynamic_block(d: &Drawing, name: &str) -> Option<DynamicBlock> {
         let element = Cursor::new(section(&secs, "AcDbBlockElement")).string(300);
         let kind = o.kind.to_ascii_uppercase();
         if kind.ends_with("PARAMETER") {
-            let show_properties = Cursor::new(section(&secs, "AcDbBlockParameter")).int(280) != 0;
+            let mut c = Cursor::new(section(&secs, "AcDbBlockParameter"));
+            let show_properties = c.int(280) != 0;
+            let chain = c.int(281) != 0;
             let grips = grip_ids(&secs);
-            out.parameters.push(Parameter { node, handle: o.handle, element, show_properties, kind: parameter(&kind, &secs), grips });
+            out.parameters.push(Parameter { node, handle: o.handle, element, show_properties, chain, kind: parameter(&kind, &secs), grips });
         } else if kind.ends_with("ACTION") {
             out.actions.push(action(o.handle, node, element, &kind, &secs));
         } else {
@@ -393,7 +440,7 @@ fn parameter(kind: &str, secs: &[(&str, &[RawTag])]) -> ParameterKind {
             let label = c.string(305);
             let description = c.string(306);
             let from_midpoint = Cursor::new(section(secs, "AcDbBlock2PtParameter")).int(177) == 1;
-            ParameterKind::Linear { base, end, label, description, values: value_set(&mut c), from_midpoint }
+            ParameterKind::Linear { base, end, label, description, values: value_set(&mut c, SET1), from_midpoint }
         }
         "BLOCKPOINTPARAMETER" => {
             let mut c = Cursor::new(section(secs, "AcDbBlockPointParameter"));
@@ -405,28 +452,67 @@ fn parameter(kind: &str, secs: &[(&str, &[RawTag])]) -> ParameterKind {
             ParameterKind::Lookup { at: one(), label: c.string(303), description: c.string(304) }
         }
         "BLOCKBASEPOINTPARAMETER" => ParameterKind::BasePoint { at: one() },
-        "BLOCKPOLARPARAMETER" | "BLOCKXYPARAMETER" | "BLOCKROTATIONPARAMETER" | "BLOCKALIGNMENTPARAMETER" | "BLOCKFLIPPARAMETER" => {
+        "BLOCKPOLARPARAMETER" | "BLOCKXYPARAMETER" => {
             let (base, end) = two();
-            match kind {
-                "BLOCKPOLARPARAMETER" => ParameterKind::Polar { base, end },
-                "BLOCKXYPARAMETER" => ParameterKind::Xy { base, end },
-                "BLOCKROTATIONPARAMETER" => ParameterKind::Rotation { base, end },
-                "BLOCKALIGNMENTPARAMETER" => ParameterKind::Alignment { base, end },
-                _ => ParameterKind::Flip { base, end },
+            let polar = kind == "BLOCKPOLARPARAMETER";
+            let mut c = Cursor::new(section(secs, if polar { "AcDbBlockPolarParameter" } else { "AcDbBlockXYParameter" }));
+            let (label, description, label2, description2) = (c.string(305), c.string(306), c.string(308), c.string(309));
+            let values = value_set(&mut c, SET1);
+            let values2 = value_set(&mut c, SET2);
+            if polar {
+                ParameterKind::Polar { base, end, label, description, label2, description2, values, values2 }
+            } else {
+                ParameterKind::Xy { base, end, label, description, label2, description2, values, values2 }
             }
+        }
+        "BLOCKROTATIONPARAMETER" => {
+            let (base, end) = two();
+            let mut c = Cursor::new(section(secs, "AcDbBlockRotationParameter"));
+            let (label, description, base_angle) = (c.string(305), c.string(306), c.real(140));
+            ParameterKind::Rotation { base, end, label, description, base_angle, values: value_set(&mut c, SET1) }
+        }
+        "BLOCKALIGNMENTPARAMETER" => {
+            let (base, end) = two();
+            ParameterKind::Alignment { base, end, perpendicular: Cursor::new(section(secs, "AcDbBlockAlignmentParameter")).int(280) != 0 }
+        }
+        "BLOCKFLIPPARAMETER" => {
+            let (base, end) = two();
+            let mut c = Cursor::new(section(secs, "AcDbBlockFlipParameter"));
+            let (label, description) = (c.string(305), c.string(306));
+            let states = [c.string(307), c.string(308)];
+            ParameterKind::Flip { base, end, label, description, label_at: c.point(1012), states }
         }
         other => ParameterKind::Other { dxf_type: other.to_string() },
     }
 }
 
-/// A value set after a parameter's name and description: description (307), flags (96),
-/// minimum, maximum and increment (141–143), then the listed values (175 count, 144 each).
-fn value_set(c: &mut Cursor) -> ValueSet {
-    c.next(307);
-    let flags = c.int(96);
-    let (minimum, maximum, increment) = (c.real(141), c.real(142), c.real(143));
-    let n = c.count(175);
-    let list = (0..n).filter_map(|_| c.next(144).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite())).collect();
+/// The group codes of a value set: description, flags, minimum, maximum, increment, the count of
+/// listed values and each listed value.
+#[derive(Clone, Copy)]
+pub(crate) struct SetCodes {
+    pub description: i32,
+    pub flags: i32,
+    pub limits: [i32; 3],
+    pub count: i32,
+    pub value: i32,
+}
+
+/// A parameter's (first) value set: description (307), flags (96), minimum, maximum and increment
+/// (141–143), then the listed values (175 count, 144 each).
+pub(crate) const SET1: SetCodes = SetCodes { description: 307, flags: 96, limits: [141, 142, 143], count: 175, value: 144 };
+/// A polar parameter's angle set, an XY parameter's vertical set.
+// ponytail: our own codes for the second set (the DXF Reference doesn't document them); AutoCAD's
+// files keep theirs raw.
+pub(crate) const SET2: SetCodes = SetCodes { description: 410, flags: 97, limits: [145, 146, 147], count: 176, value: 148 };
+
+/// A value set after a parameter's name and description, with codes `k`.
+fn value_set(c: &mut Cursor, k: SetCodes) -> ValueSet {
+    c.next(k.description);
+    let flags = c.int(k.flags);
+    let [a, b, i] = k.limits;
+    let (minimum, maximum, increment) = (c.real(a), c.real(b), c.real(i));
+    let n = c.count(k.count);
+    let list = (0..n).filter_map(|_| c.next(k.value).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite())).collect();
     ValueSet { flags, minimum, maximum, increment, list }
 }
 
@@ -466,11 +552,32 @@ fn action(handle: Handle, node: i32, name: String, kind: &str, secs: &[(&str, &[
             let (multiplier, angle_offset) = (c.real(140), c.real(141));
             (two_connections(tags), ActionKind::Move { multiplier, angle_offset })
         }
-        "BLOCKSCALEACTION" => (Vec::new(), ActionKind::Scale),
-        "BLOCKROTATEACTION" => (Vec::new(), ActionKind::Rotate),
-        "BLOCKFLIPACTION" => (Vec::new(), ActionKind::Flip),
-        "BLOCKARRAYACTION" => (Vec::new(), ActionKind::Array),
-        "BLOCKPOLARSTRETCHACTION" => (Vec::new(), ActionKind::PolarStretch),
+        "BLOCKSCALEACTION" | "BLOCKROTATEACTION" => {
+            let scale = kind == "BLOCKSCALEACTION";
+            let tags = section(secs, if scale { "AcDbBlockScaleAction" } else { "AcDbBlockRotateAction" });
+            let mut c = Cursor::new(tags);
+            let base = (c.int(280) != 0).then(|| c.point(1011));
+            (two_connections(tags), if scale { ActionKind::Scale { base } } else { ActionKind::Rotate { base } })
+        }
+        "BLOCKFLIPACTION" => (two_connections(section(secs, "AcDbBlockFlipAction")), ActionKind::Flip),
+        "BLOCKARRAYACTION" => {
+            let tags = section(secs, "AcDbBlockArrayAction");
+            let mut c = Cursor::new(tags);
+            let (column, row) = (c.real(140), c.real(141));
+            (two_connections(tags), ActionKind::Array { column, row })
+        }
+        "BLOCKPOLARSTRETCHACTION" => {
+            let (connections, s) = stretch(section(secs, "AcDbBlockPolarStretchAction"));
+            match s {
+                ActionKind::Stretch { frame, vertices, .. } => {
+                    let mut c = Cursor::new(section(secs, "AcDbBlockPolarStretchAction"));
+                    c.next(73);
+                    let n = c.count(75);
+                    (connections, ActionKind::PolarStretch { frame, vertices, rotate: c.handles(332, n) })
+                }
+                other => (connections, other),
+            }
+        }
         other => (Vec::new(), ActionKind::Other { dxf_type: other.to_string() }),
     };
     Action { node, handle, name, at, selection, connections, kind }

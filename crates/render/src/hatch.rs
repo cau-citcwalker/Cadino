@@ -46,8 +46,9 @@ pub(super) fn draw(b: &mut Builder, ctx: &Ctx, e: &Entity, h: &Hatch, rgb: Ink, 
     {
         b.tris(ctx, ink(bg, layer_color, ctx.block_color), &fill::triangulate_evenodd(&loops));
     }
-    // The area being looked at, in the hatch's units.
-    let view = b.opts.view.and_then(|v| {
+    // The area being looked at, in the hatch's units (a perspective view sees more of the
+    // pattern than the view's own plane: all of it then).
+    let view = b.opts.view.filter(|_| b.opts.view_dir.persp.is_none()).and_then(|v| {
         let inv = ctx.xf.inverse()?;
         Some(Bounds2::from_points(v.corners().iter().map(|p| inv.apply(*p))))
     });

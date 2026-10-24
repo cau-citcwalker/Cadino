@@ -495,7 +495,8 @@ pub fn handle(app: &mut CadApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
                 None => None,
             };
             let space = if named.is_some() { cadcraft_doc::Space::Model } else { st.space.clone() };
-            let view_dir = named.unwrap_or(if st.space == cadcraft_doc::Space::Model { st.view_dir } else { cadcraft_geom::ViewDir::PLAN });
+            // The current view: through its camera in perspective.
+            let view_dir = named.unwrap_or_else(|| st.screen_dir());
             let opts = cadcraft_render::Options {
                 view: window,
                 transparency: app.session.settings.transparency_display,

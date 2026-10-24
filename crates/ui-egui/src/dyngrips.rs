@@ -1,7 +1,8 @@
 //! Dynamic block grips on the canvas, as AutoCAD shows them on a selected dynamic block
 //! reference: an arrow at a distance's end (drag it to change the distance), a square at a
-//! position (drag it to move it) and a down-pointing triangle for a list (click it for the
-//! visibility states or lookup values). Dragging runs the engine's dynamic grip edit
+//! position or a polar or XY parameter's end (drag it to move it), a circle for an angle (drag
+//! it round), a double arrow for a flip (click it to flip) and a down-pointing triangle for a
+//! list (click it for the visibility states or lookup values). Dragging runs the engine's dynamic grip edit
 //! ([`cadcraft_engine::Session::start_dyn_grip`]); a list choice runs `blocks.reference.set`.
 //! Grips sit where they are in the world (on the reference's plane), whatever the construction
 //! plane.
@@ -88,6 +89,18 @@ fn outline(xf: &Xf, g: &DynGrip, z: f64, gs: f32) -> Vec<Pos2> {
             let w = gs * 1.3;
             vec![c + vec2(-w, -w * 0.6), c + vec2(w, -w * 0.6), c + vec2(0.0, w * 0.9)]
         }
+        GripShape::Rotation => {
+            let r = gs * 1.15;
+            (0..12).map(|i| c + egui::Vec2::angled(i as f32 * std::f32::consts::TAU / 12.0) * r).collect()
+        }
+        GripShape::Flip => {
+            // A double arrow across the reflection line, pointed both ways.
+            let ahead = spot(xf, g.at + g.dir, z) - c;
+            let u = if ahead.length() > 1e-6 { ahead / ahead.length() } else { vec2(0.0, 1.0) };
+            let n = vec2(-u.y, u.x);
+            let (len, half) = (gs * 1.8, gs * 0.8);
+            vec![c + u * len, c + n * half, c - u * len, c - n * half]
+        }
     }
 }
 
@@ -128,11 +141,27 @@ pub(crate) fn at(app: &mut CadApp, xf: &Xf, hover: Option<Pos2>) -> Option<(Hand
     of_selection(app).iter().find(|(_, g, z)| hit(xf, g, *z, gs, p)).map(|(h, g, _)| (*h, g.clone()))
 }
 
-/// A click on dynamic grip `g` of reference `h`: drag it, or open its list.
+/// A click on dynamic grip `g` of reference `h`: drag it, open its list, or flip.
 pub(crate) fn click(app: &mut CadApp, (h, g): (Handle, DynGrip)) {
     if g.shape == GripShape::List {
         app.canvas.dyn_menu = Some((h, g));
         app.canvas.dyn_menu_fresh = true;
+        return;
+    }
+    if g.shape == GripShape::Flip {
+        // The other of its two states (one undo step).
+        let current = app
+            .session
+            .state()
+            .ok()
+            .and_then(|st| cadcraft_engine::doc::dynblock::custom_properties(&st.doc, h))
+            .and_then(|(_, ps)| ps.into_iter().find(|p| p.name.eq_ignore_ascii_case(&g.property)))
+            .map(|p| p.value)
+            .unwrap_or_default();
+        let next = g.choices.iter().find(|c| !c.eq_ignore_ascii_case(&current)).cloned().unwrap_or_default();
+        if let Err(e) = app.run("blocks.reference.set", json!({ "handle": h.hex(), "name": g.property, "value": next })) {
+            app.session.echo(e);
+        }
         return;
     }
     // The drag takes the construction plane's points (a tilted plane refuses it, the drawing

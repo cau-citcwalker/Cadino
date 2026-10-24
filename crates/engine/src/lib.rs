@@ -41,6 +41,7 @@ use serde_json::Value;
 
 pub use cadcraft_doc as doc;
 pub use cadcraft_geom as geom;
+pub use cadcraft_kernel as kernel;
 pub use cadcraft_render as render;
 pub use cmd::hatch::{HatchPicks, PatternChoice, PickMode, pattern_choices};
 pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command, orbit};
@@ -134,13 +135,24 @@ pub struct LeftTiles {
     pub maximized: Option<(Vec<cadcraft_doc::VportTile>, Vec<TileLook>, usize)>,
 }
 
-/// How a model tile shows the model: its view direction and visual style (VSCURRENT).
+/// How a model tile shows the model: its view direction, visual style (VSCURRENT) and, for a
+/// perspective view, its camera.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TileLook {
     pub dir: ViewDir,
     pub shaded: bool,
     /// Shaded with edges.
     pub edges: bool,
+    /// PERSPECTIVE 1: the lens and target depth (see [`DocState::camera`]).
+    pub camera: Option<cadcraft_geom::Camera>,
+}
+
+impl TileLook {
+    /// The projection a tile with this look shows `view` with: its direction, through its camera
+    /// in perspective ([`ViewDir::with_camera`]).
+    pub fn projection(&self, view: View) -> ViewDir {
+        self.dir.with_camera(self.camera, view.center, view.height)
+    }
 }
 
 /// One tile of the model space drawing area, for the UI ([`Session::model_tiles`]): its corners
@@ -197,7 +209,8 @@ pub struct DocState {
     /// VPMAX: the layout viewport maximized for editing and the views VPMIN restores.
     pub vpmax: Option<VpMax>,
     pub views: Vec<(Space, View)>,
-    /// Views for ZOOM Previous, with the model space view direction each was seen along.
+    /// Views for ZOOM Previous, with the model space projection each was seen with (its camera
+    /// in perspective).
     pub view_history: Vec<(View, ViewDir)>,
     pub uid: u64,
     /// The drawing is saved as binary DXF (it was opened from one, or last saved as one).
@@ -218,6 +231,12 @@ pub struct DocState {
     /// HIDE: the view shows hidden lines removed (as the Hidden style) until the next REGEN or
     /// visual style change.
     pub hide: bool,
+    /// PERSPECTIVE 1 (DVIEW Distance, Rhino's Perspective view): model space is seen through a
+    /// camera with this lens on the line of sight through the view's centre, whose target plane
+    /// is at this depth along [`Self::view_dir`]; the view's height sets how far away the eye is
+    /// ([`cadcraft_geom::Camera::focal`]). `None`: parallel projection. [`Self::view_dir`] stays
+    /// the direction alone; [`Self::screen_dir`] is the projection.
+    pub camera: Option<cadcraft_geom::Camera>,
     /// The model's 3D centre orbits pivot about, for the revision it was measured at (orbiting
     /// calls for it every frame of a drag).
     pub orbit_center: Option<(u64, cadcraft_geom::Vec3)>,
@@ -258,6 +277,7 @@ impl DocState {
             shaded: false,
             shaded_edges: false,
             hide: false,
+            camera: None,
             orbit_center: None,
             orbit_target: None,
             oops: Vec::new(),
@@ -265,15 +285,15 @@ impl DocState {
     }
     /// The current tile's look: the model view's direction and visual style.
     pub fn look(&self) -> TileLook {
-        TileLook { dir: self.view_dir, shaded: self.shaded, edges: self.shaded_edges }
+        TileLook { dir: self.view_dir, shaded: self.shaded, edges: self.shaded_edges, camera: self.camera }
     }
     /// Show the model along `l`'s direction in its visual style (the view centre must already be
     /// in that direction's view plane).
     pub fn set_look(&mut self, l: TileLook) {
-        if self.view_dir != l.dir {
+        if self.view_dir != l.dir.parallel() {
             self.orbit_target = None;
         }
-        (self.view_dir, self.shaded, self.shaded_edges) = (l.dir, l.shaded, l.edges);
+        (self.view_dir, self.shaded, self.shaded_edges, self.camera) = (l.dir.parallel(), l.shaded, l.edges, l.camera);
     }
     /// The drawing has changes not saved to its file, or the Block Editor has changes not yet
     /// saved into its block.
@@ -313,10 +333,11 @@ impl DocState {
     pub fn edit_space(&self) -> Space {
         if self.active_viewport().is_some() { Space::Model } else { self.space.clone() }
     }
-    /// The direction the screen shows the edit space along: [`Self::view_dir`] on the Model tab;
-    /// layouts and their viewports are drawn in plan. View centres are in its view plane.
+    /// The projection the screen shows the edit space with: on the Model tab [`Self::view_dir`],
+    /// through [`Self::camera`] in perspective; layouts and their viewports are drawn in plan.
+    /// View centres are in its view plane (in perspective, the target plane).
     pub fn screen_dir(&self) -> ViewDir {
-        if self.space == Space::Model { self.view_dir } else { ViewDir::PLAN }
+        if self.space == Space::Model { self.look().projection(self.view()) } else { ViewDir::PLAN }
     }
     /// The active MSPACE viewport, if it still exists in the current layout.
     pub fn active_viewport(&self) -> Option<(Handle, cadcraft_doc::Viewport)> {
@@ -396,11 +417,12 @@ impl DocState {
             return false;
         }
         if old != v {
-            self.push_history(old, self.view_dir);
+            self.push_history(old, self.look().projection(old));
         }
         true
     }
-    /// Remember view `v`, seen along `dir`, for ZOOM Previous (the last 50).
+    /// Remember view `v`, seen along `dir` (through its camera in perspective:
+    /// [`TileLook::projection`]), for ZOOM Previous (the last 50).
     pub fn push_history(&mut self, v: View, dir: ViewDir) {
         self.view_history.push((v, dir));
         if self.view_history.len() > 50 {
@@ -462,6 +484,13 @@ pub struct Settings {
     pub snapunit: Vec2,
     /// OSNAPHATCH: object snaps find hatch objects (off by default, as in AutoCAD).
     pub osnaphatch: bool,
+    /// 3DOSMODE: the 3D object snaps of 3D views ([`cmd::osnap3d::mode3d`]): bit 1 turns them off
+    /// (F4), then vertex, midpoint on edge, centre of face, knot, perpendicular to face and
+    /// nearest to face.
+    pub osmode3d: u32,
+    /// OSNAPZ: object snaps in 3D views give the point on the construction plane under (along
+    /// its normal) the object's point instead of the point itself.
+    pub osnapz: bool,
     /// GRIDUNIT in a drafting settings snapshot; zero components follow SNAPUNIT.
     pub gridunit: Vec2,
     /// Major grid line every N minor lines (GRIDMAJOR).
@@ -580,6 +609,8 @@ impl Default for Settings {
             snapmode: false,
             snapunit: Vec2::new(0.5, 0.5),
             osnaphatch: false,
+            osmode3d: 11,
+            osnapz: false,
             gridunit: Vec2::new(0.5, 0.5),
             gridmajor: 5,
             zoomfactor: 60,
@@ -1983,6 +2014,16 @@ impl Session {
     }
 
     pub fn zoom_extents(&mut self) -> Result<()> {
+        // A perspective view backs its eye off until the model is in view.
+        if let Some((f, cam)) = self.persp_extents()? {
+            let st = self.state_mut()?;
+            // ZOOM Previous goes back to the view with the camera it had.
+            let old = st.view();
+            st.push_history(old, st.look().projection(old));
+            st.camera = Some(cam);
+            st.set_view_quiet(f);
+            return Ok(());
+        }
         let f = self.extents_frame()?;
         self.state_mut()?.set_zoom_frame(f);
         Ok(())

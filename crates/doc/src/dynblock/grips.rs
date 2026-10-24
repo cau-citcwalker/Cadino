@@ -1,7 +1,9 @@
 //! The grips of a dynamic block reference, as AutoCAD shows them on a selected reference: an
 //! arrow at each end of a distance (linear parameter), a square at a position (point parameter)
-//! and a down-pointing triangle for a list (visibility states, lookup values). Dragging an arrow
-//! or square is [`super::drag_grip`]; a list grip offers its property's choices.
+//! and at the end of a polar or XY parameter, a circle for an angle (rotation parameter), a
+//! double arrow for a flip and a down-pointing triangle for a list (visibility states, lookup
+//! values). Dragging an arrow, square or circle is [`super::drag_grip`]; a list grip offers its
+//! property's choices; clicking a flip grip flips.
 //!
 //! With a visibility parameter, a state lists the grips shown in it; the others are hidden.
 
@@ -56,6 +58,10 @@ pub enum GripShape {
     Point,
     /// A down-pointing triangle: click it for the property's choices.
     List,
+    /// A circle: drag it around the parameter's base point to change the angle.
+    Rotation,
+    /// A double arrow across the reflection line: click it to flip.
+    Flip,
 }
 
 /// One grip of a dynamic block reference.
@@ -158,6 +164,35 @@ pub fn grips(d: &Drawing, insert: Handle) -> Vec<DynGrip> {
                         property: label.clone(),
                         choices: Vec::new(),
                     });
+                }
+            }
+            ParameterKind::Polar { base, end, label, .. }
+            | ParameterKind::Xy { base, end, label, .. }
+            | ParameterKind::Rotation { base, end, label, .. } => {
+                let e = match r.values.get(&p.node) {
+                    Some(Value::Points { end, .. }) => *end,
+                    _ => *end,
+                };
+                let b = match r.values.get(&p.node) {
+                    Some(Value::Points { base, .. }) => *base,
+                    _ => *base,
+                };
+                // A one-grip parameter's grip is its end grip.
+                if shown(p.node, grip(1).max(grip(0))) {
+                    let shape = if matches!(p.kind, ParameterKind::Rotation { .. }) { GripShape::Rotation } else { GripShape::Point };
+                    let (at, dir) = (world(e), toward(e, e - b));
+                    out.push(DynGrip { node: p.node, part: GripPart::End, shape, at, dir, property: label.clone(), choices: Vec::new() });
+                }
+            }
+            ParameterKind::Flip { base, end, label, label_at, states, .. } => {
+                let flipped = matches!(r.values.get(&p.node), Some(Value::Text { value }) if value.trim() == "1");
+                if shown(p.node, grip(1).max(grip(0))) {
+                    // The grip sits on the reflection line by the label, pointing across it.
+                    let along = *end - *base;
+                    let across = Vec3::new(-along.y, along.x, 0.0) * if flipped { -1.0 } else { 1.0 };
+                    let (at, dir) = (world(*label_at), toward(*label_at, across));
+                    let choices = states.to_vec();
+                    out.push(DynGrip { node: p.node, part: GripPart::End, shape: GripShape::Flip, at, dir, property: label.clone(), choices });
                 }
             }
             ParameterKind::Visibility { at, label, .. } | ParameterKind::Lookup { at, label, .. } => {

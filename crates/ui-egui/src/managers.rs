@@ -39,6 +39,8 @@ mod laywalk;
 mod mlstyle;
 /// Paste Special (PASTESPEC).
 mod pastespec;
+/// The UCS dialog (UCSMAN).
+mod ucsman;
 /// Write Block (WBLOCK).
 mod wblock;
 
@@ -68,6 +70,7 @@ pub fn route(app: &mut CadApp, id: &str, params: &Value) -> Option<Result<Value,
         "filter" | "fi" => "filter",
         "laywalk" => "laywalk",
         "laytrans" => "laytrans",
+        "ucsman" => "ucsman",
         "linetype" | "lt" | "ltype" => "linetype",
         "ddptype" | "ptype" => "ptype",
         "style" | "st" => "textstyle",
@@ -102,6 +105,7 @@ pub fn dialog(app: &mut CadApp, ctx: &egui::Context, name: &str, open: &mut bool
         "filter" => filter::dialog(app, ctx, open),
         "laywalk" => laywalk::dialog(app, ctx, open),
         "laytrans" => laytrans::dialog(app, ctx, open),
+        "ucsman" => ucsman::dialog(app, ctx, open),
         "linetype" => linetype(app, ctx, open),
         "ptype" => point_style(app, ctx, open),
         "textstyle" => text_style(app, ctx, open),

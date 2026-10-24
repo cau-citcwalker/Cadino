@@ -37,6 +37,8 @@ pub struct TableText {
     pub at: Vec2,
     /// MTEXT attachment (1 top left … 9 bottom right).
     pub attach: u8,
+    /// The table's direction (radians): the text runs along its rows.
+    pub rotation: f64,
     pub height: f64,
     pub color: Color,
     pub style: String,
@@ -152,6 +154,7 @@ fn part_table(t: &Table, rows: &[usize], origin: Vec2) -> Table {
     }
     Table {
         insert: origin.to3(t.insert.z),
+        direction: t.direction,
         col_widths: t.col_widths.clone(),
         row_heights: rows.iter().map(|r| t.row_heights.get(*r).copied().unwrap_or(0.0)).collect(),
         row_styles: rows.iter().map(|r| t.row_style(*r).to_string()).collect(),
@@ -172,8 +175,8 @@ fn layout(d: &Drawing, t: &Table) -> TableGeom {
     let cols = t.col_widths.len().min(10_000);
     let xs = edges(&t.col_widths, cols);
     let ys = edges(&t.row_heights, rows);
-    let o = t.insert.xy();
-    let p = |x: f64, y: f64| o + Vec2::new(x, -y);
+    // Along the table's direction from its insertion point.
+    let p = |x: f64, y: f64| t.to_world(Vec2::new(x, -y));
     let x_at = |c: usize| xs.get(c).copied().unwrap_or(0.0);
     let y_at = |r: usize| ys.get(r).copied().unwrap_or(0.0);
     let mut g = TableGeom::default();
@@ -314,6 +317,7 @@ fn layout(d: &Drawing, t: &Table) -> TableGeom {
             col: a.col,
             at: p(x, y),
             attach,
+            rotation: t.axis().angle(),
             height: cell.text_height.filter(|h| h.is_finite() && *h > 0.0).map_or(cs.text_height, |h| h * k),
             color: cs.text_color,
             style: cs.text_style.clone(),
@@ -358,6 +362,7 @@ pub(crate) fn draw(b: &mut Builder, ctx: &Ctx, t: &Table, rgb: Ink, lw: f32) {
         // alignment point (its numbering is MTEXT's attachment).
         let mp = cadcraft_fonts::MTextParams {
             attach: tx.attach,
+            rotation: tx.rotation,
             font,
             width_factor: ts.width_factor,
             oblique: ts.oblique,

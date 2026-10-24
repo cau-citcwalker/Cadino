@@ -1735,7 +1735,6 @@
 	A {0} can't be placed in this construction plane (it stays level); use CPLANE World or a level plane.	{0} не можна розмістити в цій площині побудови (він лишається горизонтальним); використайте CPLANE World або горизонтальну площину.
 	A {0} in a tilted plane can't be scaled unevenly.	{0} у нахиленій площині не можна масштабувати нерівномірно.
 	A {what} can't be stretched in Z (only the vertices of lines, 3D polylines and 3D faces can; other objects move in Z only wholly inside the window, as MOVE moves them). Give the displacement without a Z value.	{what} не можна розтягнути вздовж Z (це можливо лише для вершин відрізків, 3D-поліліній і 3D-граней; інші об'єкти зміщуються вздовж Z, лише якщо цілком у вікні, як під час MOVE). Задайте зміщення без значення Z.
-	ATTACH is not available yet: raster images and PDF/DWF/DGN underlays can't be shown yet	ATTACH поки що недоступна: растрові зображення та підкладки PDF/DWF/DGN поки що не відображаються
 	ATTSYNC block {0}?	ATTSYNC блока {0}?
 	ATTSYNC block {block}: {n} reference{0} synchronized.	ATTSYNC блока {block}: синхронізовано посилань — {n}.
 	ATTSYNC block {name}: {n} reference{0} synchronized.	ATTSYNC блока {name}: синхронізовано посилань — {n}.
@@ -3260,3 +3259,458 @@
 	Remove faces	Вилучіть грані
 	Remove edges	Вилучіть ребра
 	Specify base radius	Укажіть радіус основи
+# Perspective, rendering, raster images, DesignCenter, UCS dialog, dynamic block authoring, 3D object snaps and the 3D kernel.
+	3D modelling is not available in this build (no OpenCASCADE kernel)	3D-моделювання недоступне в цій збірці (немає ядра OpenCASCADE)
+	<3D Osnap {0}>	<3D-об'єктна прив'язка {0}>
+	A polygon needs at least 3 points.	Багатокутнику потрібно щонайменше 3 точки.
+	A view twist isn't available yet: views stay upright.	Закручування виду поки недоступне: види лишаються вертикальними.
+	ATTACH: {0} underlays are not available yet; attach a PNG, JPEG or BMP picture or a DWG/DXF drawing	ATTACH: підкладки {0} поки недоступні; приєднайте зображення PNG, JPEG чи BMP або креслення DWG/DXF
+	Action {0} added.	Дію {0} додано.
+	Alignment type = Perpendicular	Тип вирівнювання = перпендикулярно
+	Alignment type = Tangent	Тип вирівнювання = дотично
+	All layouts	Усі аркуші
+	Apply action to	Застосувати дію до
+	B-rep read: {e}	читання B-rep: {e}
+	B-rep write: {e}	запис B-rep: {e}
+	Base image size: Width: 1.000000, Height: {ratio}, Unitless	Базовий розмір зображення: ширина: 1.000000, висота: {ratio}, без одиниць
+	Clipping planes aren't available yet.	Площини відсікання поки недоступні.
+	Current 3D osnap modes: {0}	Поточні режими 3D-прив'язки: {0}
+	Current layout	Поточний аркуш
+	Current settings: Isolate all layouts={0}	Поточні налаштування: ізолювати на всіх аркушах={0}
+	Delete old boundary?	Видалити стару межу?
+	Detached {0} image(s).	Від'єднано зображень: {0}.
+	Display property in Properties palette?	Показувати властивість на палітрі «Властивості»?
+	Double-click inside a layout viewport to make it current, then run LAYVPI.	Двічі клацніть усередині видового екрана аркуша, щоб зробити його поточним, а тоді запустіть LAYVPI.
+	Enter 0, 1, 2 or 4.	Введіть 0, 1, 2 або 4.
+	Enter angle offset	Введіть зміщення кута
+	Enter base point location	Введіть розташування базової точки
+	Enter base point type	Введіть тип базової точки
+	Enter clipping type	Введіть тип обрізання
+	Enter distance multiplier	Введіть множник відстані
+	Enter image adjustment option	Введіть параметр коригування зображення
+	Enter image clipping option	Введіть параметр обрізання зображення
+	Enter image frame setting	Введіть налаштування рамки зображення
+	Enter image option	Введіть параметр зображення
+	Enter image quality setting	Введіть налаштування якості зображення
+	Enter layers to load	Введіть шари для завантаження
+	Enter list of 3D object snap modes	Введіть список режимів 3D-об'єктної прив'язки
+	Enter list of images for path modification	Введіть список зображень для зміни шляху
+	Enter list of images to reload	Введіть список зображень для оновлення
+	Enter list of images to {op}	Введіть список зображень ({op})
+	Enter list of {0} values (separated by commas)	Введіть список значень {0} (через кому)
+	Enter maximum {0}	Введіть максимум ({0})
+	Enter minimum {0}	Введіть мінімум ({0})
+	Enter name of drawing to open	Введіть назву креслення, яке відкрити
+	Enter name of transmittal package file	Введіть назву файлу пакета передавання
+	Enter new path	Введіть новий шлях
+	Enter number of grip objects for parameter	Введіть кількість ручок параметра
+	Enter numbers separated by commas.	Введіть числа через кому.
+	Enter object visibility for new state	Введіть видимість об'єктів для нового стану
+	Enter parameter name	Введіть назву параметра
+	Enter parameter type	Введіть тип параметра
+	Enter property description	Введіть опис властивості
+	Enter the distance between columns (|||)	Введіть відстань між стовпцями (|||)
+	Enter the distance between rows or specify unit cell (---)	Введіть відстань між рядами або вкажіть одиничну комірку (---)
+	Enter transparency mode	Введіть режим прозорості
+	Enter view to load	Введіть вид для завантаження
+	Enter {0} increment	Введіть приріст ({0})
+	Enter {0}.	Введіть {0}.
+	Enter {what} property label	Введіть підпис властивості ({what})
+	Enter {what} value (0-100)	Введіть значення {what} (0–100)
+	Enter {what} value set type	Введіть тип набору значень ({what})
+	Evaluate associated actions when parameter is edited by another action?	Обчислювати пов'язані дії, коли параметр змінює інша дія?
+	Images to list	Зображення для переліку
+	Isolate layers in the viewports of which layouts?	У видових екранах яких аркушів ізолювати шари?
+	Loaded {0} object(s); {1} not loaded.	Завантажено об'єктів: {0}; не завантажено: {1}.
+	Lookup tables are given in the JSON form for now: baction {type: "lookup", parameter, columns, rows}.	Таблиці підстановки поки задаються лише у формі JSON: baction {type: "lookup", parameter, columns, rows}.
+	No image matches "{t}".	Жодне зображення не відповідає «{t}».
+	No images are attached.	Немає приєднаних зображень.
+	No images selected.	Не вибрано жодного зображення.
+	No parameter there.	Там немає параметра.
+	Not available in the test block window; close it first (BCLOSE).	Недоступно у вікні тестування блока; спершу закрийте його (BCLOSE).
+	Old path: {0}	Старий шлях: {0}
+	OpenCASCADE could not bevel these edges (try smaller distances)	OpenCASCADE не змогла зняти фаски з цих ребер (спробуйте менші відстані)
+	OpenCASCADE could not round these edges (try a smaller radius)	OpenCASCADE не змогла заокруглити ці ребра (спробуйте менший радіус)
+	Parameter {name} added to the selection.	Параметр {name} додано до вибору.
+	Parameter {shown} added.	Параметр {shown} додано.
+	Parameters, actions and visibility states belong to a block: open the Block Editor first (BEDIT).	Параметри, дії та стани видимості належать блоку: спершу відкрийте редактор блоків (BEDIT).
+	Removed {0}.	Вилучено: {0}.
+	Requires ON or OFF.	Потрібно ON або OFF.
+	Requires an answer.	Потрібна відповідь.
+	Requires an integer between 0 and 100.	Потрібне ціле число від 0 до 100.
+	Select an image.	Виберіть зображення.
+	Select image to clip	Виберіть зображення для обрізання
+	Select objects on the layer to be isolated in viewport	Виберіть об'єкти на шарі, який ізолювати у видовому екрані
+	Select objects or <use DVIEWBLOCK>	Виберіть об'єкти або <використати DVIEWBLOCK>
+	Select parameter	Виберіть параметр
+	Specify a point or an angle in degrees.	Укажіть точку або кут у градусах.
+	Specify action location	Укажіть розташування дії
+	Specify alignment direction or alignment type	Укажіть напрямок або тип вирівнювання
+	Specify base angle	Укажіть базовий кут
+	Specify base point location	Укажіть розташування базової точки
+	Specify camera point	Укажіть точку камери
+	Specify default rotation angle	Укажіть типовий кут повороту
+	Specify displacement base point	Укажіть базову точку зміщення
+	Specify endpoint	Укажіть кінцеву точку
+	Specify endpoint of reflection line	Укажіть кінцеву точку лінії віддзеркалення
+	Specify first corner of stretch frame	Укажіть перший кут рамки розтягування
+	Specify label location	Укажіть розташування підпису
+	Specify lens length	Укажіть фокусну відстань об'єктива
+	Specify new camera-target distance	Укажіть нову відстань від камери до цілі
+	Specify objects to rotate only	Укажіть об'єкти, які лише повертаються
+	Specify objects to stretch	Укажіть об'єкти для розтягування
+	Specify opposite corner point	Укажіть протилежну кутову точку
+	Specify parameter point to associate with action or enter	Укажіть точку параметра, пов'язану з дією, або введіть
+	Specify radius of parameter	Укажіть радіус параметра
+	Specify target point	Укажіть точку цілі
+	Specify view twist angle	Укажіть кут закручування виду
+	Specify zoom scale factor	Укажіть коефіцієнт масштабування
+	Test block window closed.	Вікно тестування блока закрито.
+	Test block window: "{name}". Select the reference to try its grips; BCLOSE closes the window.	Вікно тестування блока: «{name}». Виберіть вставлення, щоб випробувати його ручки; BCLOSE закриває вікно.
+	That parameter doesn't take this action.	Цей параметр не приймає такої дії.
+	That parameter takes no actions.	Цей параметр не приймає дій.
+	The block has no parameters: add one first (BPARAMETER).	У блоці немає параметрів: спершу додайте параметр (BPARAMETER).
+	The block has no visibility parameter: add one first (BPARAMETER Visibility).	У блоці немає параметра видимості: спершу додайте його (BPARAMETER Visibility).
+	The camera and the target must be apart.	Камера й ціль мають бути в різних точках.
+	The distance between columns must be more than 0.	Відстань між стовпцями має бути більшою за 0.
+	The image has no clip boundary.	Зображення не має межі обрізання.
+	The radius must be more than 0.	Радіус має бути більшим за 0.
+	The test block window is already open.	Вікно тестування блока вже відкрите.
+	The test block window tests a block; the Block Editor is open on the drawing itself.	Вікно тестування перевіряє блок, а редактор блоків відкритий на самому кресленні.
+	The view can't be rendered at that size.	Вид не можна візуалізувати в такому розмірі.
+	This is a dynamic block: BPARAMETER, BACTION and BVSTATE add to its parameters, actions and visibility states.	Це динамічний блок: BPARAMETER, BACTION і BVSTATE додають до його параметрів, дій і станів видимості.
+	Total Image Definition(s): {0}, Image Reference(s): {refs}	Усього визначень зображень: {0}, посилань на зображення: {refs}
+	Transmittal package created: {path}	Пакет передавання створено: {path}
+	Undid the last isolation.	Останню ізоляцію скасовано.
+	Unknown 3D object snap mode "{name}".	Невідомий режим 3D-об'єктної прив'язки «{name}».
+	Unload all Xrefs on open?	Вивантажити всі зовнішні посилання під час відкриття?
+	Unloaded {0}.	Вивантажено: {0}.
+	`pathType` must be full, relative or none, not "{0}"	`pathType` має бути full, relative або none, а не «{0}»
+	a circle has no normal	коло не має нормалі
+	a circle is missing numbers	у колі бракує чисел
+	a closed profile must be flat	замкнений профіль має бути плоским
+	a corner can't follow the tilted faces	кут не може слідувати за нахиленими гранями
+	a cross section has a piece with no shape	переріз має частину без форми
+	a cross section has no pieces	переріз не має частин
+	a curve has no pieces	крива не має частин
+	a curve piece is missing numbers	у частині кривої бракує чисел
+	a direction is zero	напрямок нульовий
+	a distance must be at least {MIN_LEN}	відстань має бути щонайменше {MIN_LEN}
+	a face can't be tilted that far	грань не можна нахилити так сильно
+	a face can't be turned right over	грань не можна перевернути повністю
+	a face can't both move and turn	грань не може водночас переміщуватися й повертатися
+	a guide curve must run from the first cross section to the last, through each in turn	напрямна крива має йти від першого перерізу до останнього, проходячи через кожен по черзі
+	a guide curve must touch every cross section	напрямна крива має торкатися кожного перерізу
+	a guided loft needs a guide curve	тілу за перерізами з напрямними потрібна напрямна крива
+	a guided loft needs two cross sections or more	тілу за перерізами з напрямними потрібно два перерізи або більше
+	a hole must be closed	отвір має бути замкненим
+	a hole must lie in the region's plane	отвір має лежати в площині області
+	a line extruded along itself makes no surface	лінія, видавлена вздовж себе, не утворює поверхні
+	a loft follows at most {0} guide curves	тіло за перерізами йде щонайбільше за {0} напрямними
+	a loft needs 1 to {0} cross sections	тілу за перерізами потрібно від 1 до {0} перерізів
+	a loft needs 2 to {MAX_SECTIONS} cross sections	тілу за перерізами потрібно від 2 до {MAX_SECTIONS} перерізів
+	a loft needs cross sections	тілу за перерізами потрібні перерізи
+	a mesh to convert has 1 to {MAX_MESH_TRIS} triangles	сітка для перетворення має містити від 1 до {MAX_MESH_TRIS} трикутників
+	a motion needs twelve numbers	переміщенню потрібно дванадцять чисел
+	a planar surface needs a closed curve	плоскій поверхні потрібна замкнена крива
+	a point is not finite	точка нескінченна
+	a point needs three numbers	точці потрібно три числа
+	a polysolid can't run round a circle (draw it as two arcs)	політіло не може йти по колу (накресліть його двома дугами)
+	a pyramid has 3 to {MAX_PYRAMID_SIDES} sides	піраміда має від 3 до {MAX_PYRAMID_SIDES} бічних граней
+	a radius must be 0 or at least {MIN_LEN}	радіус має бути 0 або щонайменше {MIN_LEN}
+	a radius must be at least {MIN_LEN}	радіус має бути щонайменше {MIN_LEN}
+	a spline has a non-finite point or tangent	сплайн має нескінченну точку або дотичну
+	a spline has two points in the same place	сплайн має дві точки в одному місці
+	a spline needs 2 to {MAX_SPLINE_POINTS} points	сплайну потрібно від 2 до {MAX_SPLINE_POINTS} точок
+	a spline needs two points	сплайну потрібні дві точки
+	a surface is pulled whole: pick all its faces, or make it a solid first	поверхня витягується цілою: виберіть усі її грані або спершу зробіть її тілом
+	a triangle has a corner that isn't in the mesh	трикутник має вершину, якої немає в сітці
+	an arc's three points are in a line	три точки дуги лежать на одній прямій
+	an edge can't follow the tilted faces	ребро не може слідувати за нахиленими гранями
+	an edge curve has no pieces	крива ребра не має частин
+	an edge curve has no shape	крива ребра не має форми
+	an edge surface needs four edges	поверхні за ребрами потрібно чотири ребра
+	an edge surface's edges must be open curves	ребра поверхні за ребрами мають бути відкритими кривими
+	an empty profile	порожній профіль
+	an unknown kind of curve piece	невідомий вид частини кривої
+	at most {MAX_SHAPES} curves at once	щонайбільше {MAX_SHAPES} кривих за раз
+	at most {MAX_SHAPES} holes	щонайбільше {MAX_SHAPES} отворів
+	at most {MAX_SHAPES} shapes at once	щонайбільше {MAX_SHAPES} форм за раз
+	bad request: {e}	неправильний запит: {e}
+	bevelling the edges	зняття фасок із ребер
+	both curves must be open, or both closed	обидві криві мають бути відкритими або обидві замкненими
+	choose 1 to {MAX_PICKS} edges	виберіть від 1 до {MAX_PICKS} ребер
+	choose 1 to {MAX_PICKS} {what}	виберіть від 1 до {MAX_PICKS} ({what})
+	could not start the worker process while {what}: {e}	не вдалося запустити робочий процес ({what}): {e}
+	cross sections must be all open or all closed	перерізи мають бути всі відкриті або всі замкнені
+	cross sections must be at different elevations	перерізи мають бути на різних висотах
+	cutting the shape failed	не вдалося розрізати форму
+	cutting the solid failed	не вдалося розрізати тіло
+	each edge needs a radius	кожному ребру потрібен радіус
+	each edge needs two distances and a face	кожному ребру потрібні дві відстані й грань
+	each guide curve must run through matching corners of the cross sections	кожна напрямна крива має проходити через відповідні кути перерізів
+	edge {0} is on no face	ребро {0} не належить жодній грані
+	empty path	порожня траєкторія
+	extruding the faces	видавлювання граней
+	face {0} is not next to edge {1}	грань {0} не прилягає до ребра {1}
+	hollowing the solid	створення оболонки тіла
+	image files can't be read on the web	у вебверсії файли зображень не читаються
+	it stopped (crashed) while {what}{status}	процес аварійно зупинився ({what}){status}
+	it took longer than {0} s while {what} and was stopped	процес тривав понад {0} с ({what}) і його зупинено
+	joining the solids failed	не вдалося об'єднати тіла
+	joining the surfaces	об'єднання поверхонь
+	making a surface	створення поверхні
+	measuring solids stopped	вимірювання тіл зупинено
+	measuring solids: {e}	вимірювання тіл: {e}
+	move or turn flat faces and curved faces separately	переміщуйте або повертайте плоскі й криві грані окремо
+	moving the faces	переміщення граней
+	no 3D solids or curves to export	немає 3D-тіл чи кривих для експорту
+	no 3D solids to export	немає 3D-тіл для експорту
+	no faces are selected	не вибрано жодної грані
+	no loft runs through these sections along that curve	жодне тіло за перерізами не проходить через ці перерізи вздовж цієї кривої
+	no ruled surface joins these curves	жодна лінійчата поверхня не з'єднує ці криві
+	no solids to check	немає тіл для перевірки
+	no solids to draw	немає тіл для малювання
+	no spline runs through these points	жоден сплайн не проходить через ці точки
+	no temporary folder: {0}	немає тимчасової папки: {0}
+	not OpenCASCADE B-rep text	це не текст B-rep OpenCASCADE
+	nothing to draw	нічого малювати
+	nothing to imprint	нічого відбивати
+	nothing to join	нічого об'єднувати
+	nothing to slice with	нема чим розрізати
+	nothing to split with	нема чим розділити
+	offsetting the faces	зміщення граней
+	only 3D solids can be separated	розділяти можна лише 3D-тіла
+	only flat faces can be extruded	видавлювати можна лише плоскі грані
+	only surfaces can be thickened	потовщувати можна лише поверхні
+	pressing or pulling	втискання або витягування
+	reading the request: {e}	читання запиту: {e}
+	removing the faces	вилучення граней
+	rounding the edges	заокруглення ребер
+	splitting failed	не вдалося розділити
+	subtracting the solids failed	не вдалося відняти тіла
+	tapering the faces	звуження граней
+	the angle must be between -89 and 89 degrees	кут має бути від -89 до 89 градусів
+	the angle must not be zero	кут не може бути нульовим
+	the axis must not be perpendicular to the profile	вісь не може бути перпендикулярною до профілю
+	the axis must not cross the profile	вісь не може перетинати профіль
+	the axis needs two different points	осі потрібні дві різні точки
+	the box has no volume	паралелепіпед не має об'єму
+	the cross sections' corners can't be joined smoothly	кути перерізів не можна плавно з'єднати
+	the curves can't be imprinted	криві не можна відбити
+	the cutting plane needs a point and a direction	січній площині потрібні точка й напрямок
+	the direction is zero	напрямок нульовий
+	the direction vector has no length	вектор напрямку не має довжини
+	the distance must be at least {MIN_LEN}	відстань має бути щонайменше {MIN_LEN}
+	the edge surface	поверхня за ребрами
+	the extrusion needs a non-zero height or direction	видавлюванню потрібна ненульова висота або напрямок
+	the extrusion runs along the profile's plane	видавлювання йде вздовж площини профілю
+	the faces can't be offset that far (error {0})	грані не можна змістити так далеко (помилка {0})
+	the faces can't be tilted	грані не можна нахилити
+	the file could not be read	не вдалося прочитати файл
+	the file has no surfaces or curves	у файлі немає поверхонь чи кривих
+	the file's curves are too large to import	криві у файлі завеликі для імпорту
+	the four edges don't make a closed loop	чотири ребра не утворюють замкненого контуру
+	the loft can't be closed into a solid	тіло за перерізами не можна замкнути в суцільне тіло
+	the loft can't be made between these cross sections and guides	між цими перерізами й напрямними не можна побудувати тіло за перерізами
+	the mesh has a point that isn't finite	сітка має нескінченну точку
+	the mesh has no faces with area	сітка не має граней із площею
+	the mesh is too large	сітка завелика
+	the modelling kernel failed: {why}	помилка ядра моделювання: {why}
+	the move has no length	переміщення не має довжини
+	the outer curve doesn't bound a flat region	зовнішня крива не обмежує плоскої області
+	the path has a piece with no direction	траєкторія має частину без напрямку
+	the path must not start along the up direction	траєкторія не може починатися вздовж напрямку вгору
+	the path needs a start (a circle path is two arcs)	траєкторії потрібен початок (коло задайте двома дугами)
+	the path turns back on itself	траєкторія повертає назад сама на себе
+	the pieces of a curve must meet end to end	частини кривої мають сходитися кінець у кінець
+	the pieces of an edge curve must meet end to end	частини кривої ребра мають сходитися кінець у кінець
+	the planar surface	плоска поверхня
+	the profile encloses no area	профіль не охоплює площі
+	the profile has a non-finite point, or a piece too small to model	профіль має нескінченну точку або частину, замалу для моделювання
+	the profile has no plane	профіль не має площини
+	the profile must be closed	профіль має бути замкненим
+	the profile needs 1 to 100000 pieces	профілю потрібно від 1 до 100000 частин
+	the pyramid is too flat, or its top too small (make it 0 or larger)	піраміда надто пласка або її верх замалий (зробіть його 0 або більшим)
+	the radius must be positive	радіус має бути додатним
+	the region has no area	область не має площі
+	the region is not on a face of the solid	область не лежить на грані тіла
+	the region lies inside the solid	область лежить усередині тіла
+	the region's boundary must be closed	межа області має бути замкненою
+	the result is empty	результат порожній
+	the revolved surface	поверхня обертання
+	the ruled surface	лінійчата поверхня
+	the shape has no faces	форма не має граней
+	the shape is empty	форма порожня
+	the shell is too thick for this solid	оболонка надто товста для цього тіла
+	the sides can't be tapered that much	бічні сторони не можна так сильно звузити
+	the solid has a transform the kernel can't apply (only move, rotate, scale and mirror)	тіло має перетворення, яке ядро не може застосувати (лише переміщення, поворот, масштаб і дзеркало)
+	the solid has no B-rep data	тіло не має даних B-rep
+	the solid has no faces	тіло не має граней
+	the solid is empty	тіло порожнє
+	the surface can't be offset that far	поверхню не можна змістити так далеко
+	the surface can't be thickened that much	поверхню не можна так сильно потовщити
+	the surfaces don't close up into a watertight shape ({0} open pieces)	поверхні не замикаються в герметичну форму (відкритих частин: {0})
+	the tabulated surface	поверхня за напрямним вектором
+	the thickness must be at least {MIN_LEN}	товщина має бути щонайменше {MIN_LEN}
+	the tolerance must be 0 or more	допуск має бути 0 або більше
+	the view's right direction runs along the view	правий напрямок виду збігається з напрямком погляду
+	the view's right must not run along the view	правий напрямок виду не може збігатися з напрямком погляду
+	the walls can't be that thick	стінки не можуть бути такими товстими
+	the worker answered a different request	робочий процес відповів на інший запит
+	the {0} is too large for this solid	{0} завелике для цього тіла
+	there is no edge {0} (the shape has {1})	ребра {0} немає (у формі їх {1})
+	there is no face {0} (the shape has {1})	грані {0} немає (у формі їх {1})
+	these faces can't be removed: the faces round them can't be extended to close the gap	ці грані не можна вилучити: сусідні грані не можна продовжити, щоб закрити проміжок
+	these faces don't bound a feature that can be moved	ці грані не обмежують елемента, який можна перемістити
+	this solid has no edges to {what}	це тіло не має ребер для операції ({what})
+	this solid has no flat top face to remove	це тіло не має плоскої верхньої грані для вилучення
+	turning the faces	повертання граней
+	two cross sections meet at a corner	два перерізи сходяться в куті
+	with guide curves, each cross section needs as many corners as the others	з напрямними кривими кожен переріз має мати стільки ж кутів, як інші
+	{format} pictures can't be attached (use PNG, JPEG or BMP)	зображення {format} не можна приєднати (використовуйте PNG, JPEG або BMP)
+	{what} is not finite	{what}: нескінченне значення
+	{what} left nothing	{what}: нічого не лишилося
+	{what} made a shape that isn't valid	{what}: утворилася недійсна форма
+	{what} must be at least {MIN_LEN}	{what}: щонайменше {MIN_LEN}
+	{what} needs a direction	{what}: потрібен напрямок
+	{w} x {h} pixels is more than this app reads ({0} million at most)	{w} x {h} пікселів — більше, ніж читає ця програма (щонайбільше {0} млн)
+	(no folders or drawings)	(немає папок чи креслень)
+	3D Object Snap On (F4)	3D-об'єктну прив'язку ввімкнено (F4)
+	Action	Дія
+	Add a folder with Add to Favorites.	Додайте папку кнопкою «Додати до вибраного».
+	Add to Drawing	Додати до креслення
+	Add to Favorites	Додати до вибраного
+	Attach Image...	Приєднати зображення...
+	Choose a drawing in the tree.	Виберіть креслення в дереві.
+	Close Test Block Window	Закрити вікно тестування блока
+	Current UCS: {name}	Поточна СКК: {name}
+	Depth	Глибина
+	Depth:	Глибина:
+	Details	Подробиці
+	Display at UCS origin point	Показувати в початку СКК
+	Drawing files can't be read in this build.	У цій збірці файли креслень не читаються.
+	Edges	Ребра
+	Every viewport keeps its own UCS.	Кожен видовий екран зберігає власну СКК.
+	Favorites	Вибране
+	Folders	Папки
+	Folders can't be browsed here: use Open Drawings.	Тут не можна переглядати папки: скористайтеся вкладкою «Відкриті креслення».
+	Force object color and linetype to BYLAYER	Примусово задати колір і тип ліній об'єктів BYLAYER
+	Hide all existing objects in new state	Сховати всі наявні об'єкти в новому стані
+	Leave visibility of existing objects unchanged in new state	Не змінювати видимість наявних об'єктів у новому стані
+	Make Invisible	Зробити невидимим
+	Make Visible	Зробити видимим
+	Mappings saved to {path}.	Відповідності збережено в {path}.
+	Move Down	Перемістити вниз
+	Move Up	Перемістити вгору
+	Named UCSs	Іменовані СКК
+	New name	Нова назва
+	No details for this UCS.	Для цієї СКК немає подробиць.
+	Nothing of this type in the drawing.	У кресленні немає нічого цього типу.
+	Open Drawings	Відкриті креслення
+	Origin	Початок
+	Orthographic UCSs	Ортогональні СКК
+	Parameter	Параметр
+	Perspective	Перспектива
+	RENDER renders the Model tab.	RENDER візуалізує вкладку «Модель».
+	Read the folders and drawings again	Прочитати папки й креслення знову
+	Refresh	Оновити
+	Relative to:	Відносно:
+	Render	Візуалізація
+	Save Image...	Зберегти зображення...
+	Save UCS with viewport	Зберігати СКК з видовим екраном
+	Save the drawing first: the log is written beside it.	Спершу збережіть креслення: журнал записується поруч із ним.
+	Save the mappings to a mapping file	Зберегти відповідності у файл відповідностей
+	Save...	Зберегти...
+	Settings	Налаштування
+	Show all existing objects in new state	Показати всі наявні об'єкти в новому стані
+	Show the content of a drawing file	Показати вміст файлу креслення
+	Test Block	Тестувати блок
+	Test Block Window	Вікно тестування блока
+	That drawing is closed.	Це креслення закрите.
+	The UCS icon is drawn at the corner of the view.	Значок СКК малюється в куті виду.
+	The filter list is unbalanced: every Begin needs its End.	Список фільтра незбалансований: кожен «Початок» потребує свого «Кінця».
+	The mapping file is too large.	Файл відповідностей завеликий.
+	This is not a layer translation mapping file.	Це не файл відповідностей для перекладу шарів.
+	Transaction log written to {path}.	Журнал змін записано в {path}.
+	Translate objects in blocks	Перекладати об'єкти в блоках
+	UCS Icon settings	Налаштування значка СКК
+	UCS name	Назва СКК
+	UCS settings	Налаштування СКК
+	Update view to Plan when UCS is changed	Оновлювати вид до плану, коли змінюється СКК
+	Use the layers of another drawing, or a saved mapping file (.json)	Використати шари іншого креслення або збережений файл відповідностей (.json)
+	Visibility States	Стани видимості
+	Visibility state name	Назва стану видимості
+	Write transaction log	Записувати журнал змін
+	Written beside the saved drawing, with the .log extension	Записується поруч зі збереженим кресленням із розширенням .log
+	X Axis	Вісь X
+	Y Axis	Вісь Y
+	Z Axis	Вісь Z
+	shaded with the parts' materials, not photoreal	затінено матеріалами деталей, не фотореалістично
+	{op} has no matching Begin.	Для {op} немає відповідного «Початку».
+	3D Object Snap	3D-об'єктна прив'язка
+	Action Tool	Інструмент дії
+	Adjust (command line)	Коригувати (командний рядок)
+	Adjust...	Коригувати...
+	Attach...	Приєднати...
+	Clip Image	Обрізати зображення
+	Delete Parameter or Action	Видалити параметр або дію
+	DesignCenter	Центр дизайну
+	Dview	Динамічний вид
+	Frame	Рамка
+	Grip Set	Набір ручок
+	Image	Зображення
+	Image (command line)	Зображення (командний рядок)
+	Isolate Layer to Current Viewport	Ізолювати шар у поточному видовому екрані
+	Named UCS...	Іменовані СКК...
+	Package Drawing (command line)	Пакет креслення (командний рядок)
+	Package Drawing...	Пакет креслення...
+	Parameter Properties	Властивості параметра
+	Partial Load	Часткове завантаження
+	Partial Load (command line)	Часткове завантаження (командний рядок)
+	Partial Open (command line)	Часткове відкриття (командний рядок)
+	Partial Open...	Часткове відкриття...
+	Quality	Якість
+	Raster Image Reference...	Посилання на растрове зображення...
+	View size	Розмір виду
+	Dimstyles	Розмірні стилі
+	Layouts	Аркуші
+	Linetypes	Типи ліній
+	Multileaderstyles	Стилі мультивиносок
+	Tablestyles	Стилі таблиць
+	Textstyles	Стилі тексту
+	**Begin AND	**Початок AND
+	**End AND	**Кінець AND
+	**Begin OR	**Початок OR
+	**End OR	**Кінець OR
+	**Begin XOR	**Початок XOR
+	**End XOR	**Кінець XOR
+	**Begin NOT	**Початок NOT
+	**End NOT	**Кінець NOT
+	Object Type	Тип об'єкта
+	World	Світова
+	Unnamed	Без назви
+	Image files (PNG, JPEG, BMP)	Файли зображень (PNG, JPEG, BMP)
+	Reference files (images, DWG, DXF)	Файли посилань (зображення, DWG, DXF)
+	ZIP archives	Архіви ZIP
+	Unreadable	Не читається
+	Vertex	Вершина
+	Midpoint on edge	Середина ребра
+	Center of face	Центр грані
+	Knot	Вузол
+	Nearest to face	Найближча до грані
+	Added {kind} "{found}".	Додано {kind} «{found}».
+	"{found}" is already in this drawing: its own definition is kept.	«{found}» уже є в цьому кресленні: його власне визначення збережено.
+	Table exported to {path}.	Таблицю експортовано в {path}.
+	No isolated layers.	Немає ізольованих шарів.
+	No previous layer state.	Немає попереднього стану шарів.
+	Parameters, actions and visibility states are added in the Block Editor (BEDIT).	Параметри, дії та стани видимості додаються в редакторі блоків (BEDIT).
+	bad number `{t}`	неправильне число `{t}`
+	index out of range	індекс поза межами
+	no closed boundary around [{0}, {1}]	навколо [{0}, {1}] немає замкненої межі
+	no drawing open	немає відкритого креслення
+	not a PNG, JPEG or BMP picture	це не зображення PNG, JPEG чи BMP
+	the plotter folder is unavailable	папка плотерів недоступна
+	{i} is not a face or edge index	{i} — не індекс грані чи ребра
+	{n} object(s) made visible.	Зроблено видимими об'єктів: {n}.
+	{n} object(s) made invisible.	Зроблено невидимими об'єктів: {n}.

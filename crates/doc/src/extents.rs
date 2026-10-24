@@ -143,7 +143,7 @@ fn prims_bounds(prims: impl IntoIterator<Item = Prim>) -> Bounds2 {
 /// [`bounds_in`] in the object's own plane (its 2D coordinates).
 fn bounds_own<'a>(d: &'a Drawing, e: &Entity, depth: usize, blocks: &mut HashMap<(&'a str, usize), Bounds2>) -> Bounds2 {
     match &e.kind {
-        EntityKind::Table(t) if t.is_broken() => t.bounds(),
+        EntityKind::Table(t) => t.bounds(),
         EntityKind::Text(t) if blank(&t.value) => Bounds2::EMPTY,
         EntityKind::MText(t) if blank(&t.contents) => Bounds2::EMPTY,
         EntityKind::Text(t) => text_box(t, t.value.chars().count()),
@@ -246,11 +246,6 @@ fn bounds_own<'a>(d: &'a Drawing, e: &Entity, depth: usize, blocks: &mut HashMap
                 b = b.union(&bounds_in(d, &be, depth, blocks));
             }
             b
-        }
-        EntityKind::Table(t) => {
-            let w: f64 = t.col_widths.iter().sum();
-            let h: f64 = t.row_heights.iter().sum();
-            Bounds2::new(t.insert.xy(), t.insert.xy() + Vec2::new(w, -h))
         }
         // Text widths estimated like `text_box`; the renderer measures the font.
         EntityKind::Tolerance(t) => t.layout(d, &|s, h| h * 0.9 * s.chars().count() as f64).bounds,

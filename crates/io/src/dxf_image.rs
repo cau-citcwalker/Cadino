@@ -1,8 +1,9 @@
 //! Raster images in DXF (DXF Reference: IMAGE entity; IMAGEDEF, IMAGEDEF_REACTOR and
 //! RASTERVARIABLES objects). An IMAGE entity holds the placement, clip boundary and display
 //! settings; it points (group 340) to an IMAGEDEF object holding the file path, which the
-//! `ACAD_IMAGE_DICT` dictionary names. CADCraft keeps this data so images survive save and
-//! reopen; the pixels themselves are not loaded.
+//! `ACAD_IMAGE_DICT` dictionary names. The `ACAD_IMAGE_VARS` RASTERVARIABLES object holds the
+//! image frame and quality settings (IMAGEFRAME, IMAGEQUALITY). The pixels are read from the file
+//! by the engine once the drawing is open.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -72,6 +73,8 @@ struct Def {
     path: String,
     pixel_size: Option<Vec2>,
     units: u8,
+    /// Group 280 is 0: unloaded.
+    unloaded: bool,
 }
 
 fn has_images(store: &EntityStore) -> bool {
@@ -80,6 +83,7 @@ fn has_images(store: &EntityStore) -> bool {
 
 /// Fill in each image's definition (path, name, pixel size) from the IMAGEDEF it points to.
 pub(crate) fn resolve(secs: &[Section], d: &mut Drawing) {
+    raster_variables(secs, d);
     if !has_images(&d.model) && !d.layouts.iter().any(|l| has_images(&l.entities)) && !d.blocks.values().any(|b| has_images(&b.entities)) {
         return;
     }
@@ -113,7 +117,8 @@ pub(crate) fn resolve(secs: &[Section], d: &mut Drawing) {
                 };
                 let units = body.iter().find(|t| t.code == 281).and_then(|t| u8::try_from(t.i64()).ok()).unwrap_or(0);
                 let path = body.iter().find(|t| t.code == 1).map(Tag::str).unwrap_or_default();
-                defs.insert(h, Def { path, pixel_size: pixel, units, ..Def::default() });
+                let unloaded = body.iter().find(|t| t.code == 280).is_some_and(|t| t.i64() == 0);
+                defs.insert(h, Def { path, pixel_size: pixel, units, unloaded, ..Def::default() });
             }
             "DICTIONARY" => {
                 let mut name: Option<String> = None;
@@ -152,6 +157,27 @@ pub(crate) fn resolve(secs: &[Section], d: &mut Drawing) {
     }
 }
 
+/// IMAGEFRAME (group 70: 0 off, 1 shown and plotted, 2 shown but not plotted) and IMAGEQUALITY
+/// (group 71: 0 draft, 1 high) from the RASTERVARIABLES object, when they aren't the defaults.
+fn raster_variables(secs: &[Section], d: &mut Drawing) {
+    for s in secs.iter().filter(|s| s.name == "OBJECTS") {
+        each_record(&s.tags, |kind, tags| {
+            if kind != "RASTERVARIABLES" {
+                return;
+            }
+            let start = tags.iter().position(|t| t.code == 100 && t.str() == "AcDbRasterVariables").unwrap_or(0);
+            let body = tags.get(start..).unwrap_or(&[]);
+            let get = |c: i32| body.iter().find(|t| t.code == c).map(Tag::i64);
+            if let Some(v) = get(70).filter(|v| matches!(v, 0 | 2)) {
+                d.header.set_i64("IMAGEFRAME", v);
+            }
+            if get(71) == Some(0) {
+                d.header.set_i64("IMAGEQUALITY", 0);
+            }
+        });
+    }
+}
+
 fn fill(store: &mut EntityStore, by_image: &HashMap<Handle, &Def>) {
     let hs: Vec<Handle> =
         store.iter().filter(|e| matches!(e.kind, EntityKind::Image(_)) && by_image.contains_key(&e.handle)).map(|e| e.handle).collect();
@@ -165,6 +191,7 @@ fn fill(store: &mut EntityStore, by_image: &HashMap<Handle, &Def>) {
                     i.pixel_size = p;
                 }
                 i.resolution_units = def.units;
+                i.unloaded = def.unloaded;
             }
         });
     }
@@ -178,6 +205,7 @@ struct PlannedDef {
     size: Vec2,
     pixel_size: Vec2,
     units: u8,
+    unloaded: bool,
     /// (IMAGEDEF_REACTOR handle, IMAGE handle) per image using it.
     reactors: Vec<(String, Handle)>,
 }
@@ -239,6 +267,7 @@ pub(crate) fn plan<'a>(entities: impl Iterator<Item = &'a cadcraft_doc::Entity>,
                     size: i.size,
                     pixel_size: i.pixel_size,
                     units: i.resolution_units,
+                    unloaded: i.unloaded,
                     reactors: Vec::new(),
                 });
                 let at = p.defs.len().saturating_sub(1);
@@ -290,7 +319,7 @@ pub(crate) fn entity_tags(i: &Image, def: &str, reactor: &str) -> Vec<Tag> {
 
 /// The image dictionary, IMAGEDEF and IMAGEDEF_REACTOR objects and RASTERVARIABLES; `root` is
 /// the named object dictionary, which lists `ACAD_IMAGE_DICT` and `ACAD_IMAGE_VARS`.
-pub(crate) fn objects(p: &Plan, root: &str) -> Vec<Tag> {
+pub(crate) fn objects(p: &Plan, root: &str, header: &cadcraft_doc::Header) -> Vec<Tag> {
     let mut t = Vec::new();
     if p.is_empty() {
         return t;
@@ -304,15 +333,17 @@ pub(crate) fn objects(p: &Plan, root: &str) -> Vec<Tag> {
         t.extend(d.reactors.iter().map(|(r, _)| Tag::s(330, r)));
         t.extend([Tag::s(102, "}"), Tag::s(330, &p.dict), Tag::s(100, "AcDbRasterImageDef"), Tag::i(90, 0), Tag::s(1, &d.path)]);
         t.extend([Tag::f(10, d.size.x), Tag::f(20, d.size.y), Tag::f(11, d.pixel_size.x), Tag::f(21, d.pixel_size.y)]);
-        t.extend([Tag::i(280, 1), Tag::i(281, i64::from(d.units))]);
+        t.extend([Tag::i(280, i64::from(!d.unloaded)), Tag::i(281, i64::from(d.units))]);
         for (r, img) in &d.reactors {
             let ih = img.hex();
             t.extend([Tag::s(0, "IMAGEDEF_REACTOR"), Tag::s(5, r), Tag::s(330, &ih), Tag::s(100, "AcDbRasterImageDefReactor")]);
             t.extend([Tag::i(90, 2), Tag::s(330, ih)]);
         }
     }
-    // Image frame shown, high display quality, no insertion units.
+    // The image frame and display quality settings; no insertion units.
+    let frame = header.i64("IMAGEFRAME", 1).clamp(0, 2);
+    let quality = i64::from(header.i64("IMAGEQUALITY", 1) != 0);
     t.extend([Tag::s(0, "RASTERVARIABLES"), Tag::s(5, &p.vars), Tag::s(102, "{ACAD_REACTORS"), Tag::s(330, root), Tag::s(102, "}")]);
-    t.extend([Tag::s(330, root), Tag::s(100, "AcDbRasterVariables"), Tag::i(90, 0), Tag::i(70, 1), Tag::i(71, 1), Tag::i(72, 0)]);
+    t.extend([Tag::s(330, root), Tag::s(100, "AcDbRasterVariables"), Tag::i(90, 0), Tag::i(70, frame), Tag::i(71, quality), Tag::i(72, 0)]);
     t
 }

@@ -139,6 +139,15 @@ fn number(d: &Drawing, v: f64) -> String {
     format!("{v:.prec$}")
 }
 
+/// An angle (radians) as Properties shows it: degrees from 0 up to 360, AUPREC decimals.
+fn angle(d: &Drawing, a: f64) -> String {
+    let prec = usize::try_from(d.header.i64("AUPREC", 0).clamp(0, 8)).unwrap_or(0);
+    let deg = a.to_degrees().rem_euclid(360.0);
+    // 359.9999… rounds to 360: show it as 0.
+    let deg = if format!("{deg:.prec$}").parse::<f64>().is_ok_and(|x| x >= 360.0) { 0.0 } else { deg };
+    format!("{deg:.prec$}")
+}
+
 /// Whether table cell `cell` reads as `value` (numbers compare as numbers).
 fn same(cell: &str, value: &str) -> bool {
     match (cell.trim().parse::<f64>(), value.trim().parse::<f64>()) {
@@ -246,6 +255,34 @@ pub fn custom_properties(d: &Drawing, insert: Handle) -> Option<(String, Vec<Cus
                 };
                 out.push(CustomProperty { name: format!("{label} X"), value: number(d, (at.x - base.x) * sx), choices: Vec::new(), editable: true });
                 out.push(CustomProperty { name: format!("{label} Y"), value: number(d, (at.y - base.y) * sy), choices: Vec::new(), editable: true });
+            }
+            ParameterKind::Polar { base: b, end: e, label, label2, values, .. }
+            | ParameterKind::Xy { base: b, end: e, label, label2, values, .. } => {
+                let (b, e) = match v {
+                    Some(Value::Points { base, end }) => (*base, *end),
+                    _ => (*b, *e),
+                };
+                let choices = if values.is_list() { values.list.iter().map(|x| number(d, x * sx)).collect() } else { Vec::new() };
+                let (first, second) = if matches!(p.kind, ParameterKind::Polar { .. }) {
+                    (number(d, (e - b).len() * sx), angle(d, (e.xy() - b.xy()).angle()))
+                } else {
+                    (number(d, (e.x - b.x) * sx), number(d, (e.y - b.y) * sy))
+                };
+                out.push(CustomProperty { name: label.clone(), value: first, choices, editable: true });
+                out.push(CustomProperty { name: label2.clone(), value: second, choices: Vec::new(), editable: true });
+            }
+            ParameterKind::Rotation { base: b, end: e, label, base_angle, values, .. } => {
+                let (b, e) = match v {
+                    Some(Value::Points { base, end }) => (*base, *end),
+                    _ => (*b, *e),
+                };
+                let choices = if values.is_list() { values.list.iter().map(|x| angle(d, *x)).collect() } else { Vec::new() };
+                out.push(CustomProperty { name: label.clone(), value: angle(d, (e.xy() - b.xy()).angle() - base_angle), choices, editable: true });
+            }
+            ParameterKind::Flip { label, states, .. } => {
+                let flipped = matches!(v, Some(Value::Text { value }) if value.trim() == "1");
+                let value = states[usize::from(flipped)].clone();
+                out.push(CustomProperty { name: label.clone(), value, choices: states.to_vec(), editable: true });
             }
             ParameterKind::Visibility { label, states, .. } => {
                 let value = cur.property(p.node, "VisibilityState").unwrap_or_default();

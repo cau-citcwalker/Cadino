@@ -1,8 +1,8 @@
 # CADCraft roadmap
 
-**Stage: pre-alpha** · next: alpha, ~2 points (38% → 40% ready for real work) and ~125–190 Opus 5.5 hours away (the four failing core workflows of the [alpha gate](docs/roadmap.md#alpha-gate))
+**Stage: pre-alpha** · next: alpha, ~2 points (38% → 40% ready for real work) and ~110–170 Opus 5.5 hours away (the four failing core workflows of the [alpha gate](docs/roadmap.md#alpha-gate))
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (hours to ~95% for each readiness number) · **Target:** Autodesk AutoCAD 2027
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (dynamic-block authoring, raster images, eTransmit, perspective views and RENDER: alpha hours re-estimated) · **Target:** Autodesk AutoCAD 2027
 
 CADCraft targets full parity with AutoCAD (2D drafting first, then annotation, layouts and
 plotting, DWG, parametrics and 3D), plus what AutoCAD doesn't have: agent control over MCP, a
@@ -23,7 +23,7 @@ is ≈ 600–930 h away.
 | Ready for real work | **≈ 38%** | estimated ([target-app-parity.md](docs/target-app-parity.md)) |
 | Mainstream practitioner (2D drafter) | **≈ 28%** (lower than the full number: file exchange, stability and interaction discounts multiply) | estimated ([target-app-parity.md](docs/target-app-parity.md#mainstream-practitioner)) |
 | Essentials user | **≈ 46%** | estimated ([target-app-parity.md](docs/target-app-parity.md#essentials-user)) |
-| Remaining to alpha | **≈ 125–190 h** (the gate rows) | estimated |
+| Remaining to alpha | **≈ 110–170 h** (the gate rows) | estimated |
 | Remaining to beta | **≈ 600–930 h** (≈ 150–250 h elapsed with 4–6 agents) | estimated |
 | Remaining to full parity | **≈ 1,300–2,100 h** (≈ 330–550 h elapsed) | estimated |
 
@@ -112,12 +112,13 @@ Ranked; detail and the full beta checklist in [docs/roadmap.md](docs/roadmap.md)
 5. Unstub prompt options in TRIM/EXTEND, OFFSET, ROTATE, PLINE, SPLINE, MTEXT, MLEADER (15–25 h).
 6. Autosave, recovery, AUDIT, RECOVER (10–15 h).
 7. Exact ellipse/spline geometry and correct polyline offsets (30–50 h).
-8. Xrefs, block editor, groups, then dynamic blocks (80–120 h).
+8. Dynamic blocks checked in AutoCAD, array actions on references, in-place xref editing (25–45 h).
 
 ## Progress log
 
 | Date | Entry |
 |---|---|
+| 2026-10-24 | Dynamic-block authoring in the Block Editor (BPARAMETER, BACTION, BVSTATE, BTESTBLOCK), raster images (IMAGEATTACH, IMAGECLIP, IMAGEADJUST), ETRANSMIT, PARTIALOPEN, DesignCenter, UCSMAN, LAYVPI, FILTER groups, 3D object snaps, true perspective views with DVIEW, and a quick shaded RENDER. The "Use blocks" gate row narrows (35–55 → 20–35 h); alpha ≈ 110–170 h. Readiness numbers not re-measured |
 | 2026-10-12 | TRIM: a pick after a closed polyline's last cut keeps only the complementary run instead of an extra circuit of the outline (#726) |
 | 2026-10-12 | HATCHEDIT refuses an explicit bad `scale` or `angle` before it edits anything, so a rejected request leaves the drawing, undo and redo as they were (#724) |
 | 2026-10-10 | Merged main: Ukrainian interface (#36, first string catalog), Dynamic Input pointer boxes with Tab and relative entry (#60), press-drag selection windows (#63), WIPEOUT and hatch gradients kept through DXF/DWG save (#147, #162), SETVAR DIM* as style overrides (#129), UNITS dialog (#38), close-window save prompt (#47), DIMANGULAR on circles (#20), cargo fmt fixed on main. UI/UX 40% → 43% (dynamic input 15% → 45%), localization 3% → 5%; ready for real work ≈ 37% → 38% (weighted 37.2% → 37.7%), mainstream 27% → 28%, essentials 45% → 46%. Beta is now ~37 points away; hours unchanged within rounding. |
@@ -133,6 +134,7 @@ Ranked; detail and the full beta checklist in [docs/roadmap.md](docs/roadmap.md)
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-24 | minor | Progress log and alpha hours for the blocks, images, eTransmit and 3D round; Upcoming item 8 narrowed |
 | 2026-10-12 | trivial | Progress log: closed-polyline TRIM (#726) |
 | 2026-10-12 | trivial | Progress log: HATCHEDIT numeric validation (#724) |
 | 2026-10-10 | minor | Merged main's changes (Ukrainian catalog, dynamic input pointer boxes, DXF fixes); UI/UX and localization numbers updated |

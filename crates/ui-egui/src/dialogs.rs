@@ -31,6 +31,7 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
         "authoring" => crate::bedit::authoring_dialog(app, ctx, &mut open),
         "stylesmanager" => crate::plotstyles::dialog(app, ctx, &mut open),
         "visualstyles" => crate::visualstyles::dialog(app, ctx, &mut open),
+        "render" => crate::render_window::dialog(app, ctx, &mut open),
         o if o == "options" || o.starts_with("options:") => crate::options::dialog(app, ctx, o, &mut open),
         other => crate::managers::dialog(app, ctx, other, &mut open),
     }
@@ -41,9 +42,10 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
 }
 
 /// The Drafting Settings tabs: (id in the dialog name, label). The open tab is part of the
-/// dialog name (`"dsettings:osnap"`): DSETTINGS opens the first, OSNAP the Object Snap tab.
-const DSETTINGS_TABS: [(&str, &str); 4] =
-    [("snap", "Snap and Grid"), ("polar", "Polar Tracking"), ("osnap", "Object Snap"), ("dyn", "Dynamic Input")];
+/// dialog name (`"dsettings:osnap"`): DSETTINGS opens the first, OSNAP the Object Snap tab,
+/// 3DOSNAP the 3D Object Snap tab.
+const DSETTINGS_TABS: [(&str, &str); 5] =
+    [("snap", "Snap and Grid"), ("polar", "Polar Tracking"), ("osnap", "Object Snap"), ("3dosnap", "3D Object Snap"), ("dyn", "Dynamic Input")];
 
 /// Drafting Settings (`name` is `"dsettings"` or `"dsettings:<tab>"`). The tabs edit a copy of
 /// the settings; every change goes through SETVAR ([`drafting_vars`]), as typed.
@@ -67,6 +69,7 @@ fn dsettings(app: &mut CadApp, ctx: &egui::Context, name: &str, open: &mut bool)
         match tab {
             "polar" => polar_tab(ui, &mut s),
             "osnap" => osnap_tab(ui, &mut s),
+            "3dosnap" => osnap3d_tab(ui, &mut s),
             "dyn" => dyn_tab(ui, &mut s),
             _ => snap_tab(ui, &mut s, &mut snapunit, &mut gridunit),
         }
@@ -88,7 +91,7 @@ fn dsettings(app: &mut CadApp, ctx: &egui::Context, name: &str, open: &mut bool)
 }
 
 /// The system variables Drafting Settings edits, with their values in `s`.
-fn drafting_vars(s: &cadcraft_engine::Settings) -> [(&'static str, serde_json::Value); 16] {
+fn drafting_vars(s: &cadcraft_engine::Settings) -> [(&'static str, serde_json::Value); 17] {
     let on = |b: bool| json!(i32::from(b));
     [
         ("SNAPMODE", on(s.snapmode)),
@@ -104,6 +107,7 @@ fn drafting_vars(s: &cadcraft_engine::Settings) -> [(&'static str, serde_json::V
         ("POLARMODE", json!(s.polar_flags)),
         ("POLARADDANG", json!(cadcraft_engine::sysvars::format_angle_list(&s.polaraddang))),
         ("OSMODE", json!(s.osmode)),
+        ("3DOSMODE", json!(s.osmode3d)),
         ("DYNMODE", on(s.dynmode)),
         ("DYNPIFORMAT", on(s.dynpi_cartesian)),
         ("DYNPICOORDS", on(s.dynpi_absolute)),
@@ -209,6 +213,40 @@ fn osnap_tab(ui: &mut egui::Ui, s: &mut cadcraft_engine::Settings) {
             }
             if ui.button(crate::tl!("Clear All")).clicked() {
                 s.osmode &= !modes;
+            }
+        });
+    });
+}
+
+/// The 3D Object Snap tab: 3D object snaps on (F4: 3DOSMODE's bit 1 clear) and the 3DOSMODE
+/// modes, each beside its marker.
+fn osnap3d_tab(ui: &mut egui::Ui, s: &mut cadcraft_engine::Settings) {
+    use cadcraft_engine::cmd::osnap3d::mode3d;
+    let mut on = s.osmode3d & mode3d::OFF == 0;
+    if ui.checkbox(&mut on, crate::tl!("3D Object Snap On (F4)")).changed() {
+        s.osmode3d ^= mode3d::OFF;
+    }
+    ui.separator();
+    ui.horizontal_top(|ui| {
+        ui.vertical(|ui| {
+            ui.set_min_width(220.0);
+            for (bit, name, _, marker) in mode3d::ALL {
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(vec2(16.0, 16.0), egui::Sense::hover());
+                    crate::canvas::snap_glyph(ui.painter(), r.center(), marker, 5.0, egui::Stroke::new(1.5, Tokens::get().snap));
+                    let mut v = s.osmode3d & bit != 0;
+                    if ui.checkbox(&mut v, crate::i18n::t(name)).changed() {
+                        s.osmode3d ^= bit;
+                    }
+                });
+            }
+        });
+        ui.vertical(|ui| {
+            if ui.button(crate::tl!("Select All")).clicked() {
+                s.osmode3d |= mode3d::MODES;
+            }
+            if ui.button(crate::tl!("Clear All")).clicked() {
+                s.osmode3d &= !mode3d::MODES;
             }
         });
     });
@@ -487,7 +525,7 @@ fn blocks(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
 
 /// Start INSERT with `name` already given at its block name prompt, so the next prompt asks for
 /// the insertion point.
-fn insert_block(app: &mut CadApp, name: &str) {
+pub(crate) fn insert_block(app: &mut CadApp, name: &str) {
     app.start("insert");
     if app.session.running.as_ref().is_none_or(|r| r.id != "insert") {
         return;
@@ -649,6 +687,33 @@ mod tests {
         assert!(shown.iter().any(|t| t == "Polar Tracking On (F10)"), "{shown:?}");
     }
 
+    /// 3DOSNAP typed opens the 3D Object Snap tab; F4 (its JSON form) toggles the 3D object snaps.
+    /// The tab sets 3DOSMODE through SETVAR: Clear All, a mode, On.
+    #[test]
+    fn the_3d_object_snap_tab_sets_3dosmode_and_f4_toggles() {
+        use cadcraft_engine::cmd::osnap3d::mode3d;
+        let mut app = CadApp::new(Session::new(), Services::default());
+        assert_eq!(app.cmdline("3dosnap"), None);
+        assert_eq!(app.ui.dialog.as_deref(), Some("dsettings:3dosnap"));
+        let ctx = egui::Context::default();
+        frame(&mut app, &ctx, Vec::new());
+        let shown: Vec<String> = frame(&mut app, &ctx, Vec::new()).into_iter().map(|(t, _)| t).collect();
+        for label in
+            ["3D Object Snap", "3D Object Snap On (F4)", "Vertex", "Midpoint on edge", "Center of face", "Knot", "Perpendicular", "Nearest to face"]
+        {
+            assert!(shown.iter().any(|t| t == label), "no {label} in {shown:?}");
+        }
+        click(&mut app, &ctx, "Clear All");
+        assert_eq!(app.session.settings.osmode3d, mode3d::OFF);
+        click(&mut app, &ctx, "Nearest to face");
+        click(&mut app, &ctx, "3D Object Snap On (F4)");
+        assert_eq!(app.session.settings.osmode3d, mode3d::NEAREST);
+        assert_eq!(cadcraft_engine::sysvars::get(&app.session, "3DOSMODE"), Some(json!(mode3d::NEAREST)));
+        app.ui.dialog = None;
+        app.run("3dosnap", json!({})).unwrap();
+        assert_eq!((app.ui.dialog.as_deref(), app.session.settings.osmode3d), (None, mode3d::OFF | mode3d::NEAREST));
+    }
+
     /// Showing a tab changes nothing (no SETVAR per frame from rounding), and each variable the
     /// dialog edits is SETVAR's.
     #[test]
@@ -657,7 +722,7 @@ mod tests {
         app.session.settings.polarang = 7.0_f64.to_radians();
         let before = app.session.settings.clone();
         let ctx = egui::Context::default();
-        for tab in ["dsettings", "dsettings:polar", "dsettings:osnap", "dsettings:dyn"] {
+        for tab in ["dsettings", "dsettings:polar", "dsettings:osnap", "dsettings:3dosnap", "dsettings:dyn"] {
             app.ui.dialog = Some(tab.into());
             frame(&mut app, &ctx, Vec::new());
             frame(&mut app, &ctx, Vec::new());

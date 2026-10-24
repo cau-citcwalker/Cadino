@@ -26,6 +26,11 @@ const FRONT: f64 = 1e-9;
 const EDGE_LEVEL: f64 = 0.25;
 
 pub(crate) fn draw(b: &mut Builder, ctx: &Ctx, s: &Solid3d, color: Ink, lw: f32) {
+    // A render shows a part in its material's colour.
+    if b.opts.render {
+        let rgb = crate::shade::material_rgb(&s.part.material).unwrap_or(if color.aci7 { Rgb(205, 205, 205) } else { color.rgb });
+        return crate::shade::collect(b, ctx, &s.mesh, &s.xform, rgb);
+    }
     draw_mesh(b, ctx, &s.mesh, &s.xform, color, lw, true);
 }
 
@@ -33,6 +38,9 @@ pub(crate) fn draw(b: &mut Builder, ctx: &Ctx, s: &Solid3d, color: Ink, lw: f32)
 /// a smooth surface's, whose outline against the view is drawn too (a polygon mesh's faces are
 /// its own: its lines are all it shows).
 pub(crate) fn draw_mesh(b: &mut Builder, ctx: &Ctx, mesh: &Mesh3, xform: &Mat4, color: Ink, lw: f32, silhouettes: bool) {
+    if b.opts.render {
+        return crate::shade::collect(b, ctx, mesh, xform, if color.aci7 { Rgb(205, 205, 205) } else { color.rgb });
+    }
     // Everything happens in view space (`ctx.xf3`: x right, y up, z toward the viewer), where the
     // view direction is +Z. Block references place solids with their plane, elevation, z scale
     // and base point (`Insert::lift`).
@@ -42,10 +50,25 @@ pub(crate) fn draw_mesh(b: &mut Builder, ctx: &Ctx, mesh: &Mesh3, xform: &Mat4, 
     // A mirroring transform turns the outward winding inward.
     let out = if det3(&xf) < 0.0 { -1.0 } else { 1.0 };
     let world: Vec<Vec3> = mesh.verts.iter().map(|p| xf.apply(*p)).collect();
-    // The whole mesh counts toward the list's bounds, whatever is drawn of it.
+    // In perspective a face turns toward the eye, not along the view direction.
+    let persp = b.opts.view_dir.persp;
+    // The whole mesh counts toward the list's bounds, whatever is drawn of it (in perspective,
+    // what is in front of the eye, as it is seen).
     for p in &world {
-        b.list.bounds.add(proj(*p));
+        match persp {
+            Some(c) => {
+                if let Some((q, _)) = c.map(*p) {
+                    b.list.bounds.add(q);
+                }
+            }
+            None => b.list.bounds.add(proj(*p)),
+        }
     }
+    // Whether a face through `p` with unit normal `n` faces the viewer (by how much).
+    let facing = |p: Vec3, n: Vec3| match persp {
+        Some(c) => n.dot((c.eye - p).normalized()),
+        None => n.dot(toward),
+    };
     // A triangle's world corners and outward unit normal; `None` for a bad index or no area.
     let face = |t: &[u32; 3]| {
         let w = |i: u32| world.get(i as usize).copied();
@@ -60,8 +83,8 @@ pub(crate) fn draw_mesh(b: &mut Builder, ctx: &Ctx, mesh: &Mesh3, xform: &Mat4, 
     let outline = || {
         let mut sides: Vec<(u32, u32, bool)> = Vec::new();
         for t in mesh.tris.iter().filter(|_| silhouettes) {
-            let Some((_, n)) = face(t) else { continue };
-            let front = n.dot(toward) > FRONT;
+            let Some(([p, ..], n)) = face(t) else { continue };
+            let front = facing(p, n) > FRONT;
             for (i, j) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
                 sides.push((i.min(j), i.max(j), front));
             }
@@ -101,10 +124,10 @@ pub(crate) fn draw_mesh(b: &mut Builder, ctx: &Ctx, mesh: &Mesh3, xform: &Mat4, 
     for t in &mesh.tris {
         let Some(([p, q, r], n)) = face(t) else { continue };
         // Back faces are culled; a surface shows both sides of its faces, the back lit as the front.
-        let facing = n.dot(toward);
-        let n = if facing > FRONT {
+        let f = facing(p, n);
+        let n = if f > FRONT {
             n
-        } else if mesh.open && facing < -FRONT {
+        } else if mesh.open && f < -FRONT {
             -n
         } else {
             continue;
@@ -161,6 +184,19 @@ pub(crate) fn draw_mesh(b: &mut Builder, ctx: &Ctx, mesh: &Mesh3, xform: &Mat4, 
 /// Add an edge over shaded faces ([`crate::DisplayList::edges`]): points `pts` (view plane) at
 /// depths `z`.
 fn edge(b: &mut Builder, ctx: &Ctx, color: Ink, pts: &[Vec2], z: &[f64]) {
+    if let Some(c) = b.opts.view_dir.persp {
+        let v: Vec<Vec3> = pts.iter().zip(z).map(|(q, z)| q.to3(*z)).collect();
+        for run in crate::persp::clip_line(&c, &v) {
+            let (q, d): (Vec<Vec2>, Vec<f64>) = run.into_iter().unzip();
+            push_edge(b, ctx, color, &q, &d);
+        }
+        return;
+    }
+    push_edge(b, ctx, color, pts, z);
+}
+
+/// [`edge`] through points already where the list has them.
+fn push_edge(b: &mut Builder, ctx: &Ctx, color: Ink, pts: &[Vec2], z: &[f64]) {
     let (Ok(start), Ok(len)) = (u32::try_from(b.list.verts.len()), u32::try_from(pts.len())) else { return };
     if len < 2 || z.len() != pts.len() {
         return;

@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-23 · **Change:** minor (command-line history and every engine prompt/message translated in Korean and Ukrainian; previously: Swedish catalog added) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (the 3D kernel's messages and the new commands' prompts and dialogs in Korean and Ukrainian; previously: command-line history translated) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
 
 How far CADCraft's interface and drawing text are from AutoCAD's languages. Summarised in
 [ROADMAP.md](../ROADMAP.md#languages); work items in [gaps.md](gaps.md#localization).
@@ -29,8 +29,10 @@ shaping and right-to-left text through TrueType, vertical SHX text styles.
   controls, object snaps, drafting prompts, property labels and dialogs. The command line's
   history and prompts are translated as they are drawn (`i18n::line`: a whole-line row or a
   `{placeholder}` row filled in); the log itself, CLI/MCP responses and scripts stay English.
-  Korean and Ukrainian cover every engine prompt, echo, refusal and result message (about
-  1,470, found by a source scanner test that fails with the rows still missing), and
+  Korean and Ukrainian cover every engine prompt, echo, refusal and result message and the 3D
+  kernel's messages (about 1,800, found by a source scanner test that fails with the rows still
+  missing; a refusal's reason, the kernel failure in it and the operation that failed are each
+  translated in turn), and
   uncatalogued text falls back to English. For scale: about 1,160 unique capitalised string literals exist in `crates/engine`
   and `crates/ui-egui` (grep, 2026-10-10).
 - **Drawing text:** TrueType/OpenType/`.ttc` through `skrifa` with per-character font fallback
@@ -65,9 +67,9 @@ plus native review by a human; extending the catalog to the remaining English-on
 | Indonesian | id | 0 (0%) | 0% | Latin: yes | no | none | 3–5 h |
 | Japanese | ja | 0 (0%) | 0% | CJK glyphs render; IME pending; no vertical text | no | none | 4–6 h |
 | German | de | 989 catalog rows (≈ 100% of the catalog; ≈ 80% of all UI strings, estimated: engine diagnostics and uncatalogued text stay English) | dialogs and tooltips yes; command reference searchable in German | Latin: yes (bundled egui fonts cover ä ö ü Ä Ö Ü ß; long strings will need layout checks) | no native review | partial | 1–2 h |
-| Korean | ko | 2,783 rows (2,774 ordinary); full existing catalog union, marked UI coverage and every engine prompt/message on the command line | dialogs, tooltips, Options and translated command-reference labels | UI requires catalog-covering installed or optional craft-fonts Hang/Kore face; English fallback without one; IME fixes still pending | original AI-assisted translation; independent native proofreading pending | complete current catalog; English-only interface gaps remain | native review + platform layout/IME validation |
+| Korean | ko | 3,714 rows (3,705 ordinary); full existing catalog union, marked UI coverage and every engine prompt/message on the command line | dialogs, tooltips, Options and translated command-reference labels | UI requires catalog-covering installed or optional craft-fonts Hang/Kore face; English fallback without one; IME fixes still pending | original AI-assisted translation; independent native proofreading pending | complete current catalog; English-only interface gaps remain | native review + platform layout/IME validation |
 | Vietnamese | vi | 0 (0%) | 0% | Latin with stacked diacritics: renders per code point, untested | no | none | 3–5 h |
-| Ukrainian | uk | 2,874 catalog rows (≈ 100% of the catalog and of the engine's command-line prompts and messages; uncatalogued UI text stays English) | dialogs and tooltips yes; command reference searchable in Ukrainian | Cyrillic: yes (bundled egui fonts) | translated by a contributor; no second review | partial | 2–4 h |
+| Ukrainian | uk | 3,702 catalog rows (≈ 100% of the catalog and of the engine's command-line prompts and messages; uncatalogued UI text stays English) | dialogs and tooltips yes; command reference searchable in Ukrainian | Cyrillic: yes (bundled egui fonts) | translated by a contributor; no second review | partial | 2–4 h |
 | Czech | cs | 1,202 catalog rows; reference catalog and marked UI literals covered | dialogs and tooltips yes; contextual menu headings; command reference searchable in Czech | Latin: yes (bundled egui proportional and monospace fonts; Czech letters and quotes tested) | AI-assisted by @Losminek; independent review pass; not yet proofread by a native speaker | complete current catalog; English-only interface gaps remain | native review + shared English-only UI work |
 | Swedish | sv | 1,235 catalog rows; reference catalog, marked UI literals and menu headings covered (no gaps reported) | dialogs and tooltips yes; contextual menu headings; command reference searchable in Swedish | Latin: yes (bundled egui proportional and monospace fonts; å ä ö é and Swedish quotes tested) | AI-assisted (Claude Code) by @holmbom; terminology and the running app reviewed by a native speaker | complete current catalog; English-only interface gaps remain | line-by-line proofreading + shared English-only UI work |
 | Italian | it | 1,227 catalog rows; reference catalog and marked UI literals covered | dialogs and tooltips yes; contextual menu headings (Visualizza / Vista, Edita / Modifica); command reference searchable in Italian | Latin: yes (bundled egui fonts; accented letters tested) | AI-assisted by Emanuele Bottelli (Claude), written from the English strings with Italian desktop-CAD vocabulary; no native proofreading pass yet | complete current catalog; English-only interface gaps remain | native review + shared English-only UI work |
@@ -86,6 +88,7 @@ each language, which needs humans. Translations parallelise fully once the catal
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-24 | minor | Korean and Ukrainian rows for perspective and RENDER, raster images, eTransmit, partial open, DesignCenter, the UCS dialog, LAYVPI, FILTER groups, LAYTRANS settings, dynamic-block authoring and 3D object snaps (~460 each); the scanner also reads the 3D kernel's Rust and C++ messages, `map_err` refusals and `r["message"]` results; nested reasons translate up to three deep |
 | 2026-10-23 | minor | Command-line history and formatted prompts translated as drawn (log stays English); ~1,200 engine prompt/echo/refusal/result rows added to Korean and Ukrainian; a scanner test requires ko and uk rows for every new one |
 | 2026-10-13 | minor | Swedish added: 1,235 rows, one/other plurals, menu headings, locale/preferences/menu/font/render tests; no gaps in the marked UI literals; terminology and the running app reviewed by a native speaker |
 | 2026-10-13 | minor | Korean added: full 1,235-row existing catalog union, single count form, locale/persistence/live-switch tests, and validated Hangul UI fonts; native review and platform verification pending |

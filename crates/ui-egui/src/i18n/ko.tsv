@@ -1638,7 +1638,6 @@ menu	Modify	수정
 	A {0} can't be placed in this construction plane (it stays level); use CPLANE World or a level plane.	{0}은(는) 이 작업 평면에 배치할 수 없습니다(수평으로 유지됨). CPLANE World 또는 수평 평면을 사용하십시오.
 	A {0} in a tilted plane can't be scaled unevenly.	기울어진 평면의 {0}은(는) 비균일하게 축척할 수 없습니다.
 	A {what} can't be stretched in Z (only the vertices of lines, 3D polylines and 3D faces can; other objects move in Z only wholly inside the window, as MOVE moves them). Give the displacement without a Z value.	{what}은(는) Z 방향으로 신축할 수 없습니다(선, 3D 폴리선, 3D 면의 정점만 가능하며, 다른 객체는 창 안에 완전히 들어 있을 때만 MOVE처럼 Z 방향으로 이동합니다). Z 값 없이 변위를 입력하십시오.
-	ATTACH is not available yet: raster images and PDF/DWF/DGN underlays can't be shown yet	ATTACH는 아직 사용할 수 없습니다. 래스터 이미지와 PDF/DWF/DGN 언더레이는 아직 표시할 수 없습니다.
 	ATTSYNC block {0}?	{0} 블록을 ATTSYNC하시겠습니까?
 	ATTSYNC block {block}: {n} reference{0} synchronized.	ATTSYNC 블록 {block}: 참조 {n}개가 동기화되었습니다.
 	ATTSYNC block {name}: {n} reference{0} synchronized.	ATTSYNC 블록 {name}: 참조 {n}개가 동기화되었습니다.
@@ -3267,3 +3266,458 @@ menu	Modify	수정
 	Remove faces	면 제거
 	Remove edges	모서리 제거
 	Specify base radius	밑면 반지름 지정
+# Perspective, rendering, raster images, DesignCenter, UCS dialog, dynamic block authoring, 3D object snaps and the 3D kernel.
+	3D modelling is not available in this build (no OpenCASCADE kernel)	이 빌드에서는 3D 모델링을 사용할 수 없습니다(OpenCASCADE 커널 없음)
+	<3D Osnap {0}>	<3D 객체 스냅 {0}>
+	A polygon needs at least 3 points.	다각형에는 점이 3개 이상 필요합니다.
+	A view twist isn't available yet: views stay upright.	뷰 비틀기는 아직 사용할 수 없습니다. 뷰는 똑바로 유지됩니다.
+	ATTACH: {0} underlays are not available yet; attach a PNG, JPEG or BMP picture or a DWG/DXF drawing	ATTACH: {0} 언더레이는 아직 사용할 수 없습니다. PNG, JPEG, BMP 그림이나 DWG/DXF 도면을 부착하십시오
+	Action {0} added.	동작 {0}을(를) 추가했습니다.
+	Alignment type = Perpendicular	정렬 유형 = 직교
+	Alignment type = Tangent	정렬 유형 = 접선
+	All layouts	모든 배치
+	Apply action to	동작 적용 대상
+	B-rep read: {e}	B-rep 읽기: {e}
+	B-rep write: {e}	B-rep 쓰기: {e}
+	Base image size: Width: 1.000000, Height: {ratio}, Unitless	기준 이미지 크기: 폭: 1.000000, 높이: {ratio}, 단위 없음
+	Clipping planes aren't available yet.	자르기 평면은 아직 사용할 수 없습니다.
+	Current 3D osnap modes: {0}	현재 3D 객체 스냅 모드: {0}
+	Current layout	현재 배치
+	Current settings: Isolate all layouts={0}	현재 설정: 모든 배치 분리={0}
+	Delete old boundary?	이전 경계를 삭제하시겠습니까?
+	Detached {0} image(s).	이미지 {0}개를 분리했습니다.
+	Display property in Properties palette?	특성 팔레트에 특성을 표시하시겠습니까?
+	Double-click inside a layout viewport to make it current, then run LAYVPI.	배치 뷰포트 안을 두 번 클릭하여 현재 뷰포트로 만든 다음 LAYVPI를 실행하십시오.
+	Enter 0, 1, 2 or 4.	0, 1, 2 또는 4를 입력하십시오.
+	Enter angle offset	각도 간격띄우기 입력
+	Enter base point location	기준점 위치 입력
+	Enter base point type	기준점 유형 입력
+	Enter clipping type	자르기 유형 입력
+	Enter distance multiplier	거리 승수 입력
+	Enter image adjustment option	이미지 조정 옵션 입력
+	Enter image clipping option	이미지 자르기 옵션 입력
+	Enter image frame setting	이미지 프레임 설정 입력
+	Enter image option	이미지 옵션 입력
+	Enter image quality setting	이미지 품질 설정 입력
+	Enter layers to load	로드할 도면층 입력
+	Enter list of 3D object snap modes	3D 객체 스냅 모드 목록 입력
+	Enter list of images for path modification	경로를 수정할 이미지 목록 입력
+	Enter list of images to reload	다시 로드할 이미지 목록 입력
+	Enter list of images to {op}	이미지 목록 입력({op})
+	Enter list of {0} values (separated by commas)	{0} 값 목록 입력(쉼표로 구분)
+	Enter maximum {0}	최대 {0} 입력
+	Enter minimum {0}	최소 {0} 입력
+	Enter name of drawing to open	열 도면 이름 입력
+	Enter name of transmittal package file	전송 패키지 파일 이름 입력
+	Enter new path	새 경로 입력
+	Enter number of grip objects for parameter	매개변수의 그립 객체 수 입력
+	Enter numbers separated by commas.	쉼표로 구분된 숫자를 입력하십시오.
+	Enter object visibility for new state	새 상태의 객체 가시성 입력
+	Enter parameter name	매개변수 이름 입력
+	Enter parameter type	매개변수 유형 입력
+	Enter property description	특성 설명 입력
+	Enter the distance between columns (|||)	열 사이의 거리 입력 (|||)
+	Enter the distance between rows or specify unit cell (---)	행 사이의 거리 입력 또는 단위 셀 지정 (---)
+	Enter transparency mode	투명도 모드 입력
+	Enter view to load	로드할 뷰 입력
+	Enter {0} increment	{0} 증분 입력
+	Enter {0}.	{0}을(를) 입력하십시오.
+	Enter {what} property label	특성 레이블 입력({what})
+	Enter {what} value (0-100)	{what} 값 입력(0-100)
+	Enter {what} value set type	값 세트 유형 입력({what})
+	Evaluate associated actions when parameter is edited by another action?	다른 동작으로 매개변수를 편집할 때 연관된 동작을 평가하시겠습니까?
+	Images to list	나열할 이미지
+	Isolate layers in the viewports of which layouts?	어느 배치의 뷰포트에서 도면층을 분리하시겠습니까?
+	Loaded {0} object(s); {1} not loaded.	객체 {0}개를 로드했습니다. {1}개는 로드하지 않았습니다.
+	Lookup tables are given in the JSON form for now: baction {type: "lookup", parameter, columns, rows}.	조회 테이블은 현재 JSON 형식으로만 지정합니다: baction {type: "lookup", parameter, columns, rows}.
+	No image matches "{t}".	"{t}"과(와) 일치하는 이미지가 없습니다.
+	No images are attached.	부착된 이미지가 없습니다.
+	No images selected.	선택된 이미지가 없습니다.
+	No parameter there.	그곳에 매개변수가 없습니다.
+	Not available in the test block window; close it first (BCLOSE).	테스트 블록 창에서는 사용할 수 없습니다. 먼저 창을 닫으십시오(BCLOSE).
+	Old path: {0}	이전 경로: {0}
+	OpenCASCADE could not bevel these edges (try smaller distances)	OpenCASCADE가 이 모서리를 모따기할 수 없습니다(더 작은 거리를 사용해 보십시오)
+	OpenCASCADE could not round these edges (try a smaller radius)	OpenCASCADE가 이 모서리를 모깎기할 수 없습니다(더 작은 반지름을 사용해 보십시오)
+	Parameter {name} added to the selection.	매개변수 {name}을(를) 선택에 추가했습니다.
+	Parameter {shown} added.	매개변수 {shown}을(를) 추가했습니다.
+	Parameters, actions and visibility states belong to a block: open the Block Editor first (BEDIT).	매개변수, 동작, 가시성 상태는 블록에 속합니다. 먼저 블록 편집기를 여십시오(BEDIT).
+	Removed {0}.	{0}을(를) 제거했습니다.
+	Requires ON or OFF.	ON 또는 OFF가 필요합니다.
+	Requires an answer.	응답이 필요합니다.
+	Requires an integer between 0 and 100.	0에서 100 사이의 정수가 필요합니다.
+	Select an image.	이미지를 선택하십시오.
+	Select image to clip	자를 이미지 선택
+	Select objects on the layer to be isolated in viewport	뷰포트에서 분리할 도면층의 객체 선택
+	Select objects or <use DVIEWBLOCK>	객체 선택 또는 <DVIEWBLOCK 사용>
+	Select parameter	매개변수 선택
+	Specify a point or an angle in degrees.	점 또는 각도(도)를 지정하십시오.
+	Specify action location	동작 위치 지정
+	Specify alignment direction or alignment type	정렬 방향 또는 정렬 유형 지정
+	Specify base angle	기준 각도 지정
+	Specify base point location	기준점 위치 지정
+	Specify camera point	카메라 점 지정
+	Specify default rotation angle	기본 회전 각도 지정
+	Specify displacement base point	변위 기준점 지정
+	Specify endpoint	끝점 지정
+	Specify endpoint of reflection line	대칭선의 끝점 지정
+	Specify first corner of stretch frame	신축 프레임의 첫 번째 구석 지정
+	Specify label location	레이블 위치 지정
+	Specify lens length	렌즈 길이 지정
+	Specify new camera-target distance	새 카메라-대상 거리 지정
+	Specify objects to rotate only	회전만 할 객체 지정
+	Specify objects to stretch	신축할 객체 지정
+	Specify opposite corner point	반대 구석점 지정
+	Specify parameter point to associate with action or enter	동작과 연관시킬 매개변수 점 지정 또는 입력
+	Specify radius of parameter	매개변수의 반지름 지정
+	Specify target point	대상 점 지정
+	Specify view twist angle	뷰 비틀기 각도 지정
+	Specify zoom scale factor	줌 축척 비율 지정
+	Test block window closed.	테스트 블록 창을 닫았습니다.
+	Test block window: "{name}". Select the reference to try its grips; BCLOSE closes the window.	테스트 블록 창: "{name}". 참조를 선택하여 그립을 시험해 보십시오. BCLOSE로 창을 닫습니다.
+	That parameter doesn't take this action.	그 매개변수에는 이 동작을 사용할 수 없습니다.
+	That parameter takes no actions.	그 매개변수에는 동작을 사용할 수 없습니다.
+	The block has no parameters: add one first (BPARAMETER).	블록에 매개변수가 없습니다. 먼저 추가하십시오(BPARAMETER).
+	The block has no visibility parameter: add one first (BPARAMETER Visibility).	블록에 가시성 매개변수가 없습니다. 먼저 추가하십시오(BPARAMETER Visibility).
+	The camera and the target must be apart.	카메라와 대상은 서로 떨어져 있어야 합니다.
+	The distance between columns must be more than 0.	열 사이의 거리는 0보다 커야 합니다.
+	The image has no clip boundary.	이미지에 자르기 경계가 없습니다.
+	The radius must be more than 0.	반지름은 0보다 커야 합니다.
+	The test block window is already open.	테스트 블록 창이 이미 열려 있습니다.
+	The test block window tests a block; the Block Editor is open on the drawing itself.	테스트 블록 창은 블록을 테스트합니다. 블록 편집기가 도면 자체에서 열려 있습니다.
+	The view can't be rendered at that size.	그 크기로는 뷰를 렌더링할 수 없습니다.
+	This is a dynamic block: BPARAMETER, BACTION and BVSTATE add to its parameters, actions and visibility states.	동적 블록입니다. BPARAMETER, BACTION, BVSTATE로 매개변수, 동작, 가시성 상태를 추가합니다.
+	Total Image Definition(s): {0}, Image Reference(s): {refs}	전체 이미지 정의: {0}, 이미지 참조: {refs}
+	Transmittal package created: {path}	전송 패키지를 만들었습니다: {path}
+	Undid the last isolation.	마지막 분리를 실행 취소했습니다.
+	Unknown 3D object snap mode "{name}".	알 수 없는 3D 객체 스냅 모드 "{name}".
+	Unload all Xrefs on open?	열 때 모든 외부 참조를 언로드하시겠습니까?
+	Unloaded {0}.	{0}을(를) 언로드했습니다.
+	`pathType` must be full, relative or none, not "{0}"	`pathType`은 "{0}"이(가) 아니라 full, relative 또는 none이어야 합니다
+	a circle has no normal	원에 법선이 없습니다
+	a circle is missing numbers	원에 숫자가 빠져 있습니다
+	a closed profile must be flat	닫힌 프로파일은 평평해야 합니다
+	a corner can't follow the tilted faces	구석이 기울어진 면을 따라갈 수 없습니다
+	a cross section has a piece with no shape	단면에 형상이 없는 조각이 있습니다
+	a cross section has no pieces	단면에 조각이 없습니다
+	a curve has no pieces	곡선에 조각이 없습니다
+	a curve piece is missing numbers	곡선 조각에 숫자가 빠져 있습니다
+	a direction is zero	방향이 0입니다
+	a distance must be at least {MIN_LEN}	거리는 {MIN_LEN} 이상이어야 합니다
+	a face can't be tilted that far	면을 그렇게 많이 기울일 수 없습니다
+	a face can't be turned right over	면을 완전히 뒤집을 수 없습니다
+	a face can't both move and turn	면을 이동과 회전을 동시에 할 수 없습니다
+	a guide curve must run from the first cross section to the last, through each in turn	안내 곡선은 첫 번째 단면에서 마지막 단면까지 각 단면을 차례로 지나야 합니다
+	a guide curve must touch every cross section	안내 곡선은 모든 단면에 닿아야 합니다
+	a guided loft needs a guide curve	안내 로프트에는 안내 곡선이 필요합니다
+	a guided loft needs two cross sections or more	안내 로프트에는 단면이 두 개 이상 필요합니다
+	a hole must be closed	구멍은 닫혀 있어야 합니다
+	a hole must lie in the region's plane	구멍은 영역의 평면에 있어야 합니다
+	a line extruded along itself makes no surface	선을 자신의 방향으로 돌출하면 곡면이 만들어지지 않습니다
+	a loft follows at most {0} guide curves	로프트는 안내 곡선을 최대 {0}개까지 따릅니다
+	a loft needs 1 to {0} cross sections	로프트에는 단면이 1~{0}개 필요합니다
+	a loft needs 2 to {MAX_SECTIONS} cross sections	로프트에는 단면이 2~{MAX_SECTIONS}개 필요합니다
+	a loft needs cross sections	로프트에는 단면이 필요합니다
+	a mesh to convert has 1 to {MAX_MESH_TRIS} triangles	변환할 메쉬의 삼각형 수는 1~{MAX_MESH_TRIS}개여야 합니다
+	a motion needs twelve numbers	이동에는 숫자 12개가 필요합니다
+	a planar surface needs a closed curve	평면 곡면에는 닫힌 곡선이 필요합니다
+	a point is not finite	점이 유한하지 않습니다
+	a point needs three numbers	점에는 숫자 3개가 필요합니다
+	a polysolid can't run round a circle (draw it as two arcs)	폴리솔리드는 원을 따라갈 수 없습니다(호 두 개로 그리십시오)
+	a pyramid has 3 to {MAX_PYRAMID_SIDES} sides	피라미드의 면 수는 3~{MAX_PYRAMID_SIDES}개입니다
+	a radius must be 0 or at least {MIN_LEN}	반지름은 0이거나 {MIN_LEN} 이상이어야 합니다
+	a radius must be at least {MIN_LEN}	반지름은 {MIN_LEN} 이상이어야 합니다
+	a spline has a non-finite point or tangent	스플라인에 유한하지 않은 점 또는 접선이 있습니다
+	a spline has two points in the same place	스플라인에 같은 위치의 점이 두 개 있습니다
+	a spline needs 2 to {MAX_SPLINE_POINTS} points	스플라인에는 점이 2~{MAX_SPLINE_POINTS}개 필요합니다
+	a spline needs two points	스플라인에는 점이 두 개 필요합니다
+	a surface is pulled whole: pick all its faces, or make it a solid first	곡면은 통째로 당겨집니다. 모든 면을 선택하거나 먼저 솔리드로 만드십시오
+	a triangle has a corner that isn't in the mesh	삼각형의 구석이 메쉬에 없습니다
+	an arc's three points are in a line	호의 세 점이 한 직선 위에 있습니다
+	an edge can't follow the tilted faces	모서리가 기울어진 면을 따라갈 수 없습니다
+	an edge curve has no pieces	모서리 곡선에 조각이 없습니다
+	an edge curve has no shape	모서리 곡선에 형상이 없습니다
+	an edge surface needs four edges	모서리 곡면에는 모서리 4개가 필요합니다
+	an edge surface's edges must be open curves	모서리 곡면의 모서리는 열린 곡선이어야 합니다
+	an empty profile	빈 프로파일
+	an unknown kind of curve piece	알 수 없는 종류의 곡선 조각
+	at most {MAX_SHAPES} curves at once	한 번에 곡선 최대 {MAX_SHAPES}개
+	at most {MAX_SHAPES} holes	구멍 최대 {MAX_SHAPES}개
+	at most {MAX_SHAPES} shapes at once	한 번에 형상 최대 {MAX_SHAPES}개
+	bad request: {e}	잘못된 요청: {e}
+	bevelling the edges	모서리 모따기
+	both curves must be open, or both closed	두 곡선은 모두 열려 있거나 모두 닫혀 있어야 합니다
+	choose 1 to {MAX_PICKS} edges	모서리를 1~{MAX_PICKS}개 선택하십시오
+	choose 1 to {MAX_PICKS} {what}	{what}: 1~{MAX_PICKS}개를 선택하십시오
+	could not start the worker process while {what}: {e}	{what} 중 작업자 프로세스를 시작할 수 없습니다: {e}
+	cross sections must be all open or all closed	단면은 모두 열려 있거나 모두 닫혀 있어야 합니다
+	cross sections must be at different elevations	단면은 서로 다른 고도에 있어야 합니다
+	cutting the shape failed	형상 자르기에 실패했습니다
+	cutting the solid failed	솔리드 자르기에 실패했습니다
+	each edge needs a radius	각 모서리에는 반지름이 필요합니다
+	each edge needs two distances and a face	각 모서리에는 거리 두 개와 면 하나가 필요합니다
+	each guide curve must run through matching corners of the cross sections	각 안내 곡선은 단면의 대응하는 구석을 지나야 합니다
+	edge {0} is on no face	모서리 {0}이(가) 어떤 면에도 없습니다
+	empty path	빈 경로
+	extruding the faces	면 돌출
+	face {0} is not next to edge {1}	면 {0}이(가) 모서리 {1}에 인접하지 않습니다
+	hollowing the solid	솔리드 쉘 만들기
+	image files can't be read on the web	웹에서는 이미지 파일을 읽을 수 없습니다
+	it stopped (crashed) while {what}{status}	{what} 중 작업이 중단되었습니다(충돌){status}
+	it took longer than {0} s while {what} and was stopped	{what} 중 {0}초를 넘겨 중단되었습니다
+	joining the solids failed	솔리드 결합에 실패했습니다
+	joining the surfaces	곡면 결합
+	making a surface	곡면 만들기
+	measuring solids stopped	솔리드 측정이 중단되었습니다
+	measuring solids: {e}	솔리드 측정: {e}
+	move or turn flat faces and curved faces separately	평평한 면과 곡면은 따로 이동하거나 회전하십시오
+	moving the faces	면 이동
+	no 3D solids or curves to export	내보낼 3D 솔리드나 곡선이 없습니다
+	no 3D solids to export	내보낼 3D 솔리드가 없습니다
+	no faces are selected	선택된 면이 없습니다
+	no loft runs through these sections along that curve	그 곡선을 따라 이 단면들을 지나는 로프트가 없습니다
+	no ruled surface joins these curves	이 곡선들을 잇는 직선 보간 곡면이 없습니다
+	no solids to check	검사할 솔리드가 없습니다
+	no solids to draw	그릴 솔리드가 없습니다
+	no spline runs through these points	이 점들을 지나는 스플라인이 없습니다
+	no temporary folder: {0}	임시 폴더 없음: {0}
+	not OpenCASCADE B-rep text	OpenCASCADE B-rep 텍스트가 아닙니다
+	nothing to draw	그릴 것이 없습니다
+	nothing to imprint	각인할 것이 없습니다
+	nothing to join	결합할 것이 없습니다
+	nothing to slice with	슬라이스할 도구가 없습니다
+	nothing to split with	분할할 도구가 없습니다
+	offsetting the faces	면 간격띄우기
+	only 3D solids can be separated	3D 솔리드만 분리할 수 있습니다
+	only flat faces can be extruded	평평한 면만 돌출할 수 있습니다
+	only surfaces can be thickened	곡면만 두껍게 할 수 있습니다
+	pressing or pulling	누르기 또는 당기기
+	reading the request: {e}	요청 읽기: {e}
+	removing the faces	면 제거
+	rounding the edges	모서리 모깎기
+	splitting failed	분할에 실패했습니다
+	subtracting the solids failed	솔리드 빼기에 실패했습니다
+	tapering the faces	면 테이퍼
+	the angle must be between -89 and 89 degrees	각도는 -89도에서 89도 사이여야 합니다
+	the angle must not be zero	각도는 0이 아니어야 합니다
+	the axis must not be perpendicular to the profile	축이 프로파일에 수직이면 안 됩니다
+	the axis must not cross the profile	축이 프로파일을 가로지르면 안 됩니다
+	the axis needs two different points	축에는 서로 다른 두 점이 필요합니다
+	the box has no volume	상자에 부피가 없습니다
+	the cross sections' corners can't be joined smoothly	단면의 구석을 매끄럽게 이을 수 없습니다
+	the curves can't be imprinted	곡선을 각인할 수 없습니다
+	the cutting plane needs a point and a direction	절단 평면에는 점과 방향이 필요합니다
+	the direction is zero	방향이 0입니다
+	the direction vector has no length	방향 벡터의 길이가 없습니다
+	the distance must be at least {MIN_LEN}	거리는 {MIN_LEN} 이상이어야 합니다
+	the edge surface	모서리 곡면
+	the extrusion needs a non-zero height or direction	돌출에는 0이 아닌 높이나 방향이 필요합니다
+	the extrusion runs along the profile's plane	돌출 방향이 프로파일의 평면을 따릅니다
+	the faces can't be offset that far (error {0})	면을 그렇게 멀리 간격띄우기할 수 없습니다(오류 {0})
+	the faces can't be tilted	면을 기울일 수 없습니다
+	the file could not be read	파일을 읽을 수 없습니다
+	the file has no surfaces or curves	파일에 곡면이나 곡선이 없습니다
+	the file's curves are too large to import	파일의 곡선이 너무 커서 가져올 수 없습니다
+	the four edges don't make a closed loop	네 모서리가 닫힌 루프를 이루지 않습니다
+	the loft can't be closed into a solid	로프트를 닫아 솔리드로 만들 수 없습니다
+	the loft can't be made between these cross sections and guides	이 단면과 안내 곡선 사이에는 로프트를 만들 수 없습니다
+	the mesh has a point that isn't finite	메쉬에 유한하지 않은 점이 있습니다
+	the mesh has no faces with area	메쉬에 면적이 있는 면이 없습니다
+	the mesh is too large	메쉬가 너무 큽니다
+	the modelling kernel failed: {why}	모델링 커널 오류: {why}
+	the move has no length	이동 거리가 없습니다
+	the outer curve doesn't bound a flat region	바깥 곡선이 평평한 영역을 둘러싸지 않습니다
+	the path has a piece with no direction	경로에 방향이 없는 조각이 있습니다
+	the path must not start along the up direction	경로는 위쪽 방향을 따라 시작하면 안 됩니다
+	the path needs a start (a circle path is two arcs)	경로에는 시작점이 필요합니다(원 경로는 호 두 개로 그리십시오)
+	the path turns back on itself	경로가 되돌아갑니다
+	the pieces of a curve must meet end to end	곡선의 조각은 끝과 끝이 만나야 합니다
+	the pieces of an edge curve must meet end to end	모서리 곡선의 조각은 끝과 끝이 만나야 합니다
+	the planar surface	평면 곡면
+	the profile encloses no area	프로파일이 면적을 둘러싸지 않습니다
+	the profile has a non-finite point, or a piece too small to model	프로파일에 유한하지 않은 점이나 모델링하기에 너무 작은 조각이 있습니다
+	the profile has no plane	프로파일에 평면이 없습니다
+	the profile must be closed	프로파일은 닫혀 있어야 합니다
+	the profile needs 1 to 100000 pieces	프로파일에는 조각이 1~100000개 필요합니다
+	the pyramid is too flat, or its top too small (make it 0 or larger)	피라미드가 너무 납작하거나 윗면이 너무 작습니다(0 또는 더 크게 하십시오)
+	the radius must be positive	반지름은 양수여야 합니다
+	the region has no area	영역에 면적이 없습니다
+	the region is not on a face of the solid	영역이 솔리드의 면 위에 있지 않습니다
+	the region lies inside the solid	영역이 솔리드 안에 있습니다
+	the region's boundary must be closed	영역의 경계는 닫혀 있어야 합니다
+	the result is empty	결과가 비어 있습니다
+	the revolved surface	회전 곡면
+	the ruled surface	직선 보간 곡면
+	the shape has no faces	형상에 면이 없습니다
+	the shape is empty	형상이 비어 있습니다
+	the shell is too thick for this solid	이 솔리드에 비해 쉘이 너무 두껍습니다
+	the sides can't be tapered that much	옆면을 그렇게 많이 테이퍼할 수 없습니다
+	the solid has a transform the kernel can't apply (only move, rotate, scale and mirror)	솔리드에 커널이 적용할 수 없는 변환이 있습니다(이동, 회전, 축척, 대칭만 가능)
+	the solid has no B-rep data	솔리드에 B-rep 데이터가 없습니다
+	the solid has no faces	솔리드에 면이 없습니다
+	the solid is empty	솔리드가 비어 있습니다
+	the surface can't be offset that far	곡면을 그렇게 멀리 간격띄우기할 수 없습니다
+	the surface can't be thickened that much	곡면을 그렇게 두껍게 할 수 없습니다
+	the surfaces don't close up into a watertight shape ({0} open pieces)	곡면이 닫혀 빈틈없는 형상이 되지 않습니다(열린 조각 {0}개)
+	the tabulated surface	방향 벡터 곡면
+	the thickness must be at least {MIN_LEN}	두께는 {MIN_LEN} 이상이어야 합니다
+	the tolerance must be 0 or more	공차는 0 이상이어야 합니다
+	the view's right direction runs along the view	뷰의 오른쪽 방향이 뷰 방향과 같습니다
+	the view's right must not run along the view	뷰의 오른쪽 방향은 뷰 방향과 같으면 안 됩니다
+	the walls can't be that thick	벽을 그렇게 두껍게 할 수 없습니다
+	the worker answered a different request	작업자가 다른 요청에 응답했습니다
+	the {0} is too large for this solid	이 솔리드에 비해 {0}이(가) 너무 큽니다
+	there is no edge {0} (the shape has {1})	모서리 {0}이(가) 없습니다(형상의 모서리 수: {1})
+	there is no face {0} (the shape has {1})	면 {0}이(가) 없습니다(형상의 면 수: {1})
+	these faces can't be removed: the faces round them can't be extended to close the gap	이 면은 제거할 수 없습니다. 주변 면을 연장하여 틈을 메울 수 없습니다
+	these faces don't bound a feature that can be moved	이 면들은 이동할 수 있는 형상을 둘러싸지 않습니다
+	this solid has no edges to {what}	이 솔리드에는 처리할 모서리가 없습니다({what})
+	this solid has no flat top face to remove	이 솔리드에는 제거할 평평한 윗면이 없습니다
+	turning the faces	면 회전
+	two cross sections meet at a corner	두 단면이 한 구석에서 만납니다
+	with guide curves, each cross section needs as many corners as the others	안내 곡선이 있으면 각 단면의 구석 수가 같아야 합니다
+	{format} pictures can't be attached (use PNG, JPEG or BMP)	{format} 그림은 부착할 수 없습니다(PNG, JPEG 또는 BMP 사용)
+	{what} is not finite	{what}이(가) 유한하지 않습니다
+	{what} left nothing	{what}: 결과가 비어 있습니다
+	{what} made a shape that isn't valid	{what}: 유효하지 않은 형상이 만들어졌습니다
+	{what} must be at least {MIN_LEN}	{what}은(는) {MIN_LEN} 이상이어야 합니다
+	{what} needs a direction	{what}에는 방향이 필요합니다
+	{w} x {h} pixels is more than this app reads ({0} million at most)	{w} x {h} 픽셀은 이 앱이 읽을 수 있는 크기를 넘습니다(최대 {0}백만)
+	(no folders or drawings)	(폴더 또는 도면 없음)
+	3D Object Snap On (F4)	3D 객체 스냅 켜기(F4)
+	Action	동작
+	Add a folder with Add to Favorites.	즐겨찾기에 추가로 폴더를 추가하십시오.
+	Add to Drawing	도면에 추가
+	Add to Favorites	즐겨찾기에 추가
+	Attach Image...	이미지 부착...
+	Choose a drawing in the tree.	트리에서 도면을 선택하십시오.
+	Close Test Block Window	테스트 블록 창 닫기
+	Current UCS: {name}	현재 UCS: {name}
+	Depth	깊이
+	Depth:	깊이:
+	Details	세부 정보
+	Display at UCS origin point	UCS 원점에 표시
+	Drawing files can't be read in this build.	이 빌드에서는 도면 파일을 읽을 수 없습니다.
+	Edges	모서리
+	Every viewport keeps its own UCS.	각 뷰포트가 자체 UCS를 유지합니다.
+	Favorites	즐겨찾기
+	Folders	폴더
+	Folders can't be browsed here: use Open Drawings.	여기서는 폴더를 탐색할 수 없습니다. 열린 도면을 사용하십시오.
+	Force object color and linetype to BYLAYER	객체 색상과 선종류를 BYLAYER로 강제
+	Hide all existing objects in new state	새 상태에서 기존 객체 모두 숨기기
+	Leave visibility of existing objects unchanged in new state	새 상태에서 기존 객체의 가시성 유지
+	Make Invisible	숨기기
+	Make Visible	표시하기
+	Mappings saved to {path}.	매핑을 {path}에 저장했습니다.
+	Move Down	아래로 이동
+	Move Up	위로 이동
+	Named UCSs	명명된 UCS
+	New name	새 이름
+	No details for this UCS.	이 UCS에는 세부 정보가 없습니다.
+	Nothing of this type in the drawing.	도면에 이 유형의 항목이 없습니다.
+	Open Drawings	열린 도면
+	Origin	원점
+	Orthographic UCSs	직교 UCS
+	Parameter	매개변수
+	Perspective	투시
+	RENDER renders the Model tab.	RENDER는 모형 탭을 렌더링합니다.
+	Read the folders and drawings again	폴더와 도면을 다시 읽기
+	Refresh	새로 고침
+	Relative to:	기준:
+	Render	렌더
+	Save Image...	이미지 저장...
+	Save UCS with viewport	뷰포트와 함께 UCS 저장
+	Save the drawing first: the log is written beside it.	먼저 도면을 저장하십시오. 로그는 도면 옆에 기록됩니다.
+	Save the mappings to a mapping file	매핑을 매핑 파일에 저장
+	Save...	저장...
+	Settings	설정
+	Show all existing objects in new state	새 상태에서 기존 객체 모두 표시
+	Show the content of a drawing file	도면 파일의 내용 표시
+	Test Block	블록 테스트
+	Test Block Window	테스트 블록 창
+	That drawing is closed.	그 도면은 닫혔습니다.
+	The UCS icon is drawn at the corner of the view.	UCS 아이콘은 뷰의 구석에 그려집니다.
+	The filter list is unbalanced: every Begin needs its End.	필터 목록이 맞지 않습니다. 모든 시작에는 끝이 필요합니다.
+	The mapping file is too large.	매핑 파일이 너무 큽니다.
+	This is not a layer translation mapping file.	도면층 변환 매핑 파일이 아닙니다.
+	Transaction log written to {path}.	트랜잭션 로그를 {path}에 기록했습니다.
+	Translate objects in blocks	블록 안의 객체 변환
+	UCS Icon settings	UCS 아이콘 설정
+	UCS name	UCS 이름
+	UCS settings	UCS 설정
+	Update view to Plan when UCS is changed	UCS가 변경되면 뷰를 평면도로 업데이트
+	Use the layers of another drawing, or a saved mapping file (.json)	다른 도면의 도면층 또는 저장된 매핑 파일(.json) 사용
+	Visibility States	가시성 상태
+	Visibility state name	가시성 상태 이름
+	Write transaction log	트랜잭션 로그 기록
+	Written beside the saved drawing, with the .log extension	저장된 도면 옆에 .log 확장자로 기록됩니다
+	X Axis	X축
+	Y Axis	Y축
+	Z Axis	Z축
+	shaded with the parts' materials, not photoreal	부품의 재료로 음영 처리, 사실적 렌더링 아님
+	{op} has no matching Begin.	{op}에 맞는 시작이 없습니다.
+	3D Object Snap	3D 객체 스냅
+	Action Tool	동작 도구
+	Adjust (command line)	조정(명령행)
+	Adjust...	조정...
+	Attach...	부착...
+	Clip Image	이미지 자르기
+	Delete Parameter or Action	매개변수 또는 동작 삭제
+	DesignCenter	DesignCenter
+	Dview	동적 뷰
+	Frame	프레임
+	Grip Set	그립 세트
+	Image	이미지
+	Image (command line)	이미지(명령행)
+	Isolate Layer to Current Viewport	현재 뷰포트로 도면층 분리
+	Named UCS...	명명된 UCS...
+	Package Drawing (command line)	도면 패키지(명령행)
+	Package Drawing...	도면 패키지...
+	Parameter Properties	매개변수 특성
+	Partial Load	부분 로드
+	Partial Load (command line)	부분 로드(명령행)
+	Partial Open (command line)	부분 열기(명령행)
+	Partial Open...	부분 열기...
+	Quality	품질
+	Raster Image Reference...	래스터 이미지 참조...
+	View size	뷰 크기
+	Dimstyles	치수 스타일
+	Layouts	배치
+	Linetypes	선종류
+	Multileaderstyles	다중 지시선 스타일
+	Tablestyles	테이블 스타일
+	Textstyles	문자 스타일
+	**Begin AND	**AND 시작
+	**End AND	**AND 끝
+	**Begin OR	**OR 시작
+	**End OR	**OR 끝
+	**Begin XOR	**XOR 시작
+	**End XOR	**XOR 끝
+	**Begin NOT	**NOT 시작
+	**End NOT	**NOT 끝
+	Object Type	객체 유형
+	World	표준
+	Unnamed	이름 없음
+	Image files (PNG, JPEG, BMP)	이미지 파일(PNG, JPEG, BMP)
+	Reference files (images, DWG, DXF)	참조 파일(이미지, DWG, DXF)
+	ZIP archives	ZIP 압축 파일
+	Unreadable	읽을 수 없음
+	Vertex	정점
+	Midpoint on edge	모서리 중간점
+	Center of face	면 중심
+	Knot	매듭
+	Nearest to face	면에 근처점
+	Added {kind} "{found}".	{kind} "{found}"을(를) 추가했습니다.
+	"{found}" is already in this drawing: its own definition is kept.	"{found}"은(는) 이미 이 도면에 있습니다. 이 도면의 정의를 유지합니다.
+	Table exported to {path}.	테이블을 {path}(으)로 내보냈습니다.
+	No isolated layers.	분리된 도면층이 없습니다.
+	No previous layer state.	이전 도면층 상태가 없습니다.
+	Parameters, actions and visibility states are added in the Block Editor (BEDIT).	매개변수, 동작, 가시성 상태는 블록 편집기에서 추가합니다(BEDIT).
+	bad number `{t}`	잘못된 숫자 `{t}`
+	index out of range	인덱스가 범위를 벗어났습니다
+	no closed boundary around [{0}, {1}]	[{0}, {1}] 주위에 닫힌 경계가 없습니다
+	no drawing open	열린 도면 없음
+	not a PNG, JPEG or BMP picture	PNG, JPEG 또는 BMP 그림이 아닙니다
+	the plotter folder is unavailable	플로터 폴더를 사용할 수 없습니다
+	{i} is not a face or edge index	{i}은(는) 면 또는 모서리 인덱스가 아닙니다
+	{n} object(s) made visible.	객체 {n}개를 표시했습니다.
+	{n} object(s) made invisible.	객체 {n}개를 숨겼습니다.

@@ -104,15 +104,22 @@ fn plan(
         }
         return Ok(out);
     }
+    // Ordinate dimensions measure along the current UCS's axes, as DIMORDINATE does (QDIM runs
+    // in World: the plane the user set); the others along world x and y.
+    // ponytail: the linear modes stay square to world X in a turned UCS, as DIMLINEAR does here.
+    let u = if mode == Mode::Ordinate { s.user_cplane().col(0).xy().normalized() } else { Vec2::X };
+    let u = if u == Vec2::ZERO { Vec2::X } else { u };
+    let (local, world) = (|q: Vec2| Vec2::new(q.dot(u), q.dot(u.perp())), |q: Vec2| u * q.x + u.perp() * q.y);
     // Horizontal dimensions measure along x; vertical ones along y. Without a choice: vertical
     // when the line position is beside the geometry, as with DIMLINEAR.
-    let bounds = cadcraft_geom::Bounds2::from_points(pts.iter().copied());
+    let bounds = cadcraft_geom::Bounds2::from_points(pts.iter().map(|q| local(*q)));
     let vertical = vertical.unwrap_or_else(|| {
+        let at = local(at);
         let beside = at.x < bounds.min.x || at.x > bounds.max.x;
         let within = at.y >= bounds.min.y && at.y <= bounds.max.y;
         beside && within
     });
-    let key = |q: &Vec2| if vertical { q.y } else { q.x };
+    let key = |q: &Vec2| if vertical { local(*q).y } else { local(*q).x };
     let mut pts = pts.to_vec();
     pts.sort_by(|a, b| key(a).total_cmp(&key(b)));
     pts.dedup_by(|a, b| (key(a) - key(b)).abs() < 1e-9);
@@ -125,12 +132,18 @@ fn plan(
         }
         // AutoCAD's default datum: the current UCS's origin (QDIM runs in World: the plane set).
         let origin = datum.unwrap_or(s.user_cplane().col(3).xy());
-        // X datum (horizontal): leaders run to the line position's y; Y datum: to its x.
+        // X datum (horizontal): leaders run to the line position's y; Y datum: to its x (UCS).
+        let (la, horizontal) = (local(at), (u.y.abs() > 1e-12).then(|| u.angle()));
         return Ok(pts
             .iter()
             .map(|p| {
-                let end = if vertical { Vec2::new(at.x, p.y) } else { Vec2::new(p.x, at.y) };
-                dim(s, DimKind::Ordinate { x_type: !vertical }, origin, *p, end, Vec2::ZERO, Vec2::ZERO, "")
+                let lp = local(*p);
+                let end = world(if vertical { Vec2::new(la.x, lp.y) } else { Vec2::new(lp.x, la.y) });
+                let mut k = dim(s, DimKind::Ordinate { x_type: !vertical }, origin, *p, end, Vec2::ZERO, Vec2::ZERO, "");
+                if let EntityKind::Dimension(dm) = &mut k {
+                    dm.marks.horizontal = horizontal;
+                }
+                k
             })
             .collect());
     }

@@ -996,7 +996,8 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
             w.i(280, 0);
             w.s(342, cx.table_style(&t.style));
             w.s(343, brh);
-            w.p(11, Vec3::new(1.0, 0.0, 0.0));
+            // The horizontal direction: the table's rows run along it.
+            w.p(11, t.axis().to3(0.0));
             w.i(90, 0);
             let (rows, cols) = table_size(t);
             w.i(91, rows as i64);
@@ -1497,7 +1498,7 @@ fn table_block_entities(d: &Drawing, t: &Table, layer: &str) -> Vec<Entity> {
                     height: cell.height,
                     width: 0.0,
                     attach: cell.attach,
-                    rotation: 0.0,
+                    rotation: cell.rotation,
                     style,
                     contents: cell.text.clone(),
                     line_spacing: 1.0,
@@ -1648,19 +1649,31 @@ fn vport_table(w: &mut W, d: &Drawing, ext: Bounds2) {
         w.i(70, 0);
         w.p2(10, finite(t.min, Vec2::ZERO));
         w.p2(11, finite(t.max, Vec2::new(1.0, 1.0)));
-        w.p2(12, finite(t.center, Vec2::ZERO));
+        let [x, y, z] = t.view_dir;
+        let dir = Vec3::new(x, y, z);
+        let dir = if dir.is_finite() && dir != Vec3::ZERO { dir } else { Vec3::Z };
+        // A perspective view (VIEWMODE 1): its target (17) at the view's centre, so the centre in
+        // display coordinates (12) is 0,0, and the camera as far along the direction (16) as
+        // its lens and the view's height put it.
+        let persp = t.camera.and_then(|c| {
+            let v = cadcraft_geom::ViewDir::new(dir);
+            let (target, distance) = (v.world_of(t.center.to3(c.target)), c.focal(t.height));
+            (target.is_finite() && distance.is_finite() && distance > 0.0).then_some((c.lens, target, v.dir * distance))
+        });
+        w.p2(12, if persp.is_some() { Vec2::ZERO } else { finite(t.center, Vec2::ZERO) });
         // Snap grid origin and rotation (SNAPBASE, SNAPANG in degrees): R13+ files keep them here.
         w.p2(13, d.header.point("SNAPBASE").map(|p| p.xy()).filter(|p| p.is_finite()).unwrap_or(Vec2::ZERO));
         w.p2(14, d.header.snap_unit());
         w.p2(15, d.header.grid_unit());
-        let [x, y, z] = t.view_dir;
-        let dir = Vec3::new(x, y, z);
-        w.p(16, if dir.is_finite() && dir != Vec3::ZERO { dir } else { Vec3::Z });
-        w.p(17, Vec3::ZERO);
+        w.p(16, persp.map_or(dir, |p| p.2));
+        w.p(17, persp.map_or(Vec3::ZERO, |p| p.1));
         w.f(40, if t.height.is_finite() && t.height > 0.0 { t.height } else { 1.0 });
         w.f(41, if t.aspect.is_finite() && t.aspect > 0.0 { t.aspect } else { 1.0 });
-        w.f(42, 50.0);
+        w.f(42, persp.map_or(50.0, |p| p.0));
         w.f(50, d.header.f64("SNAPANG", 0.0));
+        if persp.is_some() {
+            w.i(71, 1);
+        }
         // Render mode: 0 2D optimised, 2 hidden line, 4 Gouraud shaded, 6 Gouraud shaded with
         // wireframe (Hidden is unshaded with edges).
         w.i(
@@ -2634,7 +2647,7 @@ fn tags_for(d: &Drawing, version: Version, target: Version, dwg: bool) -> Vec<Ta
         layout_obj(&mut w, &h, &l.name, i64::from(l.tab_order.max(1)), brh, 1, &l.page, l.view);
     }
     // Raster image definitions.
-    w.t.extend(crate::dxf_image::objects(&cx.images, &root_dict));
+    w.t.extend(crate::dxf_image::objects(&cx.images, &root_dict, &d.header));
     w.s(0, "ENDSEC");
     w.s(0, "EOF");
     let seed = format!("{:X}", w.next);
