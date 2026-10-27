@@ -1,6 +1,6 @@
 # File-format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (raster images attached and drawn, in PDF/SVG too, eTransmit packages, partial open, dynamic-block authoring and its `CADCRAFT_DYNBLOCK` record, perspective, twisted and clipped VPORT records) · **Target:** Autodesk AutoCAD 2027
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-26 · **Change:** minor (IGES and STEP solids reach Rhino whole, named and coloured; DWG validated against the ODA File Converter and ezdxf; DWG ownership, table style and group reactor fixes; DWGOUT; 3DSOLIDs with ACIS bodies; per-tile grids in VPORT) · **Target:** Autodesk AutoCAD 2027
 
 Every format AutoCAD 2027 reads or writes, with CADCraft's support, fidelity and tests. Work
 items are in [gaps.md](gaps.md#file-formats); the weighted score feeds
@@ -31,7 +31,7 @@ below, and ≈ 20–40 h for 3D exchange formats that wait for 3D modelling.
 
 AutoCAD 2027 opens every DWG version from R2.0 onward and saves 2018 (AC1032, still the current
 DWG format), 2013, 2010, 2007, 2004, 2000 and R14. CADCraft reads DWG by converting it to DXF
-with the `acadrust` 0.6.3 crate and reading that DXF; it saves by writing its own R2000 DXF and
+with the `acadrust` crate (0.6.7) and reading that DXF; it saves by writing its own R2000 DXF and
 converting it to a DWG of the chosen version (#421): SAVEAS `version`, else the drawing's own
 version (the file's `$ACADVER`, 2018 for a new drawing), at least 2004 unless 2000 is asked for.
 The bridge repairs two acadrust 0.6.3 gaps in 2010+ DWG: merged table cells and table-style
@@ -49,6 +49,48 @@ title/header suppression.
 | 2013–2017 | AC1027 | read, write | via bridge | yes | `dwg_at_every_version_reads_back` |
 | 2018–2027 | AC1032 | read, write (default) | via bridge; untested on real files | yes (default for new drawings) | `dwg_at_every_version_reads_back` (synthetic only) |
 | Web build | — | — | **no** (error: "save as DXF") | no | — |
+
+### Validating DWG without AutoCAD
+
+No AutoCAD is installed on the development PC, so DWG output is checked against independent
+readers (the harness lives outside the repo, in the agent's scratch folder; rebuild it from this
+description):
+
+- **ODA File Converter** (free, Open Design Alliance; extracted with `msiexec /a`, never
+  installed): every corpus DWG converted to DXF 2018 with audit off (a file that needs recovery
+  fails with an `.err`), the same with audit on, and the two outputs compared record by record (a
+  difference is something the audit repaired); every corpus DXF converted to DWG.
+- **ezdxf** (MIT) in a Python venv: `ezdxf.readfile` + `doc.audit()` on every corpus DXF and on
+  the ODA's DXF renditions of our DWGs.
+- **A structural checker** written from the ODA specification (chapters 2.14, 3, 4, 9, 10, 20,
+  23): R2000 and R2004-family containers (file header CRC32, page and section maps, page
+  checksums, LZ77 pages, header/classes sentinels and CRCs, the handle map, and every object's
+  size, CRC and own handle). It passes the ODA converter's own DWGs. Note: real files put a data
+  page's header checksum at 0x18 and its data checksum at 0x1C, one field later than the
+  specification's table.
+- The corpus: `crates/engine/tests/dwg_corpus.rs` builds a drawing with every kind of object
+  Cadino makes (2D objects, Korean text and MTEXT columns, every dimension type, leaders and
+  multileaders, hatches and gradients, blocks with attributes, an XCLIP, a dynamic block, a
+  table, an image, polygon and polyface meshes, 3D solids, layouts with viewports, named views
+  and UCSs, a layer state, drawing properties, tiled views with a perspective one) and saves it
+  as DXF and DWG at every version; `CADINO_CORPUS_DIR=<dir>` writes the files for the validators.
+
+Found and fixed (2026-10-25): every DWG with more than one layout had the objects of its second
+and later layouts (including their ENDBLK) written as owned by the first layout — acadrust 0.6.4
+derived ownership from the paper-space flag; fixed by acadrust 0.6.7 (`objects_on_later_layouts_stay_on_them`).
+2004/2007 TABLESTYLE rows pointed at no text style (`table_style_rows_name_their_text_style`).
+Group members lacked their GROUP persistent reactor, in DXF and DWG
+(`grouped_entities_name_their_group_and_keep_their_other_reactors`). After these the ODA
+converter loads every corpus DWG and DXF (2000–2018) without recovery, ezdxf's audit finds
+nothing, the structural checker passes every DWG, and the ODA audit only rebuilds associative
+hatch boundaries from their source objects and reorders data-store records, as it does on the
+DWGs it writes itself. (A 3D solid without ACIS data, as Cadino wrote before its ACIS writer, is
+erased by that audit.)
+
+Still unverifiable without AutoCAD: whether AutoCAD itself accepts what the ODA converter
+accepts (acadrust's container differs from ODA's in metadata AutoCAD may check: no empty
+section 0, section ids in write order, a multi-page 32 KB class list, maintenance version 4),
+and whether AutoCAD reads the ACIS bodies the way ODA does.
 
 Everything lost in the DXF read/write paths below is also lost through DWG, plus whatever
 `acadrust`'s own DXF output omits (proxy objects, ACIS data, custom objects: not measured). User
@@ -85,10 +127,11 @@ early (#175), but the throughput problem remains. **DWG ≈ 30% read, ≈ 15% wr
 | WIPEOUT | yes | yes (#147, fixes #79) | |
 | MLINE (+ MLINESTYLE), HELIX, TOLERANCE | yes (#510, #420) | yes | |
 | REGION | other programs' REGIONs (ACIS data) kept as Unknown | our regions are written as closed polylines tagged with CADCraft xdata (#510; ACIS has no public spec) | |
-| 3DSOLID, BODY, SURFACE, MESH, SHAPE, UNDERLAY, OLE2FRAME, LIGHT, CAMERA, SECTION, POINTCLOUD, proxy entities | kept as Unknown (raw tags) | written back as read, with their CLASS records (#528); **dropped by DWG save** (acadrust) | only their layer follows edits |
+| 3DSOLID (Cadino's) | yes: the OpenCASCADE B-rep in its `CADCRAFT_BREP_<handle>` XRECORD ([3d.md](3d.md#data-formats)); the ACIS data is skipped | yes, with an ACIS body made from the solid's display mesh (`crates/io/src/acis`, from Spatial's published SAT format): SAT 700 in the entity (groups 1/3, AutoCAD's character encoding) for 2000–2010, `290 1` and a SAB 21800 record in ACDSDATA from 2013 (another program's ACDSDATA records are kept). In DWG acadrust writes the body (encrypted SAT to 2010, SAB in AcDs from 2013). Checked: our test-only SAT/SAB reader (every link), ezdxf 1.4.5 and the ODA File Converter (audit on) load every body of the 2000/2010/2018 DXF and 2004/2018 DWG with the same topology | faceted: curved faces are planar facets (the kernel's mesh has no face ids); a solid without a clean closed mesh, or without a mesh (web build), has no body; untested in AutoCAD itself |
+| 3DSOLID (other programs'), BODY, SURFACE, MESH, SHAPE, UNDERLAY, OLE2FRAME, LIGHT, CAMERA, SECTION, POINTCLOUD, proxy entities | kept as Unknown (raw tags) | written back as read, with their CLASS records (#528) and ACDSDATA records; **dropped by DWG save** (acadrust) | only their layer follows edits; not drawn |
 | Header variables | all read | 36 written | AutoCAD writes about 280 |
 | Tables: LAYER (+ transparency, description), LTYPE, STYLE, DIMSTYLE, BLOCK_RECORD | yes | yes | |
-| Tables: VPORT, VIEW, UCS, APPID | yes | yes: saved viewport configurations (#504), named views, UCSs; a tile's twist (51) and clipping planes (43, 44, VIEWMODE bits 2, 4, 16) | UCS elevation lost |
+| Tables: VPORT, VIEW, UCS, APPID | yes | yes: saved viewport configurations (#504), named views, UCSs; a tile's twist (51) and clipping planes (43, 44, VIEWMODE bits 2, 4, 16); a tile's own grid (Rhino's "active viewport only"): grid on (76), snap and grid spacing (14/24, 15/25), and its major lines, line count and axes as `CADCRAFT` xdata `1000 GRID` | UCS elevation lost; another program's per-viewport grid settings are not read (its tiles show the drawing's grid) |
 | Objects: LAYOUT, DICTIONARY, XRECORD, TABLESTYLE, DIMASSOC | yes | yes | |
 | Objects: GROUP, MLINESTYLE, MLEADERSTYLE, IMAGEDEF, SCALE | yes | yes (groups #417, scale list #468) | |
 | Objects: VISUALSTYLE, PLOTSETTINGS, materials, field objects and other unmodelled objects | kept raw (#528) | written back as read | not editable |
@@ -111,7 +154,7 @@ early (#175), but the throughput problem remains. **DWG ≈ 30% read, ≈ 15% wr
 | PNG / JPEG / BMP / TIFF export | PNGOUT, JPGOUT, BMPOUT, TIFOUT | PNG; SVG too (AutoCAD doesn't export SVG) | 1–2 |
 | DWF/DWFx export, DWF underlay | yes | no | 10–15 |
 | DGN import/export/underlay | yes | no (needs a public spec; owner decision) | 25–40 |
-| WMF, EPS, ACIS SAT, STL, FBX, IGES/STEP (Windows), 3DS | various | no; most are 3D and wait for M11 | 20–40 |
+| WMF, EPS, ACIS SAT, STL, FBX, IGES/STEP (Windows), 3DS | various | STL (STLOUT, 3DPRINT); STEP (STEPOUT, STEPIN) and IGES (IGESOUT, IGESIN), in millimetres. Each solid goes out as one closed object (IGES BRep mode: 186 over 514; STEP: one MANIFOLD_SOLID_BREP), open surfaces as one open shell; RHINOOUT writes both, its STEP file with each solid's part name, layer and colour (non-ASCII text as `\X2\` escapes). WMF, EPS, ACIS SAT, FBX and 3DS: no | 15–30 |
 | SHX fonts (`.shx`, big fonts) | read | **not parsed**: our stroke font or FONTALT stands in, so text metrics differ from AutoCAD | 8–12 |
 | Linetype (`.lin`) and hatch pattern (`.pat`) files | load user files | user files load (#552); linetype shape (SHX) elements are skipped | 1–2 |
 | Plot styles (`.ctb`, `.stb`), plotter configs (`.pc3`), `.pmp` | yes | plot style tables in our own JSON format ([plot-styles.md](plot-styles.md)) and kept in the drawing; plotter devices with papers and printable areas in our own JSON format ([plotters.md](plotters.md), #564); binary `.ctb`/`.stb`/`.pc3`/`.pmp` not read (no public spec) | 4–8 |
@@ -135,6 +178,9 @@ our output in AutoCAD black-box.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-26 | minor | Cadino's 3DSOLIDs carry faceted ACIS bodies (SAT 700 to 2010, SAB 21800 in ACDSDATA from 2013, through DWG too), checked with ezdxf and the ODA converter; a VPORT tile's own grid (76, 14/24, 15/25 and `CADCRAFT` `GRID` xdata) |
+| 2026-10-26 | minor | IGES written in BRep mode (each solid one closed object, open surfaces open shells), STEP through OpenCASCADE's document writer with names, layers and colours from RHINOOUT and ISO 10303-21 escapes for non-ASCII text; RHINOOUT writes the STEP file first |
+| 2026-10-25 | minor | DWG validated with the ODA File Converter, ezdxf and a spec-based structural checker on a corpus of every object kind at every version; later layouts' objects keep their owner in DWG (acadrust 0.6.7), 2004/2007 table style rows name their text style, group members carry their GROUP reactor; DWGOUT writes a separate DWG copy for AutoCAD |
 | 2026-10-24 | minor | `CADCRAFT_DYNBLOCK` record layout documented; an XY parameter's four grips go into it, CLASS records of types no object uses are always dropped, a newer version's record is never replaced; VPORT twist (51), front and back clipping planes (43, 44) and VIEWMODE bits 2, 4, 16 read and written; pictures in PDF (image XObjects with a soft mask) and SVG (PNG data URIs) output |
 | 2026-10-24 | minor | Dynamic blocks made here: only kinds with AutoCAD's own layout are written as AutoCAD objects; polar/XY/rotation/alignment/flip parameters and scale/rotate/flip/array/polar stretch actions go into the `CADCRAFT_DYNBLOCK` XRECORD and are read back |
 | 2026-10-24 | minor | Raster images attached, read and drawn (IMAGE rows; FF10 narrowed); ETRANSMIT packages; PARTIALOPEN/PARTIALOAD; dynamic blocks authored in the Block Editor written as AutoCAD's objects (unchecked layouts noted); VPORT perspective records (VIEWMODE 71 bit 1, lens 42, target 17, camera along 16) |

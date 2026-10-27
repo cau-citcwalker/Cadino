@@ -116,7 +116,7 @@ fn solids_turned_about_any_axis_are_placed_through_the_worker() {
     {
         // Out through the kernel's placement and back: the box where Rust puts it.
         let path = temp(&format!("placed-{i}.stp"));
-        cadcraft_kernel::export_step(&[Placed { brep: &b.brep, xform: x }], &path).unwrap();
+        cadcraft_kernel::export_step(&[Placed { brep: &b.brep, xform: x }], &[], &path).unwrap();
         let back = cadcraft_kernel::import_step(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         let want: Vec<Vec3> = b.mesh.verts.iter().map(|p| x.apply(*p)).collect();
@@ -136,7 +136,7 @@ fn iges_round_trips_a_box_a_line_and_an_arc_through_the_worker() {
     let arc = Curve::Segs(vec![Seg::Arc { a: v(0.0, -100.0, 0.0), mid: v(300.0, -200.0, 0.0), b: v(600.0, -100.0, 0.0) }]);
     let path = temp("round.igs");
     let x = cadcraft_geom::Mat4::IDENTITY;
-    assert_eq!(cadcraft_kernel::export_iges(&[Placed { brep: &b.brep, xform: &x }], &[line, arc], &path).unwrap(), 2);
+    assert_eq!(cadcraft_kernel::export_iges(&[Placed { brep: &b.brep, xform: &x }], &[], &[line, arc], &path).unwrap(), 2);
     let got = cadcraft_kernel::import_iges(&path).unwrap();
     let _ = std::fs::remove_file(&path);
     assert_eq!(got.shapes.len(), 1);

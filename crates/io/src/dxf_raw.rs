@@ -1009,7 +1009,23 @@ fn record(map: &Map, r: &Rec, b: &[Tag], x: Option<&ForeignExtra>, unknown: bool
     let has_book = b.iter().take(xdata_at).any(|t| t.code == 430);
     let handle_at = b.iter().position(|t| matches!(t.code, 5 | 105));
     let mut seen_owner = false;
+    let mut in_reactors = false;
     for (i, t) in b.iter().enumerate() {
+        // A record we wrote with reactors of its own (a group's, a hatch's): the kept ones join
+        // that list, before its closing `}`. (An unknown record's list is the one it was read with.)
+        if !unknown && t.code == 102 && i < xdata_at {
+            let v = t.str();
+            if v.trim() == "{ACAD_REACTORS" {
+                in_reactors = true;
+            } else if v.trim() == "}" && in_reactors {
+                in_reactors = false;
+                for r in x.iter().flat_map(|x| &x.reactors) {
+                    if let Some(m) = map.get(&r.hex()).filter(|m| m != "0" && !h.reactors.contains(&norm(m))) {
+                        out.push(Tag::s(330, m));
+                    }
+                }
+            }
+        }
         if i == props_at
             && let Some(x) = x
         {

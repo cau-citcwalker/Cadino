@@ -300,3 +300,64 @@ fn a_selection_of_unexportable_curves_exports_nothing() {
     assert_eq!((r["solids"].as_u64(), r["curves"].as_u64(), r["skipped"].as_u64()), (Some(1), Some(2), Some(1)), "{r}");
     let _ = std::fs::remove_file(&path);
 }
+
+/// The entity types of an IGES file's directory entries (two lines each).
+fn iges_types(text: &str) -> Vec<String> {
+    text.lines().filter(|l| l.as_bytes().get(72) == Some(&b'D')).step_by(2).filter_map(|l| l.get(..8)).map(|t| t.trim().to_owned()).collect()
+}
+
+/// A cabinet for Rhino: each solid one closed object (a manifold solid in the IGES file, not a
+/// surface per face), the shelf joined to its dowel one solid; the STEP file, the one to open in
+/// Rhino, names each after its part (else its handle), on its layer, in its colour.
+#[test]
+fn rhinoout_writes_whole_named_coloured_solids() {
+    let mut s = session();
+    s.execute("layer.new", &json!({ "name": "Carcass", "color": 1, "current": true })).unwrap();
+    let side = s.execute("box", &json!({ "corner1": [0, 0, 0], "corner2": [18, 560], "height": 720 })).unwrap()["handle"].clone();
+    s.execute("part", &json!({ "handles": [side], "name": "측판 Side" })).unwrap();
+    let shelf = s.execute("box", &json!({ "corner1": [18, 0, 300], "corner2": [582, 560], "height": 18 })).unwrap()["handle"].clone();
+    let dowel = s.execute("cylinder", &json!({ "center": [300, 280, 250], "radius": 4, "height": 100 })).unwrap()["handle"].clone();
+    s.execute("union", &json!({ "handles": [shelf, dowel] })).unwrap();
+    s.execute("layer.new", &json!({ "name": "Doors", "current": true })).unwrap();
+    s.execute("box", &json!({ "corner1": [0, -20, 0], "corner2": [600, -2], "height": 720 })).unwrap();
+    let base = temp("labelled");
+    let r = s.execute("rhinoout", &json!({ "path": base.to_str().unwrap() })).unwrap();
+    let (igs, stp) = (base.with_extension("igs"), base.with_extension("stp"));
+    let (itext, stext) = (std::fs::read_to_string(&igs).unwrap(), std::fs::read_to_string(&stp).unwrap());
+    let _ = (std::fs::remove_file(&igs), std::fs::remove_file(&stp));
+    assert!(r["message"].as_str().unwrap().contains("the file to open in Rhino"), "{r}");
+    let types = iges_types(&itext);
+    assert_eq!(types.iter().filter(|t| *t == "186").count(), 3, "{types:?}");
+    assert!(!types.iter().any(|t| t == "144" || t == "143"), "no loose trimmed surfaces: {types:?}");
+    assert!(stext.contains(r"'\X2\CE21D310\X0\ Side'"), "the part's name (측판, escaped as STEP has it)");
+    let shelf = shelf.as_str().unwrap();
+    assert!(stext.contains(&format!("'{shelf}'")), "the shelf, unnamed, by its handle {shelf}");
+    for layer in ["Carcass", "Doors"] {
+        assert!(stext.contains(&format!("PRESENTATION_LAYER_ASSIGNMENT('{layer}'")), "{layer}");
+    }
+    // The carcass in its layer's red; the doors on a white (colour 7) layer have no colour of
+    // their own.
+    assert_eq!(stext.matches("COLOUR_RGB('',1.,0.,0.)").count() + stext.matches("DRAUGHTING_PRE_DEFINED_COLOUR('red')").count(), 1, "{stext}");
+}
+
+/// The STEP file, the one to open in Rhino, is written first and stands when the IGES file then
+/// can't be written (here a folder is in its way); with no solids the failure is the command's.
+#[test]
+fn rhinoout_keeps_the_step_file_when_iges_fails() {
+    let mut s = session();
+    s.execute("box", &json!({ "corner1": [0, 0, 0], "corner2": [10, 10], "height": 10 })).unwrap();
+    let base = temp("blocked");
+    let (igs, stp) = (base.with_extension("igs"), base.with_extension("stp"));
+    std::fs::create_dir_all(&igs).unwrap();
+    let r = s.execute("rhinoout", &json!({ "path": base.to_str().unwrap() })).unwrap();
+    let written = std::fs::read_to_string(&stp).unwrap_or_default();
+    let _ = std::fs::remove_file(&stp);
+    assert!(written.contains("MANIFOLD_SOLID_BREP"), "the STEP file");
+    let message = r["message"].as_str().unwrap();
+    assert!(message.contains("the IGES file wasn't written"), "{r}");
+    assert!(r["iges"].is_null() && r["step"].as_str().is_some() && r["solids"] == 1, "{r}");
+    let mut s = session();
+    s.execute("line", &json!({ "points": [[0, 0], [10, 0]] })).unwrap();
+    assert!(s.execute("rhinoout", &json!({ "path": base.to_str().unwrap() })).is_err());
+    let _ = std::fs::remove_dir(&igs);
+}

@@ -3764,3 +3764,55 @@ value	Closed	Закрито
 	Opened drawings have no file name: save them to keep them.	Відкриті креслення не мають назви файлу: збережіть їх, щоб не втратити.
 	Later	Пізніше
 	Keep the files and ask again next time	Зберегти файли й запитати наступного разу
+	<Grid {0}>	<Сітка {0}>
+	AutoCAD {0} DWG copy written: {path}	Копію AutoCAD {0} DWG записано: {path}
+	Enter AutoCAD DWG version	Введіть версію AutoCAD DWG
+	AutoCAD DWG...	AutoCAD DWG...
+	Reset Viewports	Скинути видові екрани
+	Command Line Position	Розташування командного рядка
+	Dock at Bottom	Закріпити внизу
+	Dock at Top	Закріпити вгорі
+	Floating	Плаваючий
+	Reset Position	Скинути розташування
+	combining solids	об'єднання тіл
+	intersecting the solids failed	не вдалося перетнути тіла
+	writing IGES failed	не вдалося записати IGES
+	writing STEP failed	не вдалося записати STEP
+	writing {0}: {e}	запис {0}: {e}
+	Wrote {stp} ({0}; the file to open in Rhino) and {igs} ({what}){1}.	Записано {stp} ({0}; цей файл відкривайте в Rhino) і {igs} ({what}){1}.
+	Wrote {igs} ({what}) for Rhino{0}; no solids, so no STEP file.	Записано {igs} ({what}) для Rhino{0}; тіл немає, тож файл STEP не створено.
+	Wrote {stp} ({0}; the file to open in Rhino); the IGES file wasn't written: {e}	Записано {stp} ({0}; цей файл відкривайте в Rhino); файл IGES не записано: {e}
+	Active viewport only	Лише активний видовий екран
+	All viewports	Усі видові екрани
+	Apply grid changes to	Застосувати зміни сітки до
+	Grid line count	Кількість ліній сітки
+	Grid properties	Властивості сітки
+	Grid snap spacing	Крок прив'язки до сітки
+	Major lines every	Основні лінії кожні
+	Minor grid lines every	Допоміжні лінії сітки кожні
+	Show grid axes	Показувати осі сітки
+	Show grid lines	Показувати лінії сітки
+	Show world axes icon	Показувати значок світових осей
+	Spacings are in drawing units. The world axes icon shows in every viewport.	Кроки задано в одиницях креслення. Значок світових осей показано в кожному видовому екрані.
+	lines each way from the origin; 0: the grid fills the view	ліній у кожен бік від початку координат; 0: сітка заповнює вид
+	minor grid lines	допоміжних ліній сітки
+	The grid keeps its own spacing until its lines would run together.	Сітка зберігає свій крок, доки її лінії не зливаються.
+	Less simplification looks finer when zoomed out but draws more slowly on large drawings. Detail far below a pixel is never drawn.	Менше спрощення виглядає точніше при віддаленні, але на великих кресленнях малюється повільніше. Деталі, значно менші за піксель, не малюються.
+	Display Detail	Деталізація відображення
+	Curves	Криві
+	Coarsen the grid while its lines are closer than	Розріджувати сітку, коли її лінії ближчі, ніж
+	Chords may stray from arcs and curves by up to	Хорди можуть відхилятися від дуг і кривих до
+	Chords never stray by more than	Хорди ніколи не відхиляються більше ніж на
+	Dash patterns shorter than this draw as solid lines:	Шаблони штрихів, коротші за це, малюються суцільними лініями:
+	Dashes are always drawn.	Штрихи малюються завжди.
+	Hatch lines closer than this merge into a solid fill:	Лінії штрихування, ближчі за це, зливаються в суцільну заливку:
+	Every hatch line is drawn.	Малюється кожна лінія штрихування.
+	Text smaller than this draws as boxes:	Текст, менший за це, малюється прямокутниками:
+	Letters are always drawn.	Літери малюються завжди.
+	As the view zooms out, small details are drawn simpler so the drawing stays fast. Choose per kind of object.	Коли вигляд віддаляється, дрібні деталі малюються простіше, щоб креслення лишалося швидким. Виберіть для кожного виду об'єктів.
+	Simplify when zoomed out	Спрощувати при віддаленні
+	drawing units	одиниць креслення
+	Restore Defaults	Відновити типові
+	Reset viewports (right-click: and zoom to fit)	Скинути видові екрани (правий клік: і показати все)
+	AutoCAD DWG	AutoCAD DWG
+	Grid	Сітка

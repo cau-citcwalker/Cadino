@@ -1,6 +1,6 @@
 # AI in Cadino
 
-> **Last updated:** 2026-10-24 · **Status:** landed (assistant, model settings, MCP switch, hardening and polish; the prompt knows edge picks, PRESSPULL and INTERFERE) · **Describes:** `main`
+> **Last updated:** 2026-10-26 · **Status:** landed (assistant, model settings, MCP switch, hardening and polish; the prompt knows edge picks, PRESSPULL and INTERFERE; clean-model rules, MCP tool annotations and the Cadino skill) · **Describes:** `main`
 
 The user guide for Cadino's AI features: the built-in AI Assistant, the models it can use, the
 switch that lets external AI apps drive Cadino over MCP, what leaves your computer, and what to do
@@ -267,6 +267,32 @@ and `ui_click` included) and short working instructions when they connect. The a
 `cadcraft --control 7979` on the command line starts a control server for one run instead of the
 switch (both on one port: "Port 7979 is in use"), and `cadcraft-cli mcp` runs a headless drawing
 with no window. See [mcp.md](mcp.md).
+
+### The Cadino skill
+
+`skills/cadino/` (next to `Cadino.exe` in both the MSI install and the portable zip) teaches an
+external agent the furniture workflow: a brief, parts built as closed solids, checks (cut list,
+sizes, `interfere`, an iso render), clean-up, drawings (VIEWBASE) and export (RHINOOUT's `.stp`
+for Rhino, the cut list as CSV). `references/recipes.md` holds worked calls: a cabinet, a table
+with a shaped top, a cable hole and legs, a turned leg, and repairs.
+
+| Agent | Install |
+|---|---|
+| Claude Code | Copy the folder to `~/.claude/skills/cadino/` (every project) or `.claude/skills/cadino/` in a project |
+| Claude Desktop | Zip the folder (the zip holds `cadino/SKILL.md`), then Settings ▸ Capabilities ▸ Skills ▸ Upload skill (code execution on) |
+| Codex | Paste `AGENTS.md` into `~/.codex/AGENTS.md` or a project's `AGENTS.md` |
+
+The skill and the built-in instructions say the same about clean models, since stray geometry is
+what Rhino, the cut list and the drawings all pick up:
+
+- A profile is one closed object (`rectang`, `circle`, `pline` with `"closed": true`); lines,
+  arcs and open polylines extruded make loose surfaces, which Rhino shows as pieces to join. JOIN
+  them first. A profile still there after EXTRUDE means surfaces were made: undo and fix it.
+- Surfaces (`planesurf`, `region`) only when asked; `interfere` with `"create": false`, so it adds
+  no overlap solids; a failed attempt undone or erased before the next; leftover profiles,
+  section outlines and construction lines erased; `inspect_drawing` counts checked at the end.
+- UNION, SUBTRACT, INTERSECT, PRESSPULL and POLYSOLID merge faces left on one surface, so there
+  are no seams to clean up; CLEAN does it for an older solid (and removes imprints).
 
 ## OPTIONS keys
 

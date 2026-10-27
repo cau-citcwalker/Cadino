@@ -11,7 +11,8 @@
   Both hold Cadino.exe (the app; cargo builds it as cadcraft.exe), cadcraft-cli.exe (CLI and MCP
   server; it keeps its name and sits next to the app, where Options > AI looks for it),
   README-Cadino.txt, LICENSE-MIT, LICENSE-APACHE, NOTICE and THIRD-PARTY-NOTICES.txt
-  (cargo xtask notices).
+  (cargo xtask notices), and skills\cadino, the AI skill for Claude and Codex (in both the MSI
+  and the zip).
 
   3D kernel: built with --features cadcraft-engine/occt. opencascade-sys compiles OpenCASCADE
   7.8.1 from source with CMake + MSBuild; the first build takes a long time. scripts\
@@ -170,6 +171,8 @@ Copy-Item (Join-Path $Bin 'cadcraft.exe') (Join-Path $Stage 'Cadino.exe')
 Copy-Item (Join-Path $Bin 'cadcraft-cli.exe') $Stage
 Copy-Item (Join-Path $PSScriptRoot 'README-Cadino.txt') $Stage
 foreach ($f in 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE') { Copy-Item (Join-Path $Root $f) $Stage }
+# The Cadino skill for Claude and Codex (skills\cadino\README.md says how to install it).
+Copy-Item -Recurse (Join-Path $Root 'skills') $Stage
 $ThirdParty = Join-Path $TargetDir "windows-package\$Arch\third-party"
 Remove-Item -Recurse -Force $ThirdParty -ErrorAction SilentlyContinue
 Invoke-Native 'cargo xtask notices' { cargo xtask notices $Stage $ThirdParty }

@@ -411,6 +411,10 @@ fn read_dimvar_list(
 /// Cadino saved; another program's UCS is kept, not used as one.
 pub(crate) const CPLANE: &str = "CPLANE";
 
+/// Xdata list (`1000 GRID` `1002 {` major, line count, axes as 1070s `1002 }`) of a VPORT record
+/// whose tile has a grid of its own; its on/off (76) and spacings (14, 15) are the record's.
+pub(crate) const GRID: &str = "GRID";
+
 /// Xdata marker of the paper-space viewport (id 1) the writer adds to layouts that have none;
 /// CADCraft keeps that viewport implicit, so the reader drops it.
 pub(crate) const PAPER_VIEW: &str = "PAPERVIEW";

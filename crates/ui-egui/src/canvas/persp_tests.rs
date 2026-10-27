@@ -100,6 +100,8 @@ fn a_perspective_view_picks_what_it_draws() {
 fn a_grip_drag_sends_its_height_in_the_objects_plane() {
     let mut f = Frames::default();
     let mut app = CadApp::new(cadcraft_engine::Session::new(), crate::Services::default());
+    // Grips in a 3D view: the gumball off (see `gumball::replaces_grips`).
+    app.ui.gumball = false;
     let common = Common { extrusion: Vec3::new(1.0, 0.0, 0.0), ..Default::default() };
     let c = cadcraft_doc::Circle { center: Vec3::ZERO, radius: 20.0 };
     let h = app.session.doc_mut().unwrap().add(&Space::Model, common, EntityKind::Circle(c)).unwrap();

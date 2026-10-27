@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (DesignCenter, UCS dialog, FILTER groups, dynamic-block grips, typed bare names of the new commands, 3D ViewCube, Render window on a worker) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-26 · **Change:** minor (movable, dockable command line; Rhino's grid options per viewport, Display Detail, yellow selection, viewport reset) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
 
 How CADCraft's interaction compares with AutoCAD's: point entry, object snaps, tracking, dynamic
 input, grips, selection, the command line, chrome and navigation. A drafter's speed in AutoCAD
@@ -88,7 +88,7 @@ ignored; there are no context menus. Remaining: **≈ 110–170 Opus 5.5 hours**
 | Additional polar angles, relative to last segment | yes | additional angles yes (POLARADDANG with POLARMODE 4); **relative to the last segment no** |
 | Polar distance snap (PolarSnap) | yes | **no** |
 | **Object snap tracking** (acquire points, alignment paths, intersections of paths) | yes, F11 | yes (#379): resting on a snap point acquires it (`+`), resting again releases it, seven at most; horizontal/vertical paths, or every polar angle with POLARMODE 2; Shift to acquire with POLARMODE 8; crossings of two paths, a path and an object, and a path and a polar path snap; tooltip names each path; a typed distance (direct distance entry) runs along the path the cursor is on, measured from the point the path comes from. Engine: `Session::snap_cursor`, `snap/tracking.rs`; AUTOSNAP bits 8 and 16 |
-| Grid (rectangular, major lines, adaptive, limits) | yes | rectangular and isometric (30°, 90° and 150° lines), major lines, adaptive display |
+| Grid (rectangular, major lines, adaptive, limits) | yes | rectangular and isometric (30°, 90° and 150° lines), major lines, adaptive display. Options ▸ Grid has Rhino's grid options: grid line count each way from the origin (GRIDLINECOUNT, 0 fills the view), minor spacing, major lines every N, show grid lines, grid axes (GRIDAXES) and the world axes icon, snap spacing, applied to the active viewport only (the tile gets a grid of its own, saved in its VPORT record; GRIDMODE, GRIDUNIT, SNAPUNIT and GRIDMAJOR then follow the current tile, as AutoCAD's are per viewport) or to all viewports. Options ▸ Display Detail says per kind (grid, curves, linetypes, hatches, text) whether and from how many pixels zooming out simplifies, or the fixed detail kept instead; nothing far below a pixel is drawn, and a fixed grid too dense to draw thins rather than vanishing |
 | Snap (rectangular, isometric, polar snap) | yes | rectangular and isometric (SNAPSTYL 1: the snap Y spacing along the isometric axes), from SNAPBASE turned by SNAPANG |
 | Isometric drafting (ISODRAFT, isoplanes F5) | yes | yes (#556): ISODRAFT and the status-bar toggle set SNAPSTYL and the plane; ISOPLANE / F5 / Ctrl+E cycle Left, Top, Right (SNAPISOPAIR); ortho, direct distance entry and the crosshair follow the plane's axes; ELLIPSE Isocircle (radius or Diameter, also for elliptical arcs); Drafting Settings snap style radio. Engine: `snap/iso.rs`, `cmd/settings/iso.rs` |
 | Drafting Settings dialog | yes | yes: Snap and Grid, Polar Tracking, Object Snap (modes with their markers, Select All, Clear All; OSNAP/OS/DDOSNAP and the status bar button's right-click open it) and Dynamic Input tabs, through SETVAR (`dialogs.rs`) |
@@ -130,7 +130,7 @@ down-arrow options menu (DYNPROMPT), and DYNDIM.
 | Press-drag selection windows (PICKDRAG) | yes | yes (#63, PICKDRAG = 2) |
 | Lasso | yes | **no** |
 | Selection cycling (SELECTIONCYCLING) | yes | toggle nothing reads |
-| Selection preview, hover highlight | yes | selected and hovered objects redrawn in the selection colour, fills half see-through (SELECTIONEFFECT 1; 0 dashed), selection effect color; HIGHLIGHT (not saved), SELECTIONPREVIEW, PREVIEWEFFECT, PREVIEWFILTER (Visual Effect Settings) |
+| Selection preview, hover highlight | yes | selected and hovered objects redrawn in the selection colour (Rhino's yellow by default, olive on a light background), fills half see-through (SELECTIONEFFECT 1; 0 dashed), selection effect color; shaded solids keep their shading and light up their outline and edges; the selection shows in every model tile; HIGHLIGHT (not saved), SELECTIONPREVIEW, PREVIEWEFFECT, PREVIEWFILTER (Visual Effect Settings) |
 | PICKADD, PICKFIRST, PICKAUTO | yes | PICKADD (Shift), PICKFIRST |
 | QSELECT, SELECTSIMILAR, FILTER | yes | QSELECT dialog; SELECTSIMILAR with SELECTSIMILARMODE (#428, SEttings asks for the bit code; no dialog); FILTER/FI: Object Selection Filters (readable property labels; Begin/End AND, OR, XOR and NOT groups; named filters for the session; Apply selects through QSELECT from the drawing or the current selection; no "Select objects" after Apply) |
 | Object isolate/hide (ISOLATEOBJECTS, HIDEOBJECTS) | yes | yes, temporary (OBJECTISOLATIONMODE 0; #428): Tools > Isolate, UNISOLATEOBJECTS; no status-bar button |
@@ -151,7 +151,7 @@ down-arrow options menu (DYNPROMPT), and DYNDIM.
 | UNDO with Mark, Back, BEgin, End, Auto, Control | yes | count only, whole-document snapshots capped at 2,000 (`lib.rs:477`, `edit.rs:56`) |
 | SETVAR for every system variable | ~1,000 sysvars | about 60 session/header variables by name (`sysvars.rs`) |
 | Scripts (SCRIPT, `.scr`) | yes | script text via CLI/MCP/control; no `.scr` file command |
-| Floating/docked command window, transparency, lines of history | yes | floating overlay, history lines setting |
+| Floating/docked command window, transparency, lines of history | yes | yes: a grip at the bar's left end drags it anywhere over the drawing, or docks it full-width at the drawing area's top or bottom edge (the drawing shrinks by the strip, as AutoCAD's docked window does); history, F2 and AutoComplete open away from the edge; right-click Dock at Bottom / Dock at Top / Floating / Reset Position, `ui.cmdline.position`; the place is kept as fractions of the area and saved with the workspace; history lines setting. No transparency |
 
 ## Chrome and palettes (≈ 45%)
 
@@ -182,7 +182,7 @@ down-arrow options menu (DYNPROMPT), and DYNDIM.
 | Middle-drag pan, double-middle-click extents | yes | yes (`canvas.rs:538-583`) |
 | Trackpad two-finger pan, pinch zoom (macOS) | yes | yes (#58) |
 | Named views (VIEW) | yes | **no** (VIEW table not read or written) |
-| Tiled model-space viewports (VPORTS) | yes | not confirmed: VPORTS maps to paper-space MVIEW |
+| Tiled model-space viewports (VPORTS) | yes | yes: model tiles (VPORTS, -VPORTS, Rhino's four views); the status bar's reset button (VIEWPORTS.RESET) turns every tile back to its default view, right-click zooms each to the extents too, ZOOM Previous undoes it per tile |
 | 3D orbit, ViewCube drag, SteeringWheels | yes | no (M11) |
 
 ## Keyboard and context menus (≈ 25%)
@@ -204,6 +204,8 @@ down-arrow options menu (DYNPROMPT), and DYNDIM.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-26 | minor | Options ▸ Grid (Rhino's grid options, active viewport only or all viewports) and Options ▸ Display Detail (per-kind simplification when zoomed out, fixed detail floored below a pixel, rebuilt in the background); selection in Rhino's yellow with shaded faces kept and shown in every tile; gumball instead of grips in 3D views; VIEWPORTS.RESET on the status bar (right-click zooms to fit; ZOOM Previous undoes it) |
+| 2026-10-26 | minor | The command line moves: drag its grip to float it anywhere over the drawing or dock it at the top or bottom edge; its menu docks, floats and resets it (`ui.cmdline.position`), and the workspace keeps the place |
 | 2026-10-24 | minor | 3D ViewCube (faces, edges and corners); DesignCenter toggles with Ctrl+2 and ADCENTER, ADCCLOSE closes it; the Render window renders on a worker with a spinner and Cancel |
 | 2026-10-24 | minor | Property Lookup Table dialog (BLOOKUPTABLE: input and lookup properties, rows, Audit, Allow reverse lookup); Block Editor action tags and dynamic property values translated |
 | 2026-10-24 | minor | DesignCenter palette (ADCENTER, Ctrl+2), UCS dialog (UCSMAN), FILTER AND/OR/XOR/NOT groups, LAYTRANS settings, dynamic-block grips and Block Editor parameter display, Visibility States dialog, 3D Object Snap tab (F4); what is behind a perspective view's eye neither snaps nor shows grips |

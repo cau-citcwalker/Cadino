@@ -2,8 +2,8 @@
 //! gradient or background fill (even-odd triangles) and the pattern lines (each pattern line
 //! family swept across the boundary, even-odd clipped, then dashed).
 //!
-//! On-screen builds get a level of detail (`Options::min_dash` > 0 is two pixels, `Options::view`
-//! the area being looked at): a pattern whose lines run together on screen is drawn as a solid
+//! On-screen builds get a level of detail (`Options::hatch_pixel`, else half of `Options::min_dash`,
+//! is a pixel; `Options::view` the area being looked at): a pattern whose lines run together on screen is drawn as a solid
 //! fill of its boundary ([`reads_solid`]), a dash or dot repeat under two pixels as a continuous
 //! line (as linetypes already are), and nothing is generated outside the view. Plots, exports and
 //! picks pass `min_dash = 0` and `view = None` and get every line.
@@ -29,7 +29,7 @@ pub(super) fn draw(b: &mut Builder, ctx: &Ctx, e: &Entity, h: &Hatch, rgb: Ink, 
     // Level of detail: a pixel in the hatch's own units, along its most stretched axis (so lines
     // that show apart in any direction are never merged); 0 = full detail.
     let stretch = max_scale(&ctx.xf);
-    let px = if stretch > 1e-12 { b.opts.min_dash / 2.0 / stretch } else { 0.0 };
+    let px = if stretch > 1e-12 { b.opts.hatch_px() / stretch } else { 0.0 };
     let dense = b.opts.fill && reads_solid(ctx.d, h, px);
     if h.solid || h.pattern.eq_ignore_ascii_case("SOLID") || h.gradient.is_some() || dense {
         if b.opts.fill {

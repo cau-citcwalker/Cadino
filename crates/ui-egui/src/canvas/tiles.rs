@@ -18,7 +18,7 @@ use cadcraft_render::DisplayList;
 use egui::{Rect, Sense, pos2, vec2};
 use serde_json::{Value, json};
 
-use super::{ListKey, ORBIT_DEG_PER_PX, build_window, rebuild, tile_xf};
+use super::{ListKey, ORBIT_DEG_PER_PX, PrimIndex, build_window, rebuild, tile_xf};
 use crate::CadApp;
 use crate::theme::Tokens;
 
@@ -32,6 +32,8 @@ pub(crate) struct TileList {
     list: Option<DisplayList>,
     window: Option<Bounds2>,
     job: Option<rebuild::Job>,
+    /// `list`'s primitives by object, for the selection highlight (let go with the list).
+    index: PrimIndex,
 }
 
 impl super::CanvasState {
@@ -87,7 +89,7 @@ pub(super) fn trade(app: &mut CadApp) {
     let list = std::mem::replace(&mut c.list, tl.list.take());
     let window = std::mem::replace(&mut c.window, tl.window);
     let dir = tl.dir;
-    *tl = TileList { look: was, dir: c.list_dir, key: old, list, window, job: None };
+    *tl = TileList { look: was, dir: c.list_dir, key: old, list, window, job: None, index: PrimIndex::default() };
     // A build in flight for the old look is no longer wanted (dropping it cancels it).
     (c.key, c.list_dir, c.job, c.last_look) = (key, dir, None, Some(now));
     c.list_gen = c.list_gen.wrapping_add(1);
@@ -146,12 +148,13 @@ pub(super) fn ensure_lists(app: &mut CadApp, tiles: &[(Rect, ModelTile)], ctx: &
     let lists = &mut app.canvas.tile_lists;
     lists.retain(|l| looks.iter().any(|(k, d, _)| *k == l.look && *d == l.dir));
     let (lwdisplay, transparency) = (app.session.settings.lwdisplay, app.session.settings.transparency_display);
+    let detail = app.options.detail;
     let band = |px: f64| px.max(1e-300).log2().floor() as i32;
     for (look, proj, views) in looks {
         let tl = match lists.iter().position(|l| l.look == look && l.dir == proj) {
             Some(i) => lists.get_mut(i),
             None => {
-                lists.push(TileList { look, dir: proj, key: ListKey::default(), list: None, window: None, job: None });
+                lists.push(TileList { look, dir: proj, key: ListKey::default(), list: None, window: None, job: None, index: PrimIndex::default() });
                 lists.last_mut()
             }
         };
@@ -163,6 +166,7 @@ pub(super) fn ensure_lists(app: &mut CadApp, tiles: &[(Rect, ModelTile)], ctx: &
                 rebuild::Poll::Done(built) => {
                     (tl.key, tl.window) = (job.key, job.window);
                     tl.list = Some(built.list);
+                    tl.index = PrimIndex::default();
                     tl.job = None;
                 }
                 rebuild::Poll::Lost => {
@@ -176,16 +180,24 @@ pub(super) fn ensure_lists(app: &mut CadApp, tiles: &[(Rect, ModelTile)], ctx: &
         // Inactive tiles draw a tessellation band coarser than the finest zoom showing them.
         let finest = views.iter().map(|v| v.1).fold(f64::INFINITY, f64::min);
         let b = band(finest).saturating_add(1);
-        let key: ListKey =
-            (st.uid, st.revision, b, b, lwdisplay, transparency, std::sync::Arc::as_ptr(&st.doc) as usize, style_bits(&look), super::dir_key(&proj));
+        let key: ListKey = (
+            st.uid,
+            st.revision,
+            b,
+            b,
+            lwdisplay,
+            transparency,
+            std::sync::Arc::as_ptr(&st.doc) as usize,
+            style_bits(&look),
+            super::dir_key(&proj),
+            detail.key(),
+        );
         let visible = views.iter().fold(Bounds2::EMPTY, |acc, v| acc.union(&v.0));
         let inside = tl.window.is_none_or(|w| visible.is_empty() || w.contains_box(&visible));
         if (tl.list.is_some() && tl.key == key && inside) || tl.job.as_ref().is_some_and(|j| j.serves(&key, &visible)) {
             continue;
         }
-        let opts = cadcraft_render::Options {
-            tolerance: 2f64.powi(b) * 0.5,
-            min_dash: 2f64.powi(b) * 2.0,
+        let mut opts = cadcraft_render::Options {
             text: true,
             fill: true,
             lineweights: lwdisplay,
@@ -194,6 +206,7 @@ pub(super) fn ensure_lists(app: &mut CadApp, tiles: &[(Rect, ModelTile)], ctx: &
             view_dir: proj,
             ..cadcraft_render::Options::look(look.shaded, look.edges, false)
         };
+        detail.apply(&mut opts, 2f64.powi(b), 2f64.powi(b));
         // Dropping a job for an older key cancels it.
         tl.job = if lost {
             None
@@ -202,16 +215,40 @@ pub(super) fn ensure_lists(app: &mut CadApp, tiles: &[(Rect, ModelTile)], ctx: &
         };
         if tl.job.is_none() {
             tl.list = Some(cadcraft_render::build(&st.doc, &Space::Model, &opts));
+            tl.index = PrimIndex::default();
             (tl.key, tl.window) = (key, opts.view);
         }
+    }
+}
+
+/// Whether tile `t` draws the canvas's list (it looks the current tile's way; a perspective tile
+/// through the same camera).
+fn shares_canvas(app: &CadApp, t: &ModelTile) -> bool {
+    app.session.state().is_ok_and(|st| st.look() == t.look && (t.look.camera.is_none() || t.look.projection(t.view) == app.canvas.list_dir))
+}
+
+/// The primitives of the list tile `t` draws ([`list_for`]) that show objects `sel`: selected
+/// objects light up in every tile, as in Rhino.
+pub(super) fn selected(app: &mut CadApp, t: &ModelTile, sel: &[cadcraft_doc::Handle]) -> Vec<usize> {
+    if sel.is_empty() {
+        return Vec::new();
+    }
+    if shares_canvas(app, t) {
+        let c = &mut app.canvas;
+        return c.list.as_ref().map_or_else(Vec::new, |list| c.prim_index.prims(c.list_gen, list, sel));
+    }
+    let proj = t.look.projection(t.view);
+    let mine = |l: &&mut TileList| l.look == t.look && (l.dir == proj || t.look.camera.is_none());
+    match app.canvas.tile_lists.iter_mut().find(mine) {
+        Some(TileList { list: Some(list), index, .. }) => index.prims(0, list, sel),
+        _ => Vec::new(),
     }
 }
 
 /// The list and view direction tile `t` draws with: the canvas's for the current tile's look,
 /// else its own (none until its first build lands).
 pub(super) fn list_for<'a>(app: &'a CadApp, t: &ModelTile) -> (Option<&'a DisplayList>, cadcraft_geom::ViewDir) {
-    // A perspective tile shares the canvas's list only through the same camera.
-    if app.session.state().is_ok_and(|st| st.look() == t.look && (t.look.camera.is_none() || t.look.projection(t.view) == app.canvas.list_dir)) {
+    if shares_canvas(app, t) {
         (app.canvas.list.as_ref(), app.canvas.list_dir)
     } else {
         match app.canvas.tile_list_of(t) {

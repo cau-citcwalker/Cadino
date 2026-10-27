@@ -153,7 +153,9 @@ impl Tokens {
         icon_accent: Color32::from_rgb(0x4f, 0xa3, 0xf7),
         icon_point: Color32::from_rgb(0xf0, 0x7a, 0x3a),
         accent: Color32::from_rgb(0x3d, 0x8b, 0xfd),
-        selection: Color32::from_rgb(0x4a, 0x8f, 0xff),
+        // Rhino's selection yellow (a light drawing area or the paper darkens it, see
+        // `canvas::selection_color`).
+        selection: Color32::from_rgb(0xff, 0xff, 0x00),
         hover: Color32::from_rgb(0x9c, 0xc6, 0xff),
         grip: Color32::from_rgb(0x2f, 0x6b, 0xff),
         grip_hot: Color32::from_rgb(0xff, 0x3b, 0x3b),

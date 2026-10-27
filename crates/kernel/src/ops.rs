@@ -360,7 +360,7 @@ fn bad(m: impl Into<String>) -> KernelError {
 
 /// The stored solid, refused when it isn't B-rep text or is placed by a transform the kernel
 /// can't apply.
-fn stored(p: Placed) -> Result<Solid> {
+pub(crate) fn stored(p: Placed) -> Result<Solid> {
     check_brep(p.brep)?;
     if crate::similarity(p.xform).is_none() {
         return Err(bad("the solid has a transform the kernel can't apply (only move, rotate, scale and mirror)"));

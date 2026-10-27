@@ -265,6 +265,25 @@ mod native {
         }
     }
 
+    /// Table style rows' text styles by handle. acadrust 0.6.7 writes a 2004/2007 (AC1018,
+    /// AC1021) TABLESTYLE row with its text style handle only, which its DXF reader leaves unset
+    /// (it keeps the name, group 7): the rows pointed at no style, and AutoCAD's and ODA's audits
+    /// reset them. A row whose name names no style gets Standard.
+    fn table_style_text_styles(doc: &mut acadrust::CadDocument) {
+        let styles = &doc.text_styles;
+        for o in doc.objects.values_mut() {
+            let acadrust::objects::ObjectType::TableStyle(s) = o else { continue };
+            for row in [&mut s.data_row_style, &mut s.header_row_style, &mut s.title_row_style] {
+                if row.text_style_handle.is_some_and(|h| !h.is_null() && styles.iter().any(|t| t.handle == h)) {
+                    continue;
+                }
+                if let Some(t) = styles.get(&row.text_style_name).or_else(|| styles.get("Standard")) {
+                    row.text_style_handle = Some(t.handle);
+                }
+            }
+        }
+    }
+
     /// Leave out what acadrust can't write as this DWG version: other programs' custom entities
     /// and objects without raw DWG data of that version. acadrust 0.6.4 refuses the whole file
     /// for one of them (0.6.3 left them out); CADCraft already tells the user which entity types
@@ -399,6 +418,7 @@ mod native {
             None => {}
         }
         table_style_rows(&mut doc, true);
+        table_style_text_styles(&mut doc);
         drop_unwritable(&mut doc);
         std::panic::catch_unwind(AssertUnwindSafe(|| acadrust::DwgWriter::write_to_vec(&doc)))
             .map_err(|_| "the DWG writer failed on this drawing".to_string())?

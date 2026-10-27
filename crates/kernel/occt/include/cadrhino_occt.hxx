@@ -49,6 +49,7 @@ struct SectionOut;
 struct FlatOut;
 struct ClashOut;
 struct CheckOut;
+struct ObjectIn;
 
 TopoOut topology(const ShapeIn &s);
 PickOut pick(const ShapeIn &s, rust::Slice<const double> origin, rust::Slice<const double> dir, double tol);
@@ -84,4 +85,6 @@ rust::String coons(rust::Slice<const WireIn> edges);
 rust::String planar_face(const WireIn &outer, rust::Slice<const WireIn> holes);
 rust::String pipe_loft(rust::Slice<const WireIn> sections, const WireIn &spine, bool solid);
 rust::String guided_loft(rust::Slice<const WireIn> sections, rust::Slice<const WireIn> guides, bool solid);
+rust::String boolean(const ShapeIn &a, const ShapeIn &b, uint8_t op, bool merge);
+rust::String exchange(rust::Slice<const ObjectIn> objects, rust::Slice<const WireIn> curves, bool iges);
 } // namespace cadrhino

@@ -655,7 +655,9 @@ fn export_set(s: &Session, p: &Value) -> Result<Vec<Solid3d>> {
 }
 
 fn path_req<'a>(cmd: &str, p: &'a Value) -> Result<&'a str> {
-    str_param(p, "path").filter(|x| !x.trim().is_empty()).ok_or_else(|| bad(cmd, "`path` is required"))
+    let path = str_param(p, "path").filter(|x| !x.trim().is_empty()).ok_or_else(|| bad(cmd, "`path` is required"))?;
+    crate::limits::files(cmd)?;
+    Ok(path)
 }
 
 fn exported(n: usize, path: &str) -> Value {
@@ -665,7 +667,7 @@ fn exported(n: usize, path: &str) -> Value {
 fn run_stepout(s: &mut Session, p: &Value) -> Result<Value> {
     let path = path_req("stepout", p)?;
     let xs = export_set(s, p)?;
-    cadcraft_kernel::export_step(&xs.iter().map(placed).collect::<Vec<_>>(), Path::new(path)).map_err(kernel)?;
+    cadcraft_kernel::export_step(&xs.iter().map(placed).collect::<Vec<_>>(), &[], Path::new(path)).map_err(kernel)?;
     Ok(exported(xs.len(), path))
 }
 

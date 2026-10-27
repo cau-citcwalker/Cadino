@@ -298,6 +298,20 @@ fn truetype_text_is_filled_or_outlined() {
 }
 
 #[test]
+fn text_detail_is_set_apart_from_dashes() {
+    let Some(font) = system_font() else { return };
+    let d = text_doc(font, "O");
+    let verts = |o: &Options| build(&d, &Space::Model, o).prims.iter().filter(|p| p.kind == Kind::Tris).map(|p| p.len).sum::<u32>();
+    // An em under two pixels is drawn as its box (two triangles)...
+    let coarse = Options { min_dash: 4.0, ..Default::default() };
+    assert!(verts(&coarse) <= 6, "{}", verts(&coarse));
+    // ...unless the text's own level of detail is off,
+    assert!(verts(&Options { text_pixel: Some(0.0), ..coarse }) > 6);
+    // and a text pixel set apart from the dashes boxes it at full linetype detail.
+    assert!(verts(&Options { text_pixel: Some(2.0), ..Default::default() }) <= 6);
+}
+
+#[test]
 fn missing_font_falls_back_to_stroke() {
     let d = text_doc("NoSuchFontAnywhere.ttf", "OH");
     let l = build(&d, &Space::Model, &Options::default());
@@ -482,6 +496,19 @@ fn dense_hatch_on_screen_is_one_solid_fill() {
     let l = build(&d, &Space::Model, &screen(0.004, None));
     assert_eq!(l.prims.len(), 1);
     assert_eq!(l.prims[0].kind, Kind::Tris);
+}
+
+#[test]
+fn hatch_detail_is_set_apart_from_dashes() {
+    // The hatch above: with its own level of detail off, a screen build keeps every line...
+    let d = drawing_with(pattern_hatch("ANSI31", 0.01, (0.0, 0.0, 4.0, 4.0)));
+    let all = build(&d, &Space::Model, &Options { hatch_pixel: Some(0.0), ..screen(0.004, None) });
+    assert!(all.prims.len() > 4000, "{}", all.prims.len());
+    // ...and with a coarser threshold than the view's pixel it is solid where lines would show.
+    let fine = screen(0.0005, None);
+    assert!(build(&d, &Space::Model, &fine).prims.len() > 1);
+    let coarse = build(&d, &Space::Model, &Options { hatch_pixel: Some(0.004), ..fine });
+    assert_eq!(coarse.prims.len(), 1);
 }
 
 #[test]

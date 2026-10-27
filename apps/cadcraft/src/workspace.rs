@@ -50,6 +50,7 @@ fn snapshot(ui: &UiState) -> Result<Value, String> {
         "showFileTabs": ui.show_file_tabs,
         "showStatusBar": ui.show_status_bar,
         "showCommandLine": ui.show_command_line,
+        "commandLinePosition": ui.command_line_position.sanitized(),
         "showViewcube": ui.show_viewcube,
         "showLayerList": ui.show_layer_list,
         "toolsetTab": ui.toolset_tab,
@@ -77,16 +78,21 @@ fn read(path: &Path) -> Result<Option<UiState>, String> {
     }
     let workspace =
         value.get("workspace").filter(|value| value.is_object()).ok_or_else(|| format!("{}: missing workspace object", path.display()))?;
-    // Dock schemas can evolve independently of the other saved workspace preferences.
-    // Recover only this optional field; runtime UiState deserialization remains strict.
+    // Dock schemas (the panels' and the command line's) can evolve independently of the other
+    // saved workspace preferences. Recover only these optional fields; runtime UiState
+    // deserialization remains strict.
     let mut fields = workspace.clone();
     let docking = fields.as_object_mut().and_then(|fields| fields.remove("docking"));
+    let position = fields.as_object_mut().and_then(|fields| fields.remove("commandLinePosition"));
     let mut ui: UiState = serde_json::from_value(fields).map_err(|error| format!("{}: invalid workspace: {error}", path.display()))?;
     if let Some(docking) = docking
         && let Ok(docking) = serde_json::from_value::<cadcraft_ui_egui::docking::Workspace>(docking)
         && docking.validate().is_ok()
     {
         ui.docking = docking;
+    }
+    if let Some(Ok(position)) = position.map(serde_json::from_value::<cadcraft_ui_egui::cmdline::Position>) {
+        ui.command_line_position = position.sanitized();
     }
     // Old or hand-edited files cannot reopen a dialog or replace the active drawing view.
     ui.dialog = None;
@@ -201,6 +207,7 @@ mod tests {
 
     #[test]
     fn workspace_survives_new_store_without_transient_or_document_state() {
+        use cadcraft_ui_egui::cmdline::{Dock, Position};
         let directory = temp_dir();
         let path = directory.join("workspace.json");
         let (mut first, restored, error) = Workspace::at(Some(path.clone()));
@@ -208,6 +215,7 @@ mod tests {
         let ui = UiState {
             show_palettes: false,
             show_command_line: false,
+            command_line_position: Position { dock: Dock::Top, at: Some([0.25, 0.75]) },
             toolset_tab: "Modeling".into(),
             collapsed_groups: vec!["Solid".into()],
             history_lines: 5,
@@ -220,6 +228,7 @@ mod tests {
         let value: Value = serde_json::from_slice(&bytes).unwrap();
         assert!(value["workspace"].get("dialog").is_none());
         assert!(value["workspace"].get("startTab").is_none());
+        assert_eq!(value["workspace"]["commandLinePosition"], json!({"dock": "top", "at": [0.25, 0.75]}));
         let (_, restored, error) = Workspace::at(Some(path.clone()));
         assert!(error.is_none());
         let restored = restored.unwrap();
@@ -298,6 +307,30 @@ mod tests {
             assert_eq!(restored.collapsed_groups, ["Draw"]);
             assert_eq!(restored.history_lines, 7);
             assert_eq!(serde_json::to_value(restored.docking).unwrap(), serde_json::to_value(UiState::default().docking).unwrap());
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// A command line position from a later version or a hand edit resets only itself.
+    #[test]
+    fn unsupported_command_line_position_preserves_other_workspace_preferences() {
+        use cadcraft_ui_egui::cmdline::{Dock, Position};
+        let directory = temp_dir();
+        let path = directory.join("workspace.json");
+        for (position, expected) in [
+            (json!({"dock":"left"}), Position::default()),
+            (json!({"dock":"top","at":[0.5]}), Position::default()),
+            (json!("bottom"), Position::default()),
+            (json!({"dock":"top","at":[2.0,-1.0]}), Position { dock: Dock::Top, at: Some([1.0, 0.0]) }),
+        ] {
+            let workspace = json!({"showPalettes":false,"toolsetTab":"Modeling","historyLines":7,"commandLinePosition":position});
+            fs::write(&path, serde_json::to_vec(&json!({"version":1,"workspace":workspace})).unwrap()).unwrap();
+            let (_, restored, error) = Workspace::at(Some(path.clone()));
+            assert!(error.is_none(), "{position}: {error:?}");
+            let restored = restored.unwrap();
+            assert!(!restored.show_palettes);
+            assert_eq!((restored.toolset_tab.as_str(), restored.history_lines), ("Modeling", 7));
+            assert_eq!(restored.command_line_position, expected, "{position}");
         }
         fs::remove_dir_all(directory).unwrap();
     }

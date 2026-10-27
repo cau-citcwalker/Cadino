@@ -326,7 +326,8 @@ pub fn status_bar(app: &mut CadApp, ui: &mut egui::Ui) {
         }
         x = x.max(r.left() + if app.ui.show_toolsets { 232.0 } else { 60.0 });
         // Right side: toggles, right-aligned.
-        let s = app.session.settings.clone();
+        // The current viewport's grid (a tile may have its own).
+        let s = app.session.drafting_settings();
         let anno_all = app.session.doc().is_ok_and(|d| d.anno_all_visible());
         use cadcraft_engine::snap::mode;
         let toggles: Vec<(Icon, bool, &str, &str)> = vec![
@@ -343,7 +344,8 @@ pub fn status_bar(app: &mut CadApp, ui: &mut egui::Ui) {
             (Icon::QuickProps, s.qpmode, "qpmode", "Quick Properties"),
             (Icon::Move, app.ui.gumball, "ui.gumball", "Gumball"),
             (Icon::Annotation, anno_all, "annovisible.toggle", "Annotation Visibility"),
-            (Icon::Workspace, false, "ui.noop", "Workspace Switching"),
+            // Rhino's viewport reset: the default views; right-click zooms them to fit too.
+            (Icon::ResetViews, false, "viewports.reset", "Reset viewports (right-click: and zoom to fit)"),
             (Icon::Gear, false, "ui.dialog.dsettings", "Drafting Settings"),
         ];
         let size = 20.0;
@@ -510,6 +512,9 @@ pub fn status_bar(app: &mut CadApp, ui: &mut egui::Ui) {
             if resp.clicked() {
                 toggle_cmd = Some(cmd);
             }
+            if cmd == "viewports.reset" && resp.secondary_clicked() {
+                toggle_cmd = Some("viewports.reset.zoom");
+            }
             // Right-click on Object Snap: the running modes and the Object Snap tab.
             if cmd == "osnap" {
                 resp.context_menu(|ui| {
@@ -532,6 +537,12 @@ pub fn status_bar(app: &mut CadApp, ui: &mut egui::Ui) {
             // Typed OSNAP opens Drafting Settings; the button toggles the running snaps, as F3.
             Some("osnap") => {
                 let _ = app.run("osnap", json!({}));
+            }
+            Some(c @ ("viewports.reset" | "viewports.reset.zoom")) => {
+                // On a layout tab it is refused: say so rather than do nothing.
+                if let Err(e) = app.run("viewports.reset", json!({ "zoom": c.ends_with("zoom") })) {
+                    app.session.echo(e);
+                }
             }
             Some(c) => app.start(c),
             None => {}

@@ -1,14 +1,16 @@
 //! The backend of [`crate::ops`]: our C++ (the `cadcraft-kernel-occt` crate) on B-rep text; what
 //! comes back is read and meshed here like every other result.
 
+use std::path::Path;
+
 use cadcraft_geom::{Mat4, Vec3};
 use cadcraft_kernel_occt as x;
 
-use super::{mesh, read_brep, swept, write_brep};
+use super::{exchanging, mesh, read_brep, swept, write_brep};
 use crate::ops::{
     Check, Clash, EdgeCurve, EdgeInfo, FaceInfo, Flat, Hit, Op, Out, Picked, Probe, Region, Section, SectionRegion, SurfaceKind, Topology, Wire3,
 };
-use crate::{Built, Curve, KernelError, Result, Seg, Solid};
+use crate::{BoolOp, Built, Curve, KernelError, Label, Placed, Result, Seg, Solid};
 
 pub fn op(o: &Op) -> Result<Out> {
     Ok(match o {
@@ -171,6 +173,49 @@ fn faceted(verts: &[Vec3], tris: &[[u32; 3]], solid: bool, merge: bool) -> cadcr
         .map(|((a, b), _)| vec![corner(*a), corner(*b)])
         .collect();
     cadcraft_geom::Mesh3 { verts: verts.to_vec(), tris: t, edges, open: !solid }
+}
+
+/// [`crate::boolean`]: faces merged, else the boolean's own result ([`merged_else_raw`]).
+pub(super) fn boolean(op: BoolOp, a: Placed, b: Placed) -> Result<Built> {
+    let op = match op {
+        BoolOp::Union => 0,
+        BoolOp::Subtract => 1,
+        BoolOp::Intersect => 2,
+    };
+    let (a, b) = (placed(a), placed(b));
+    merged_else_raw(|merge| text(x::boolean(&a, &b, op, merge)))
+}
+
+/// `run(true)` (faces merged, a result that isn't valid refused), else `run(false)`: merging can
+/// spoil a good result (an OpenCASCADE weakness), and booleans never refused a result the checker
+/// finds fault with (an imported or older solid), so they don't start to.
+/// ponytail: a boolean that fails outright (an empty result) runs twice; tell the two apart if
+/// that ever costs.
+fn merged_else_raw(run: impl Fn(bool) -> Result<Built>) -> Result<Built> {
+    run(true).or_else(|_| run(false))
+}
+
+/// [`crate::export_step`] (`iges` false) and [`crate::export_iges`]: the file is made in memory,
+/// then written.
+pub(super) fn exchange(solids: &[Placed], labels: &[Label], curves: &[Curve], iges: bool, path: &Path) -> Result<()> {
+    let objects: Vec<x::ObjectIn> = solids
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let l = labels.get(i).cloned().unwrap_or_default();
+            let color = l.color.map_or([-1.0; 3], |c| c.map(|v| f64::from(v) / 255.0));
+            x::ObjectIn { shape: placed(*s), name: l.name, layer: l.layer, color }
+        })
+        .collect();
+    let text = {
+        let _one = exchanging();
+        x::exchange(&objects, &wires(curves), iges).map_err(failed)?
+    };
+    std::fs::write(path, text).map_err(|e| KernelError::Failed(format!("writing {}: {e}", path.display())))
+}
+
+fn placed(p: Placed) -> x::ShapeIn {
+    x::ShapeIn { brep: p.brep.to_owned(), xf: rows(p.xform) }
 }
 
 fn pick(s: &Solid, probe: Probe, tol: f64) -> Result<Picked> {

@@ -54,6 +54,25 @@ Example client configuration (Claude Code / Claude Desktop):
 
 Resources: `cadcraft://drawing` (inspect JSON) and `cadcraft://commands` (catalog).
 
+Every tool carries MCP tool annotations (2025-06-18): a `title`, `openWorldHint: false`, and
+`readOnlyHint: true` on `list_commands`, `inspect_drawing`, `query_entities`, `render`, `find_text`
+and `ui_inspect`, so a client may run those without asking. The others are marked
+`destructiveHint: true` (with `idempotentHint` true for `save`, `cancel` and `screenshot`):
+`screenshot` always writes a PNG, so it isn't read-only. `render` takes no `path` and writes no
+file (a `path` sent anyway is dropped); `save` to a `.png` path writes a picture, and the control
+method `ui.render` still takes `path`. The in-app assistant sends Claude and GPT only each tool's
+name, description and schema, never the annotations.
+
+In tool results a 3D solid's B-rep text and mesh are left out; the mesh shows as
+`<mesh, N triangles>`, and an open one, a surface rather than a closed solid, as
+`<mesh, N triangles, open: a surface, not a solid>`. The working instructions tell the agent to
+look for it: lines extruded make loose surfaces, which Rhino shows as separate pieces.
+
+`skills/cadino/` is a skill for agents driving Cadino over MCP (Claude Code and Claude Desktop:
+`SKILL.md` and `references/recipes.md`; Codex: `AGENTS.md`; install steps in its `README.md`):
+the furniture workflow from brief to closed solids, checks, clean-up, drawings, cut list and
+export to Rhino. The portable zip ships it next to the app.
+
 Arguments are checked against each tool's input schema. An unknown tool, `arguments` that aren't an
 object, a missing required argument or one of the wrong type is a JSON-RPC error `-32602` (invalid
 params), so `command_line {}` never presses Enter by accident. A tool that runs and fails (a bad

@@ -362,7 +362,7 @@ pub fn show(app: &mut crate::CadApp, ui: &mut egui::Ui) {
         |ui, panel| match panel {
             Panel::Canvas => {
                 ui.painter().rect_filled(ui.max_rect(), 0.0, t.canvas);
-                crate::canvas::show(app, ui);
+                crate::cmdline::panel(app, ui);
             }
             Panel::ToolSets => crate::palettes::toolsets(app, ui),
             Panel::QuickCalc => crate::palettes::quickcalc::show(app, ui),

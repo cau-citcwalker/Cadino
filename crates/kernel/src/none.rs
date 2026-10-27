@@ -5,7 +5,7 @@ use std::path::Path;
 use cadcraft_geom::{Mat4, Mesh3, Vec3};
 
 use crate::curve::Run;
-use crate::{BoolOp, Built, Curve, Imported, KernelError, Outline, Placed, Primitive, Result, Seg};
+use crate::{BoolOp, Built, Curve, Imported, KernelError, Label, Outline, Placed, Primitive, Result, Seg};
 
 pub fn primitive(_: &Primitive) -> Result<Built> {
     Err(KernelError::Unavailable)
@@ -43,7 +43,7 @@ pub fn sweep(_: &[Run], _: bool) -> Result<Built> {
 pub fn tessellate(_: &str) -> Result<Mesh3> {
     Err(KernelError::Unavailable)
 }
-pub fn export_step(_: &[Placed], _: &Path) -> Result<()> {
+pub fn export_step(_: &[Placed], _: &[Label], _: &Path) -> Result<()> {
     Err(KernelError::Unavailable)
 }
 pub fn export_stl(_: &[Placed], _: &Path) -> Result<()> {
@@ -52,7 +52,7 @@ pub fn export_stl(_: &[Placed], _: &Path) -> Result<()> {
 pub fn import_step(_: &Path) -> Result<Built> {
     Err(KernelError::Unavailable)
 }
-pub fn export_iges(_: &[Placed], _: &[Curve], _: &Path) -> Result<()> {
+pub fn export_iges(_: &[Placed], _: &[Label], _: &[Curve], _: &Path) -> Result<()> {
     Err(KernelError::Unavailable)
 }
 pub fn import_iges(_: &Path) -> Result<Imported> {

@@ -1,5 +1,6 @@
 //! Compiles our C++ (`src/ops.cpp`) against the OpenCASCADE opencascade-sys builds (into
-//! `occt_sys::occt_path()`), and links the one library of it opencascade-sys doesn't (TKHLR).
+//! `occt_sys::occt_path()`), and links the libraries of it opencascade-sys doesn't (TKHLR, and
+//! TKCDF and TKService under the XDE documents STEP and IGES export write from).
 
 use std::time::{Duration, Instant};
 
@@ -27,6 +28,10 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", occt.join("lib").display());
     // Hidden-line removal (FLATSHOT); the other toolkits come with opencascade-sys.
     println!("cargo:rustc-link-lib=static=TKHLR");
+    // The documents behind named, coloured STEP and IGES export (XDE).
+    println!("cargo:rustc-link-lib=static=TKCDF");
+    // Graphic3d, which XCAFDoc_VisMaterial (behind every XDE document) refers to.
+    println!("cargo:rustc-link-lib=static=TKService");
     cxx_build::bridge("src/lib.rs")
         .file("src/ops.cpp")
         .include("include")

@@ -10,6 +10,7 @@
 #include <functional>
 #include <map>
 #include <cmath>
+#include <cstdio>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -76,6 +77,12 @@
 #include <Geom_Surface.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <HLRAlgo_Projector.hxx>
+#include <IGESCAFControl_Writer.hxx>
+#include <IGESControl_Controller.hxx>
+#include <IGESData_IGESModel.hxx>
+#include <IGESSolid_ManifoldSolid.hxx>
+#include <IGESSolid_Shell.hxx>
+#include <Interface_Static.hxx>
 #include <HLRBRep_Algo.hxx>
 #include <HLRBRep_HLRToShape.hxx>
 #include <IntCurvesFace_ShapeIntersector.hxx>
@@ -98,6 +105,14 @@
 #include <TopoDS_Compound.hxx>
 #include <TopoDS_Iterator.hxx>
 #include <Precision.hxx>
+#include <Quantity_Color.hxx>
+#include <STEPCAFControl_Writer.hxx>
+#include <TDataStd_Name.hxx>
+#include <TDocStd_Document.hxx>
+#include <XCAFDoc_ColorTool.hxx>
+#include <XCAFDoc_DocumentTool.hxx>
+#include <XCAFDoc_LayerTool.hxx>
+#include <XCAFDoc_ShapeTool.hxx>
 #include <gp.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
@@ -263,16 +278,22 @@ TopoDS_Shape unified(const TopoDS_Shape &s, const TopoDS_Shape &before) {
   return u.Shape();
 }
 
+// The shape checked and healed where OpenCASCADE can; null when it has no faces or stays invalid.
+TopoDS_Shape healed(const TopoDS_Shape &shape) {
+  TopoDS_Shape s = unwrap(shape);
+  if (!has(s, TopAbs_FACE)) return TopoDS_Shape();
+  if (BRepCheck_Analyzer(s).IsValid()) return s;
+  Handle(ShapeFix_Shape) fix = new ShapeFix_Shape(s);
+  fix->Perform();
+  s = fix->Shape();
+  return has(s, TopAbs_FACE) && BRepCheck_Analyzer(s).IsValid() ? s : TopoDS_Shape();
+}
+
 // The result checked (and healed where OpenCASCADE can) and written.
 rust::String finish(const TopoDS_Shape &shape, const std::string &what) {
   if (!has(shape, TopAbs_FACE)) fail(what + " left nothing");
-  TopoDS_Shape s = unwrap(shape);
-  if (!BRepCheck_Analyzer(s).IsValid()) {
-    Handle(ShapeFix_Shape) fix = new ShapeFix_Shape(s);
-    fix->Perform();
-    s = fix->Shape();
-    if (!has(s, TopAbs_FACE) || !BRepCheck_Analyzer(s).IsValid()) fail(what + " made a shape that isn't valid");
-  }
+  TopoDS_Shape s = healed(shape);
+  if (s.IsNull()) fail(what + " made a shape that isn't valid");
   return write(s);
 }
 
@@ -1627,6 +1648,161 @@ rust::String guided_loft(rust::Slice<const WireIn> sections, rust::Slice<const W
   sw.Perform();
   TopoDS_Shape r = sw.SewedShape();
   return finish(solid ? solids_of(r) : r, "lofting");
+}
+
+// --- booleans and exchange files -------------------------------------------------------------
+
+// With `merge`, faces left on one surface merged (two touching boxes joined have six faces, not
+// ten), edges either solid had between faces on one surface (imprints) kept, and a result that
+// isn't valid refused; without, the boolean's own result, healed where it can be, else as it is.
+rust::String boolean(const ShapeIn &ina, const ShapeIn &inb, uint8_t op, bool merge) {
+  TopoDS_Shape a = placed(ina), b = placed(inb), r;
+  if (op == 0) {
+    r = fused(a, b);
+  } else if (op == 1) {
+    r = cut(a, b);
+  } else {
+    BRepAlgoAPI_Common c(a, b);
+    if (!c.IsDone()) fail("intersecting the solids failed");
+    r = c.Shape();
+  }
+  if (!has(r, TopAbs_FACE)) fail("the result is empty");
+  if (!merge) {
+    TopoDS_Shape s = healed(r);
+    return write(s.IsNull() ? unwrap(r) : s);
+  }
+  BRep_Builder bb;
+  TopoDS_Compound both;
+  bb.MakeCompound(both);
+  bb.Add(both, a);
+  bb.Add(both, b);
+  return finish(unified(r, both), "combining solids");
+}
+
+namespace {
+// One object of an exchange file as other modellers take it whole: a solid as it is; faces outside
+// a solid sewn, closed pieces made solids and open ones shells (IGES's BRep mode writes a lone
+// face as a face entity, not a surface); curves as they are.
+TopoDS_Shape exchanged(const TopoDS_Shape &shape) {
+  TopoDS_Shape s = unwrap(shape);
+  if (!has(s, TopAbs_FACE) || has(s, TopAbs_SOLID)) return s;
+  BRepBuilderAPI_Sewing sw(std::max(1e-6, diagonal(s) * 1e-7));
+  sw.Add(s);
+  sw.Perform();
+  TopoDS_Shape r = sw.SewedShape();
+  BRep_Builder bb;
+  TopoDS_Compound out;
+  bb.MakeCompound(out);
+  for (TopExp_Explorer ex(r, TopAbs_SHELL); ex.More(); ex.Next()) {
+    TopoDS_Shell sh = TopoDS::Shell(ex.Current());
+    if (!BRep_Tool::IsClosed(sh)) {
+      bb.Add(out, sh);
+      continue;
+    }
+    TopoDS_Solid so = BRepBuilderAPI_MakeSolid(sh).Solid();
+    BRepLib::OrientClosedSolid(so);
+    bb.Add(out, so);
+  }
+  for (TopExp_Explorer ex(r, TopAbs_FACE, TopAbs_SHELL); ex.More(); ex.Next()) {
+    TopoDS_Shell sh;
+    bb.MakeShell(sh);
+    bb.Add(sh, ex.Current());
+    bb.Add(out, sh);
+  }
+  return unwrap(out);
+}
+
+TCollection_ExtendedString text_of(const rust::String &s) {
+  return TCollection_ExtendedString(std::string(s).c_str(), Standard_True);
+}
+
+// IGES BRep mode writes every shell as a closed one (form 1); those under no solid are open.
+void open_shells(const Handle(IGESData_IGESModel) &model) {
+  std::vector<Handle(IGESSolid_Shell)> closed, all;
+  for (int i = 1; i <= model->NbEntities(); ++i) {
+    Handle(Standard_Transient) e = model->Value(i);
+    if (Handle(IGESSolid_ManifoldSolid) so = Handle(IGESSolid_ManifoldSolid)::DownCast(e)) {
+      closed.push_back(so->Shell());
+      for (int v = 1; v <= so->NbVoidShells(); ++v) closed.push_back(so->VoidShell(v));
+    } else if (Handle(IGESSolid_Shell) sh = Handle(IGESSolid_Shell)::DownCast(e)) {
+      all.push_back(sh);
+    }
+  }
+  for (const Handle(IGESSolid_Shell) &sh : all)
+    if (std::find(closed.begin(), closed.end(), sh) == closed.end()) sh->SetClosed(Standard_False);
+}
+
+// STEP text keeps to the basic alphabet: OpenCASCADE writes names and layers as UTF-8, so each
+// run of other characters becomes \X2\, 4 hex digits a character (\X4\ and 8 past U+FFFF) and
+// \X0\, as ISO 10303-21 has it (only quoted strings can hold such characters).
+std::string step_text(const std::string &in) {
+  const char *const opens[] = {"", "", "\\X2\\", "", "\\X4\\"};
+  std::string out;
+  int mode = 0;
+  for (size_t i = 0; i < in.size();) {
+    unsigned char c = static_cast<unsigned char>(in[i]);
+    size_t len = c < 0x80 ? 1 : c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+    uint32_t cp = len == 4 ? c & 7u : len == 3 ? c & 15u : len == 2 ? c & 31u : c < 0x80 ? c : 0xFFFDu;
+    for (size_t k = 1; k < len; ++k) {
+      unsigned char d = i + k < in.size() ? static_cast<unsigned char>(in[i + k]) : 0;
+      if ((d & 0xC0) != 0x80) {
+        cp = 0xFFFD;
+        len = k;
+        break;
+      }
+      cp = cp << 6 | (d & 63u);
+    }
+    i += len;
+    int want = cp < 0x80 ? 0 : cp > 0xFFFF ? 4 : 2;
+    if (want != mode) out += std::string(mode != 0 ? "\\X0\\" : "") + opens[want];
+    mode = want;
+    if (want == 0) {
+      out += static_cast<char>(cp);
+      continue;
+    }
+    char hex[9];
+    std::snprintf(hex, sizeof hex, want == 2 ? "%04X" : "%08X", static_cast<unsigned>(cp));
+    out += hex;
+  }
+  if (mode != 0) out += "\\X0\\";
+  return out;
+}
+} // namespace
+
+// An XDE document of the objects (each its own object, named, coloured, on its layer) and curves,
+// written as IGES in BRep mode (a solid is one closed object, not a surface per face) or as STEP,
+// in millimetres.
+rust::String exchange(rust::Slice<const ObjectIn> objects, rust::Slice<const WireIn> curves, bool iges) {
+  Handle(TDocStd_Document) doc = new TDocStd_Document("MDTV-XCAF");
+  XCAFDoc_DocumentTool::Set(doc->Main(), Standard_False);
+  XCAFDoc_DocumentTool::SetLengthUnit(doc, 0.001);
+  Handle(XCAFDoc_ShapeTool) shapes = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
+  Handle(XCAFDoc_ColorTool) colors = XCAFDoc_DocumentTool::ColorTool(doc->Main());
+  Handle(XCAFDoc_LayerTool) layers = XCAFDoc_DocumentTool::LayerTool(doc->Main());
+  for (const ObjectIn &o : objects) {
+    TDF_Label l = shapes->AddShape(exchanged(placed(o.shape)), Standard_False);
+    if (!o.name.empty()) TDataStd_Name::Set(l, text_of(o.name));
+    if (!o.layer.empty()) layers->SetLayer(l, text_of(o.layer));
+    if (o.color[0] >= 0)
+      colors->SetColor(l, Quantity_Color(o.color[0], o.color[1], o.color[2], Quantity_TOC_sRGB), XCAFDoc_ColorGen);
+  }
+  for (const WireIn &w : curves) shapes->AddShape(wire_of(w), Standard_False);
+  std::ostringstream out;
+  if (iges) {
+    // The writer takes its mode when made; opencascade-rs's writes faces mode, so it is put back.
+    IGESControl_Controller::Init();
+    int mode = Interface_Static::IVal("write.iges.brep.mode");
+    Interface_Static::SetIVal("write.iges.brep.mode", 1);
+    IGESCAFControl_Writer w;
+    Interface_Static::SetIVal("write.iges.brep.mode", mode);
+    if (!w.Transfer(doc)) fail("writing IGES failed");
+    open_shells(w.Model());
+    if (!w.Write(out)) fail("writing IGES failed");
+    return rust::String(out.str());
+  }
+  STEPCAFControl_Writer w;
+  if (!w.Transfer(doc, STEPControl_AsIs) || w.WriteStream(out) != IFSelect_RetDone) fail("writing STEP failed");
+  return rust::String(step_text(out.str()));
 }
 
 } // namespace cadrhino

@@ -797,7 +797,7 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
         EntityKind::Solid3d(s) => {
             w.s(0, "3DSOLID");
             common(w, e, owner, paper, "AcDbModelerGeometry");
-            w.t.extend(crate::dxf_solid::tags(s, cx.target));
+            w.t.extend(crate::dxf_solid::tags(s, e.handle, cx.target));
         }
         // Closed polylines, one per loop (`dxf_region`): REGION's own data is ACIS.
         EntityKind::Region(r) => {
@@ -1664,8 +1664,10 @@ fn vport_table(w: &mut W, d: &Drawing, ext: Bounds2) {
         w.p2(12, if persp.is_some() { Vec2::ZERO } else { finite(t.center, Vec2::ZERO) });
         // Snap grid origin and rotation (SNAPBASE, SNAPANG in degrees): R13+ files keep them here.
         w.p2(13, d.header.point("SNAPBASE").map(|p| p.xy()).filter(|p| p.is_finite()).unwrap_or(Vec2::ZERO));
-        w.p2(14, d.header.snap_unit());
-        w.p2(15, d.header.grid_unit());
+        // Snap and grid spacing: the tile's own grid's, else the drawing's.
+        let spacing = |p: Vec2, or: Vec2| if p.is_finite() && p.x >= 0.0 && p.y >= 0.0 { p } else { or };
+        w.p2(14, t.grid.map_or(d.header.snap_unit(), |g| spacing(g.snap, d.header.snap_unit())));
+        w.p2(15, t.grid.map_or(d.header.grid_unit(), |g| spacing(g.unit, d.header.grid_unit())));
         w.p(16, persp.map_or(dir, |p| p.2));
         w.p(17, persp.map_or(Vec3::ZERO, |p| p.1));
         w.f(40, if t.height.is_finite() && t.height > 0.0 { t.height } else { 1.0 });
@@ -1690,6 +1692,10 @@ fn vport_table(w: &mut W, d: &Drawing, ext: Bounds2) {
         if viewmode != 0 {
             w.i(71, viewmode);
         }
+        // A tile's own grid shows or not (GRIDMODE, 76); the drawing's is the session's.
+        if let Some(g) = t.grid {
+            w.i(76, i64::from(g.on));
+        }
         // Render mode: 0 2D optimised, 2 hidden line, 4 Gouraud shaded, 6 Gouraud shaded with
         // wireframe (Hidden is unshaded with edges).
         w.i(
@@ -1708,14 +1714,27 @@ fn vport_table(w: &mut W, d: &Drawing, ext: Bounds2) {
         let (cplane, ucs) = if std::ptr::eq(t, &single) { (d.header.cplane(), d.header.file_ucs()) } else { (t.cplane, t.ucs) };
         let ours = cplane != Mat4::IDENTITY;
         let u = if ours { cplane } else { ucs };
-        if u != Mat4::IDENTITY && u.is_affine() {
+        let ucs_written = u != Mat4::IDENTITY && u.is_affine();
+        if ucs_written {
             w.i(65, 1);
             w.p(110, u.col(3));
             w.p(111, u.col(0));
             w.p(112, u.col(1));
-            if ours {
-                w.s(1001, dxf_ext::APP);
+        }
+        // Cadino's marks: the UCS is a construction plane; the tile has a grid of its own (its
+        // major lines, reach and axes; on and spacings are 76, 14 and 15 above).
+        if (ucs_written && ours) || t.grid.is_some() {
+            w.s(1001, dxf_ext::APP);
+            if ucs_written && ours {
                 w.s(1000, dxf_ext::CPLANE);
+            }
+            if let Some(g) = t.grid {
+                w.s(1000, dxf_ext::GRID);
+                w.s(1002, "{");
+                w.i(1070, i64::from(g.major.clamp(1, 100)));
+                w.i(1070, i64::from(g.count.min(1000)));
+                w.i(1070, i64::from(g.axes));
+                w.s(1002, "}");
             }
         }
     }
@@ -1800,6 +1819,17 @@ fn tags_for(d: &Drawing, version: Version, target: Version, dwg: bool) -> Vec<Ta
     // AutoCAD ignores (read back by `dxf_read`).
     let dynblocks = cadcraft_doc::dynblock::file::for_file(d);
     let d = dynblocks.as_ref().unwrap_or(d);
+    // Groups' handles come before the entities: each member names its group as a persistent
+    // reactor (DXF Reference, GROUP), which AutoCAD's and ODA's audits otherwise add.
+    let group_handles: Vec<String> = d.groups.iter().filter(|g| !g.name.is_empty()).map(|_| w.h()).collect();
+    for (g, h) in d.groups.iter().filter(|g| !g.name.is_empty()).zip(&group_handles) {
+        for m in &g.members {
+            let r = w.reactors.entry(*m).or_default();
+            if !r.contains(h) {
+                r.push(h.clone());
+            }
+        }
+    }
     let ps_brs: Vec<(String, String, &Layout)> = paper_layouts
         .iter()
         .enumerate()
@@ -2417,7 +2447,7 @@ fn tags_for(d: &Drawing, version: Version, target: Version, dwg: bool) -> Vec<Ta
     // Groups (members that still exist) and multileader styles.
     let group_owner = group_dict.clone();
     let written: std::collections::HashSet<String> = w.t.iter().filter(|t| t.code == 5).map(Tag::str).collect();
-    let groups: Vec<(&Group, String)> = d.groups.iter().filter(|g| !g.name.is_empty()).map(|g| (g, w.h())).collect();
+    let groups: Vec<(&Group, String)> = d.groups.iter().filter(|g| !g.name.is_empty()).zip(group_handles).collect();
     let mleader_dict = w.h();
     let mleader_handles: Vec<String> = cx.mleader_styles.iter().map(|(_, h)| h.clone()).collect();
     w.s(0, "SECTION");
@@ -2676,6 +2706,7 @@ fn tags_for(d: &Drawing, version: Version, target: Version, dwg: bool) -> Vec<Ta
     }
     crate::dxf_raw::finish(&mut w.t, d);
     crate::dxf_raw::data_store(&mut w.t, d, target >= Version::R2013);
+    crate::dxf_solid::data_store(&mut w.t, d, target);
     add_class_instance_counts(&mut w.t);
     mark_xrefs(&mut w.t, d);
     w.t
@@ -2898,7 +2929,7 @@ pub fn entity_groups(d: &Drawing, e: &Entity) -> (String, Vec<Tag>) {
     // A solid's B-rep is in an XRECORD of the file; the list carries it as modeler data (as
     // AutoCAD's carries ACIS), so `(entmod)` keeps it.
     if let EntityKind::Solid3d(s) = &e.kind
-        && let Some(at) = tags.iter().position(|t| t.code == 70)
+        && let Some(at) = tags.iter().position(|t| matches!(t.code, 70 | 290))
     {
         tags.splice(at + 1..at + 1, crate::dxf_solid::lines(&s.brep));
     }

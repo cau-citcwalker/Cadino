@@ -461,3 +461,43 @@ fn the_title_ends_a_running_command_before_its_tile_commands() {
     h.state_mut().session.execute("u", &json!({})).unwrap();
     assert_eq!(model_count(&h), before, "the second takes back the line");
 }
+
+/// The status bar's viewport reset button, as Rhino's: a click turns every tile back to its
+/// default view keeping its zoom; a right-click also zooms each to the objects' extents.
+#[test]
+fn the_reset_button_turns_the_tiles_back_and_right_click_zooms_too() {
+    let mut h = harness();
+    run(&mut h, "viewports.rhino");
+    let framed = h.state().session.model_tiles();
+    h.state_mut().run("view.front", json!({})).unwrap();
+    let zoomed = cadcraft_engine::View { center: cadcraft_engine::geom::Vec2::new(10.0, 5.0), height: 2.0 };
+    h.state_mut().session.state_mut().unwrap().set_view_quiet(zoomed);
+    settle(&mut h);
+    let label = "Reset viewports (right-click: and zoom to fit)";
+    h.get_by_label(label).click();
+    settle(&mut h);
+    assert!(view_dir(&h).is_plan(), "Top is Top again");
+    let height = |h: &Harness<'_, CadApp>| h.state().session.state().unwrap().view().height;
+    assert!((height(&h) - 2.0).abs() < 1e-9, "the zoom is kept");
+    h.get_by_label(label).click_button(PointerButton::Secondary);
+    settle(&mut h);
+    for (a, b) in h.state().session.model_tiles().iter().zip(&framed) {
+        assert_eq!(a.look.dir, b.look.dir);
+        // (The tiles' aspects follow the window's, a hair apart from when VIEWPORTS.RHINO ran.)
+        assert!((a.view.height / b.view.height - 1.0).abs() < 1e-2, "zoomed to the extents: {:?} vs {:?}", a.view, b.view);
+    }
+}
+
+/// On a layout tab the reset button can't reset anything: it says so on the command line rather
+/// than doing nothing.
+#[test]
+fn the_reset_button_says_why_on_a_layout_tab() {
+    let mut h = harness();
+    h.state_mut().run("layout.set", json!({ "name": "Layout1" })).unwrap();
+    settle(&mut h);
+    let before = h.state().session.log.len();
+    h.get_by_label("Reset viewports (right-click: and zoom to fit)").click();
+    settle(&mut h);
+    let log = &h.state().session.log;
+    assert!(log.len() > before && log.iter().skip(before).any(|l| l.contains("Model")), "{:?}", &log[before..]);
+}

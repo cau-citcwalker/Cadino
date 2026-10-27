@@ -3771,3 +3771,55 @@ value	Closed	닫힘
 	Opened drawings have no file name: save them to keep them.	연 도면에는 파일 이름이 없습니다. 보관하려면 저장하십시오.
 	Later	나중에
 	Keep the files and ask again next time	파일을 보관하고 다음에 다시 묻기
+	<Grid {0}>	<그리드 {0}>
+	AutoCAD {0} DWG copy written: {path}	AutoCAD {0} DWG 사본을 기록했습니다: {path}
+	Enter AutoCAD DWG version	AutoCAD DWG 버전 입력
+	AutoCAD DWG...	AutoCAD DWG...
+	Reset Viewports	뷰포트 초기화
+	Command Line Position	명령행 위치
+	Dock at Bottom	아래쪽에 고정
+	Dock at Top	위쪽에 고정
+	Floating	플로팅
+	Reset Position	위치 초기화
+	combining solids	솔리드 결합
+	intersecting the solids failed	솔리드 교차에 실패했습니다
+	writing IGES failed	IGES 기록에 실패했습니다
+	writing STEP failed	STEP 기록에 실패했습니다
+	writing {0}: {e}	{0} 기록 중 오류: {e}
+	Wrote {stp} ({0}; the file to open in Rhino) and {igs} ({what}){1}.	{stp}({0}, Rhino에서 열 파일)와 {igs}({what})를 기록했습니다{1}.
+	Wrote {igs} ({what}) for Rhino{0}; no solids, so no STEP file.	Rhino용 {igs}({what})를 기록했습니다{0}. 솔리드가 없어 STEP 파일은 만들지 않았습니다.
+	Wrote {stp} ({0}; the file to open in Rhino); the IGES file wasn't written: {e}	{stp}({0}, Rhino에서 열 파일)를 기록했습니다. IGES 파일은 기록하지 못했습니다: {e}
+	Active viewport only	활성 뷰포트만
+	All viewports	모든 뷰포트
+	Apply grid changes to	그리드 변경 적용 대상
+	Grid line count	그리드 선 개수
+	Grid properties	그리드 특성
+	Grid snap spacing	그리드 스냅 간격
+	Major lines every	주 선 표시 간격
+	Minor grid lines every	보조 그리드 선 간격
+	Show grid axes	그리드 축 표시
+	Show grid lines	그리드 선 표시
+	Show world axes icon	월드 축 아이콘 표시
+	Spacings are in drawing units. The world axes icon shows in every viewport.	간격은 도면 단위입니다. 월드 축 아이콘은 모든 뷰포트에 표시됩니다.
+	lines each way from the origin; 0: the grid fills the view	원점에서 각 방향으로 그릴 선 개수, 0: 그리드가 뷰를 채움
+	minor grid lines	보조 그리드 선마다
+	The grid keeps its own spacing until its lines would run together.	그리드 선이 서로 붙어 보이기 전까지는 그리드 간격을 그대로 유지합니다.
+	Less simplification looks finer when zoomed out but draws more slowly on large drawings. Detail far below a pixel is never drawn.	단순화를 줄이면 축소했을 때 더 정밀하게 보이지만 큰 도면에서는 그리는 속도가 느려집니다. 픽셀보다 훨씬 작은 세부는 그리지 않습니다.
+	Display Detail	표시 세부 수준
+	Curves	곡선
+	Coarsen the grid while its lines are closer than	그리드 선 간격이 이보다 좁으면 그리드를 성기게 표시
+	Chords may stray from arcs and curves by up to	현이 호와 곡선에서 벗어날 수 있는 최대 거리
+	Chords never stray by more than	현이 벗어나는 최대 거리
+	Dash patterns shorter than this draw as solid lines:	이보다 짧은 대시 패턴은 실선으로 그림:
+	Dashes are always drawn.	대시를 항상 그립니다.
+	Hatch lines closer than this merge into a solid fill:	간격이 이보다 좁은 해치 선은 솔리드 채우기로 합침:
+	Every hatch line is drawn.	모든 해치 선을 그립니다.
+	Text smaller than this draws as boxes:	이보다 작은 문자는 상자로 그림:
+	Letters are always drawn.	글자를 항상 그립니다.
+	As the view zooms out, small details are drawn simpler so the drawing stays fast. Choose per kind of object.	뷰를 축소하면 작은 세부를 단순하게 그려 도면이 빠르게 유지됩니다. 객체 종류별로 선택하십시오.
+	Simplify when zoomed out	축소 시 단순화
+	drawing units	도면 단위
+	Restore Defaults	기본값 복원
+	Reset viewports (right-click: and zoom to fit)	뷰포트 초기화(오른쪽 클릭: 맞춤 줌까지)
+	AutoCAD DWG	AutoCAD DWG
+	Grid	그리드

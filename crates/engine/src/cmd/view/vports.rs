@@ -57,6 +57,11 @@ pub fn specs() -> Vec<CommandSpec> {
             .params("{} (Model tab): the current tile alone, with its view; VIEWPORTS.MAXIMIZE brings the others back"),
         CommandSpec::new("viewports.maximize", "Maximize or Restore Viewport", run_maximize)
             .params("{} (Model tab): tiled, the current tile alone (VIEWPORTS.SINGLE); one view, the tiles it replaced back, else the four Rhino views"),
+        CommandSpec::new("viewports.reset", "Reset Viewports", run_reset)
+            .menu(&["View", "Viewports", "Reset Viewports"])
+            .alias(&["resetviewports"])
+            .params("{zoom?: bool} (Model tab): every viewport looks its default way again (Rhino's four: Top, Perspective, Front, Right; any other tile Top), keeping the point at its centre and its zoom; zoom: true zooms each to the extents as it sees them")
+            .noundo(),
     ]
 }
 
@@ -132,10 +137,10 @@ fn active_tiles(d: &Drawing) -> Vec<VportTile> {
     active_config(d).map(|c| c.tiles.clone()).unwrap_or_default()
 }
 
-/// The same tiles, whatever their construction planes (CPLANE changes the drawing's tiles; the
-/// views and looks on show stay theirs).
+/// The same tiles, whatever their construction planes and grids (CPLANE and a tile's own grid
+/// change the drawing's tiles; the views and looks on show stay theirs).
 fn same_tiles(a: &[VportTile], b: &[VportTile]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| VportTile { cplane: y.cplane, ..*x } == *y)
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| VportTile { cplane: y.cplane, grid: y.grid, ..*x } == *y)
 }
 
 /// The look the drawing stores with tile `t` (plan, wireframe when it stores none).
@@ -635,6 +640,88 @@ fn run_rhino(s: &mut Session, _p: &Value) -> Result<Value> {
     summary(s)
 }
 
+/// The quadrant of Rhino's four views (index into [`RHINO_VIEWS`]) each tile of `layout` sits in,
+/// when the tiles are those four quadrants; else none.
+fn rhino_quadrants(layout: &[Rect]) -> Option<Vec<usize>> {
+    let quads = split((Vec2::ZERO, Vec2::new(1.0, 1.0)), 4, "")?;
+    let same = |a: &Rect, b: &Rect| a.0.near(b.0, EPS) && a.1.near(b.1, EPS);
+    let at: Vec<usize> = layout.iter().filter_map(|r| quads.iter().position(|q| same(q, r))).collect();
+    (layout.len() == 4 && at.len() == 4).then_some(at)
+}
+
+/// VIEWPORTS.RESET: every tile on show looks its default way again: a tile of Rhino's four its
+/// own view (Perspective through its lens), any other tile (one view too, unless VIEWPORTS.SINGLE
+/// maximized it from the four) Top. Each keeps the point at its centre, as deep as the middle of
+/// the model (a perspective's target), and its zoom; `zoom`: each zooms to the extents as it sees
+/// them instead (as VIEWPORTS.RHINO frames them). Visual styles and construction planes stay;
+/// nothing in the drawing changes. ZOOM Previous in each tile brings back its view from before.
+/// ponytail: one view resets only itself; the tiles VIEWPORTS.MAXIMIZE brings back keep their looks.
+fn run_reset(s: &mut Session, p: &Value) -> Result<Value> {
+    model_only(s)?;
+    let zoom = bool_or(p, "zoom", false);
+    let st = s.state()?;
+    let (tiles, current) = live(st, s.viewport_px);
+    let tiled = active_config(&st.doc).is_some();
+    // Where each tile sits among Rhino's four (one view: where the tile it maximized sat).
+    let quadrant: Vec<Option<usize>> = match (&st.tiles.maximized, tiled) {
+        (_, true) => match rhino_quadrants(&tiles.iter().map(|(t, _)| rect(t)).collect::<Vec<_>>()) {
+            Some(q) => q.into_iter().map(Some).collect(),
+            None => vec![None; tiles.len()],
+        },
+        (Some((ts, _, cur)), false) => vec![rhino_quadrants(&ts.iter().map(rect).collect::<Vec<_>>()).and_then(|q| q.get(*cur).copied())],
+        (None, false) => vec![None],
+    };
+    let mid = super::super::view3d::model_center(&st.doc);
+    let mut out: Vec<(View, TileLook)> = Vec::with_capacity(tiles.len());
+    for ((t, l), q) in tiles.iter().zip(quadrant) {
+        let [x, y, z] = q.and_then(|q| RHINO_VIEWS.get(q)).map_or([0.0, 0.0, 1.0], |v| v.0);
+        let dir = ViewDir::new(Vec3::new(x, y, z));
+        let lens = l.camera.map_or(cadcraft_geom::Camera::LENS, |c| c.lens);
+        let persp = q == Some(1);
+        let (v, camera) = if zoom && persp {
+            let (v, cam) = super::super::view3d::persp_frame(&st.doc, dir, lens, t.aspect);
+            (v, Some(cam))
+        } else if zoom {
+            (s.extents_frame_along(dir, t.aspect)?, None)
+        } else {
+            // The point at the tile's centre (as an orbit finds it), seen along the new direction.
+            let (ax, ay, ad) = l.dir.axes();
+            let depth = l.camera.map_or_else(|| l.dir.depth(mid), |c| c.target);
+            let at = ax * t.center.x + ay * t.center.y + ad * if depth.is_finite() { depth } else { 0.0 };
+            (View { center: dir.project(at), height: t.height }, persp.then(|| cadcraft_geom::Camera::new(lens, dir.depth(at))))
+        };
+        out.push((v, TileLook { dir, camera, ..*l }));
+    }
+    // Each tile's ZOOM Previous gets the view it had, so a misclick loses no camera.
+    let old: Vec<(View, ViewDir)> = tiles.iter().map(|(t, l)| (view_of(t), l.projection(view_of(t)))).collect();
+    let at = if tiled { current } else { 0 };
+    let st = s.state_mut()?;
+    st.tiles.histories.resize(old.len().max(st.tiles.histories.len()), Vec::new());
+    for (i, (was, (v, l))) in old.into_iter().zip(&out).enumerate() {
+        if was == (*v, l.projection(*v)) {
+            continue;
+        }
+        if i == at {
+            st.push_history(was.0, was.1);
+        } else if let Some(h) = st.tiles.histories.get_mut(i) {
+            h.push(was);
+            let over = h.len().saturating_sub(50);
+            h.drain(..over);
+        }
+    }
+    if tiled {
+        st.tiles.config = active_tiles(&st.doc);
+        st.tiles.views = out.iter().map(|o| o.0).collect();
+        st.tiles.looks = out.iter().map(|o| o.1).collect();
+        st.tiles.active = current;
+    }
+    if let Some((v, l)) = out.get(if tiled { current } else { 0 }).copied() {
+        st.set_view_quiet(v);
+        st.set_look(l);
+    }
+    summary(s)
+}
+
 /// The current tile alone, the others remembered for VIEWPORTS.MAXIMIZE. One view stays as it is.
 fn run_single(s: &mut Session, _p: &Value) -> Result<Value> {
     model_only(s)?;
@@ -685,6 +772,7 @@ impl Session {
         let (tiles, active) = live(st, self.viewport_px);
         // The Block Editor works in World (see `cplane`).
         let editing = st.block_edit.is_some();
+        let drawing = self.drawing_grid();
         tiles
             .iter()
             .enumerate()
@@ -695,8 +783,69 @@ impl Session {
                 look: *l,
                 active: i == active,
                 cplane: if editing { Mat4::IDENTITY } else { usable(t.cplane) },
+                grid: t.grid.unwrap_or(drawing),
             })
             .collect()
+    }
+
+    /// The current model tile's own grid (Rhino's Options ▸ Grid, "Apply grid changes to the
+    /// active viewport only"): on the Model tab with tiles, when it has one. The grid variables
+    /// read and set it then ([`crate::sysvars`]), as AutoCAD's are each viewport's.
+    pub fn tile_grid(&self) -> Option<cadcraft_doc::TileGrid> {
+        let st = self.state().ok()?;
+        if st.space != Space::Model || st.mspace.is_some() {
+            return None;
+        }
+        let cfg = active_config(&st.doc)?;
+        cfg.tiles.get(live(st, self.viewport_px).1)?.grid
+    }
+
+    /// Give the current tile a grid of its own (`Some`), or let it show the drawing's (`None`).
+    /// Changes the drawing (its `*Active` tiles) only when that is different; with one view, or
+    /// off the Model tab, there is only the drawing's grid.
+    /// ponytail: a tile VIEWPORTS.SINGLE maximized shows the drawing's grid until the tiles come
+    /// back; carry its own into the one view if that is missed.
+    pub(crate) fn put_tile_grid(&mut self, g: Option<cadcraft_doc::TileGrid>) -> Result<()> {
+        let st = self.state()?;
+        if st.space != Space::Model || st.mspace.is_some() {
+            return Ok(());
+        }
+        let active = live(st, self.viewport_px).1;
+        if active_config(&st.doc).and_then(|c| c.tiles.get(active)).is_none_or(|t| t.grid == g) {
+            return Ok(());
+        }
+        let tile = self.doc_mut()?.vports.iter_mut().find(|k| k.is_active() && k.tiles.len() > 1).and_then(|c| c.tiles.get_mut(active));
+        if let Some(t) = tile {
+            t.grid = g;
+        }
+        Ok(())
+    }
+
+    /// Rhino's "Apply grid changes to all viewports": the grid the current viewport shows becomes
+    /// the drawing's, and every tile shows it.
+    pub(crate) fn share_grid(&mut self) -> Result<()> {
+        if let Some(g) = self.tile_grid() {
+            crate::sysvars::put_drawing_grid(self, &g)?;
+        }
+        let own = |c: &VportConfig| c.is_active() && c.tiles.iter().any(|t| t.grid.is_some());
+        if self.doc().is_ok_and(|d| d.vports.iter().any(own)) {
+            for c in self.doc_mut()?.vports.iter_mut().filter(|c| c.is_active()) {
+                for t in &mut c.tiles {
+                    t.grid = None;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Rhino's "Apply grid changes to the active viewport only": the current tile gets a grid of
+    /// its own, the one it shows until then (one view: nothing changes).
+    pub(crate) fn own_grid(&mut self) -> Result<()> {
+        if self.tile_grid().is_none() {
+            let g = self.drawing_grid();
+            self.put_tile_grid(Some(g))?;
+        }
+        Ok(())
     }
 
     /// The current construction plane (CPLANE, UCS): its coordinates (x, y in the plane, z along

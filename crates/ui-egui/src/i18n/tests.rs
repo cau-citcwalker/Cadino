@@ -114,6 +114,7 @@ fn missing_marked_ui_literals(language: &str) -> BTreeSet<String> {
         include_str!("../quick.rs"),
         include_str!("../vpscale.rs"),
         include_str!("../options/dialog.rs"),
+        include_str!("../options/detail.rs"),
         include_str!("../options/ai.rs"),
         include_str!("../assistant.rs"),
         include_str!("../managers/current.rs"),

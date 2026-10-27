@@ -429,6 +429,7 @@ pub const FILE_COMMANDS: &[&str] = &[
     "igesout",
     "rhinoout",
     "3dprint",
+    "dwgout",
     // RENDER writes the picture to a PNG with `path`.
     "render",
     "xattach",

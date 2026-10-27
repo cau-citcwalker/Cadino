@@ -1553,8 +1553,11 @@ fn tables(tags: &[Tag], d: &mut Drawing, rx: &mut Rx) {
                 if cplane_marked(&t) {
                     d.header.set_cplane(&vport_ucs(&t));
                 }
+                // A tile with a grid of its own keeps its spacings; the drawing's are in $SNAPUNIT
+                // and $GRIDUNIT.
+                let own = tile_grid(&t).is_some();
                 for (name, code) in [("SNAPUNIT", 14), ("GRIDUNIT", 15)] {
-                    if let (Some(x), Some(y)) = (t.f(code), t.f(code + 10)) {
+                    if let (false, Some(x), Some(y)) = (own, t.f(code), t.f(code + 10)) {
                         let p = Vec2::new(x, y);
                         if p.is_finite() && if name == "GRIDUNIT" { p.x >= 0.0 && p.y >= 0.0 } else { p.x > 0.0 && p.y > 0.0 } {
                             d.header.set(name, HVal::Point(p.to3(0.0)));
@@ -1656,6 +1659,31 @@ fn cplane_marked(t: &T) -> bool {
     crate::dxf_ext::xdata(t.0, crate::dxf_ext::APP).iter().any(|x| x.code == 1000 && x.str().trim().eq_ignore_ascii_case(crate::dxf_ext::CPLANE))
 }
 
+/// The grid of a VPORT record's own when Cadino saved one (`CADCRAFT` xdata `1000 GRID` list:
+/// major lines, line count, axes), with its on/off (76) and spacings (14/24, 15/25); unusable
+/// values fall back to the defaults. Another program's records follow the drawing's grid.
+fn tile_grid(t: &T) -> Option<cadcraft_doc::TileGrid> {
+    let x = crate::dxf_ext::xdata(t.0, crate::dxf_ext::APP);
+    if !x.iter().any(|g| g.code == 1000 && g.str().trim().eq_ignore_ascii_case(crate::dxf_ext::GRID)) {
+        return None;
+    }
+    let ints: Vec<i64> = crate::dxf_ext::xdata_list(x, crate::dxf_ext::GRID).iter().filter(|g| g.code == 1070).map(|g| g.i64()).collect();
+    let int = |i: usize, lo: i64, hi: i64, or: i64| ints.get(i).copied().filter(|v| (lo..=hi).contains(v)).unwrap_or(or);
+    let spacing = |code: i32, zero: bool| {
+        let p = Vec2::new(t.fd(code, 0.5), t.fd(code + 10, 0.5));
+        let ok = p.is_finite() && if zero { p.x >= 0.0 && p.y >= 0.0 } else { p.x > 0.0 && p.y > 0.0 };
+        if ok { p } else { Vec2::new(0.5, 0.5) }
+    };
+    Some(cadcraft_doc::TileGrid {
+        on: t.i(76).unwrap_or(0) != 0,
+        unit: spacing(15, true),
+        snap: spacing(14, false),
+        major: int(0, 1, 100, 5) as u32,
+        count: int(1, 0, 1000, 0) as u32,
+        axes: int(2, 0, 1, 1) != 0,
+    })
+}
+
 /// A VPORT record's UCS (110/111/112: origin, x and y axes) as a frame: World when it stores
 /// none, or axes that make no plane.
 fn vport_ucs(t: &T) -> Mat4 {
@@ -1713,7 +1741,9 @@ fn vport_record(d: &mut Drawing, t: &T) {
         Some(h) if h.is_finite() && h > 0.0 => h,
         _ => height,
     };
-    let tile = VportTile { min: clamp(min), max: clamp(max), center, height, aspect, view_dir, shaded, edges, cplane, ucs, camera, twist, clip };
+    let grid = tile_grid(t);
+    let tile =
+        VportTile { min: clamp(min), max: clamp(max), center, height, aspect, view_dir, shaded, edges, cplane, ucs, camera, twist, clip, grid };
     let name = if name.eq_ignore_ascii_case(VportConfig::ACTIVE) { VportConfig::ACTIVE.to_string() } else { name };
     let room = d.vports.len() < MAX_OBJECTS;
     match d.vports.iter_mut().find(|c| c.name.eq_ignore_ascii_case(&name)) {

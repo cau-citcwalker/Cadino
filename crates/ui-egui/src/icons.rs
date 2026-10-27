@@ -118,6 +118,8 @@ pub enum Icon {
     Gear,
     Annotation,
     Workspace,
+    /// Four viewports with a turn-back arrow: reset the viewports' views.
+    ResetViews,
     ChevronDown,
     ChevronUp,
     ChevronLeft,
@@ -798,6 +800,13 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, dim: bool) {
             pen.rect(3.0, 4.0, 18.0, 16.0, b);
             pen.l(9.0, 4.0, 9.0, 20.0);
             pen.l(9.0, 9.0, 21.0, 9.0);
+        }
+        ResetViews => {
+            pen.rect(3.0, 3.0, 18.0, 18.0, b);
+            pen.l(12.0, 3.0, 12.0, 21.0);
+            pen.l(3.0, 12.0, 21.0, 12.0);
+            pen.arc(12.0, 12.0, 5.5, 100.0, -170.0, a);
+            pen.arrow_tip(6.0, 11.0, -0.2, -1.0, a);
         }
         ChevronDown => pen.poly(&[(6.0, 9.0), (12.0, 15.0), (18.0, 9.0)], false, b),
         ChevronUp => pen.poly(&[(6.0, 15.0), (12.0, 9.0), (18.0, 15.0)], false, b),

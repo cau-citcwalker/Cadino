@@ -12,10 +12,12 @@ use crate::animation::AnimationPref;
 use crate::theme::{ThemePref, Tokens};
 
 /// The tabs: (id in the dialog name, label).
-pub(super) const TABS: [(&str, &str); 7] = [
+pub(super) const TABS: [(&str, &str); 9] = [
     ("display", "Display"),
+    ("detail", "Display Detail"),
     ("files", "Open and Save"),
     ("drafting", "Drafting"),
+    ("grid", "Grid"),
     ("selection", "Selection"),
     ("preferences", "User Preferences"),
     ("profiles", "Profiles"),
@@ -55,6 +57,8 @@ pub fn dialog(app: &mut CadApp, ctx: &egui::Context, name: &str, open: &mut bool
             match tab {
                 "files" => files(app, ui, &mut changes),
                 "drafting" => drafting(app, ui, &mut changes, &mut start),
+                "grid" => grid_tab(app, ui, &mut changes),
+                "detail" => super::detail::tab(app, ui, &mut changes),
                 "selection" => selection(app, ui, &mut changes),
                 "preferences" => preferences(app, ui, &mut changes),
                 "profiles" => profiles(app, ui, &mut changes),
@@ -282,6 +286,80 @@ fn drafting(app: &CadApp, ui: &mut egui::Ui, changes: &mut Map<String, Value>, s
             *start = Some("dsettings");
         }
     });
+}
+
+/// Rhino's grid options: the current viewport's GRIDLINECOUNT, GRIDUNIT, GRIDMAJOR, GRIDMODE,
+/// GRIDAXES and SNAPUNIT (a tile's own grid or the drawing's: OPTIONS `gridViewport`), and UCSICON.
+fn grid_tab(app: &CadApp, ui: &mut egui::Ui, changes: &mut Map<String, Value>) {
+    let st = app.session.drafting_settings();
+    // Rhino's "Apply grid changes to": whether the current tile has a grid of its own. One view is
+    // every viewport.
+    let own = app.session.tile_grid().is_some();
+    heading(ui, crate::tl!("Apply grid changes to"));
+    ui.add_enabled_ui(app.session.model_tiles().len() > 1, |ui| {
+        ui.horizontal(|ui| {
+            if ui.radio(own, crate::tl!("Active viewport only")).clicked() && !own {
+                changes.insert("gridViewport".into(), json!("active"));
+            }
+            if ui.radio(!own, crate::tl!("All viewports")).clicked() && own {
+                changes.insert("gridViewport".into(), json!("all"));
+            }
+        });
+    });
+    ui.add_space(8.0);
+    heading(ui, crate::tl!("Grid properties"));
+    grid(ui, "options_grid", |ui| {
+        ui.label(crate::tl!("Grid line count"));
+        ui.horizontal(|ui| {
+            let mut n = st.gridlinecount.min(1000);
+            if ui.add(egui::DragValue::new(&mut n).range(0..=1000)).changed() {
+                changes.insert("GRIDLINECOUNT".into(), json!(n));
+            }
+            hint(ui, crate::tl!("lines each way from the origin; 0: the grid fills the view"));
+        });
+        ui.end_row();
+
+        ui.label(crate::tl!("Minor grid lines every"));
+        let mut unit = if st.gridunit.x == 0.0 { st.snapunit.x } else { st.gridunit.x };
+        if ui.add(egui::DragValue::new(&mut unit).range(1e-6..=1e9).speed(0.1).max_decimals(4)).changed() {
+            changes.insert("GRIDUNIT".into(), json!([unit, unit]));
+        }
+        ui.end_row();
+
+        ui.label(crate::tl!("Major lines every"));
+        ui.horizontal(|ui| {
+            let mut major = st.gridmajor;
+            if ui.add(egui::DragValue::new(&mut major).range(1..=100)).changed() {
+                changes.insert("GRIDMAJOR".into(), json!(major));
+            }
+            ui.label(crate::tl!("minor grid lines"));
+        });
+        ui.end_row();
+    });
+    ui.add_space(4.0);
+    let mut lines = st.gridmode;
+    if ui.checkbox(&mut lines, crate::tl!("Show grid lines")).changed() {
+        changes.insert("GRIDMODE".into(), json!(i32::from(lines)));
+    }
+    let mut axes = st.gridaxes;
+    if ui.checkbox(&mut axes, crate::tl!("Show grid axes")).changed() {
+        changes.insert("GRIDAXES".into(), json!(i32::from(axes)));
+    }
+    let mut icon = st.ucsicon;
+    if ui.checkbox(&mut icon, crate::tl!("Show world axes icon")).changed() {
+        changes.insert("UCSICON".into(), json!(i32::from(icon)));
+    }
+    ui.add_space(8.0);
+    heading(ui, crate::tl!("Snap"));
+    grid(ui, "options_grid_snap", |ui| {
+        ui.label(crate::tl!("Grid snap spacing"));
+        let mut snap = st.snapunit.x;
+        if ui.add(egui::DragValue::new(&mut snap).range(1e-6..=1e9).speed(0.1).max_decimals(4)).changed() {
+            changes.insert("SNAPUNIT".into(), json!([snap, snap]));
+        }
+        ui.end_row();
+    });
+    hint(ui, crate::tl!("Spacings are in drawing units. The world axes icon shows in every viewport."));
 }
 
 fn selection(app: &CadApp, ui: &mut egui::Ui, changes: &mut Map<String, Value>) {

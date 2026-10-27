@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use cadcraft_doc::{Drawing, EntityKind};
+use cadcraft_doc::{Drawing, EntityKind, Group, Handle};
 use cadcraft_dxf::{Tag, records, sections};
 use cadcraft_io::{read_dxf, write_dxf};
 
@@ -863,6 +863,21 @@ fn dictionary_variables_xrecords_and_persistent_reactors_are_kept() {
         assert_eq!(group(obj, "ACAD_REACTORS"), vec![h(nested), "2A".to_string()]);
         assert_eq!(o.handle(&s(obj, 340)).map(|r| r.0), Some("LINE"));
     }
+}
+
+/// A group's members name it as a persistent reactor (DXF Reference, GROUP; ezdxf's and ODA's
+/// audits add it otherwise), next to the reactors kept from the file.
+#[test]
+fn grouped_entities_name_their_group_and_keep_their_other_reactors() {
+    let mut d = read_dxf(fixture().as_bytes()).expect("read fixture");
+    d.groups.push(Group { name: "DOORS".into(), description: String::new(), selectable: true, members: vec![Handle(0x2A)] });
+    let o = Out::new(&write_dxf(&d));
+    let (_, groups) = o.entry(o.root(), "ACAD_GROUP").expect("group dictionary");
+    let g = entries(groups).into_iter().find(|(k, _)| k == "DOORS").expect("DOORS").1;
+    let reactors = group(o.handle("2A").expect("line").1, "ACAD_REACTORS");
+    assert!(reactors.contains(&g), "line reactors {reactors:?}, group {g}");
+    assert!(reactors.iter().any(|r| o.handle(r).is_some_and(|x| x.0 == "ACME_OBJECT")), "line reactors {reactors:?}");
+    assert!(o.dangling().is_empty(), "{:?}", o.dangling());
 }
 
 #[test]

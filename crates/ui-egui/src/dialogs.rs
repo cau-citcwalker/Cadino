@@ -53,7 +53,8 @@ fn dsettings(app: &mut CadApp, ctx: &egui::Context, name: &str, open: &mut bool)
     let tab = name.strip_prefix("dsettings:").and_then(|t| DSETTINGS_TABS.iter().find(|(id, _)| *id == t)).map_or("snap", |(id, _)| *id);
     let settings = app.session.drafting_settings();
     let (mut snapunit, mut gridunit) = (settings.snapunit, settings.gridunit);
-    let before = app.session.settings.clone();
+    // The current viewport's grid (a tile may have its own): GRIDMODE and GRIDMAJOR are its.
+    let before = settings.clone();
     let mut s = before.clone();
     let mut next_tab = None;
     egui::Window::new(crate::tl!("Drafting Settings")).id(egui::Id::new("Drafting Settings")).open(open).resizable(false).show(ctx, |ui| {

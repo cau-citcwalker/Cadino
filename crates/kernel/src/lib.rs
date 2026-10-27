@@ -442,10 +442,10 @@ fn arc_extremes(a: Vec3, mid: Vec3, b: Vec3, dir: Vec3) -> Vec<Vec3> {
     circle_extremes(c, r, k, dir).into_iter().filter(|p| if m <= e { angle(*p) <= e } else { angle(*p) >= e }).collect()
 }
 
+/// Faces the result leaves on one surface are merged (two touching boxes joined have six faces,
+/// not ten); edges either solid had between faces on one surface (imprints) are kept.
 pub fn boolean(op: BoolOp, a: Placed, b: Placed) -> Result<Built> {
-    check_brep(a.brep)?;
-    check_brep(b.brep)?;
-    run(Request::Boolean(op, Solid::of(a), Solid::of(b)))?.built()
+    run(Request::Boolean(op, ops::stored(a)?, ops::stored(b)?))?.built()
 }
 
 /// Round every edge of the solid.
@@ -602,8 +602,19 @@ fn check_brep(brep: &str) -> Result<()> {
     if head.contains("CASCADE Topology") { Ok(()) } else { Err(KernelError::Invalid("not OpenCASCADE B-rep text".into())) }
 }
 
-pub fn export_step(solids: &[Placed], path: &Path) -> Result<()> {
-    run(Request::ExportStep(export_set(solids)?, path.to_owned()))?.done()
+/// What another modeller shows of an exported solid: its name and layer (empty: none) and its
+/// colour (none: its layer's).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Label {
+    pub name: String,
+    pub layer: String,
+    pub color: Option<[u8; 3]>,
+}
+
+/// The solids to a STEP file in millimetres, each named, coloured and on its layer as `labels`
+/// has it (by position; those past its end have none).
+pub fn export_step(solids: &[Placed], labels: &[Label], path: &Path) -> Result<()> {
+    run(Request::ExportStep(export_set(solids)?, labels.to_vec(), path.to_owned()))?.done()
 }
 
 pub fn export_stl(solids: &[Placed], path: &Path) -> Result<()> {
@@ -614,7 +625,7 @@ fn export_set(solids: &[Placed]) -> Result<Vec<Solid>> {
     if solids.is_empty() {
         return Err(KernelError::Invalid("no 3D solids to export".into()));
     }
-    solids.iter().map(|s| check_brep(s.brep).map(|_| Solid::of(*s))).collect()
+    solids.iter().map(|s| ops::stored(*s)).collect()
 }
 
 /// The shape in a STEP file, as one solid (a compound when the file holds several).
@@ -622,16 +633,18 @@ pub fn import_step(path: &Path) -> Result<Built> {
     run(Request::ImportStep(path.to_owned()))?.built()
 }
 
-/// Solids, surfaces and curves to one IGES file (as Rhino reads them). Curves the kernel can't
-/// make (too small, pieces that don't meet) are left out. How many curves were written.
-pub fn export_iges(solids: &[Placed], curves: &[Curve], path: &Path) -> Result<usize> {
-    let ss = solids.iter().map(|s| check_brep(s.brep).map(|_| Solid::of(*s))).collect::<Result<Vec<_>>>()?;
+/// Solids, surfaces and curves to one IGES file in millimetres, as Rhino reads them whole: each
+/// solid one closed object (BRep mode), each surface one object, labelled as [`export_step`]
+/// labels them. Curves the kernel can't make (too small, pieces that don't meet) are left out.
+/// How many curves were written.
+pub fn export_iges(solids: &[Placed], labels: &[Label], curves: &[Curve], path: &Path) -> Result<usize> {
+    let ss = solids.iter().map(|s| ops::stored(*s)).collect::<Result<Vec<_>>>()?;
     let cs: Vec<Curve> = curves.iter().filter(|c| check_curve(c).is_ok()).cloned().collect();
     if ss.is_empty() && cs.is_empty() {
         return Err(KernelError::Invalid("no 3D solids or curves to export".into()));
     }
     let n = cs.len();
-    run(Request::ExportIges(ss, cs, path.to_owned()))?.done()?;
+    run(Request::ExportIges(ss, labels.to_vec(), cs, path.to_owned()))?.done()?;
     Ok(n)
 }
 
@@ -852,10 +865,10 @@ enum Request {
     Sweep(Vec<Run>, bool),
     Tessellate(String),
     TessellateAll(Vec<String>),
-    ExportStep(Vec<Solid>, PathBuf),
+    ExportStep(Vec<Solid>, Vec<Label>, PathBuf),
     ExportStl(Vec<Solid>, PathBuf),
     ImportStep(PathBuf),
-    ExportIges(Vec<Solid>, Vec<Curve>, PathBuf),
+    ExportIges(Vec<Solid>, Vec<Label>, Vec<Curve>, PathBuf),
     ImportIges(PathBuf),
     Outlines(Vec<Option<String>>),
     /// Each B-rep with the transforms to box it under; the reply has one box per transform.
@@ -943,10 +956,10 @@ impl Request {
             Request::Sweep(runs, solid) => backend::sweep(runs, *solid).map(Reply::Built),
             Request::Tessellate(brep) => backend::tessellate(brep).map(Reply::Mesh),
             Request::TessellateAll(breps) => Ok(Reply::Meshes(breps.iter().map(|b| backend::tessellate(b).map_err(|e| e.to_string())).collect())),
-            Request::ExportStep(ss, path) => backend::export_step(&placed(ss), path).map(|_| Reply::Done),
+            Request::ExportStep(ss, ls, path) => backend::export_step(&placed(ss), ls, path).map(|_| Reply::Done),
             Request::ExportStl(ss, path) => backend::export_stl(&placed(ss), path).map(|_| Reply::Done),
             Request::ImportStep(path) => backend::import_step(path).map(Reply::Built),
-            Request::ExportIges(ss, cs, path) => backend::export_iges(&placed(ss), cs, path).map(|_| Reply::Done),
+            Request::ExportIges(ss, ls, cs, path) => backend::export_iges(&placed(ss), ls, cs, path).map(|_| Reply::Done),
             Request::ImportIges(path) => backend::import_iges(path).map(Reply::Imported),
             Request::Outlines(breps) => Ok(Reply::Outlines(breps.iter().map(|b| b.as_deref().and_then(|b| backend::outline(b).ok())).collect())),
             Request::Boxes(gs) => Ok(Reply::Boxes(gs.iter().flat_map(|(b, xs)| backend::boxes(b, xs)).collect())),

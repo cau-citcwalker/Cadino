@@ -8,9 +8,9 @@
 //! world values (one undo step). Drags snap (`ui.gumball` `snap`, on by default): an arrow to the
 //! running object snap under the cursor, taken along its axis, else with SNAP on to steps of the
 //! snap spacing; an arc to steps of the polar angle with ORTHO on. Esc cancels the drag; every
-//! other key during it is the gumball's (none reaches the command line). A grip under a handle
-//! wins: the gumball never hides AutoCAD's grips. `ui.gumball` turns it off; plan views keep
-//! AutoCAD's grips.
+//! other key during it is the gumball's (none reaches the command line). As in Rhino, it stands in
+//! for AutoCAD's grips there ([`replaces_grips`]): `ui.gumball` turns it off and the grips back on;
+//! plan views keep AutoCAD's grips.
 //!
 //! ponytail: the scale square doesn't snap, and an arc whose plane the view sees edge-on is hidden
 //! (an axis pointing at the viewer has no arrow); add when users ask.
@@ -118,14 +118,18 @@ impl Gumball {
     }
 }
 
+/// Whether the gumball stands in for AutoCAD's grips in view `xf`: a 3D model view with the
+/// gumball on, as in Rhino. Plan views, and 3D views with it off (`ui.gumball`), show the grips.
+pub(super) fn replaces_grips(app: &CadApp, xf: &Xf) -> bool {
+    app.ui.gumball && !xf.is_plan() && app.session.layout_space() == Space::Model
+}
+
 /// Whether the gumball shows in the view `xf` (see the module docs).
 fn shown(app: &CadApp, xf: &Xf) -> bool {
-    app.ui.gumball
-        && !xf.is_plan()
+    replaces_grips(app, xf)
         && app.session.running.is_none()
         && !app.session.prompting()
         && app.session.pending_window.is_none()
-        && app.session.layout_space() == Space::Model
         && !app.session.selection().is_empty()
 }
 
@@ -287,16 +291,10 @@ impl Drag {
     }
 }
 
-/// Whether a grip (an object's or a dynamic block's) is under screen point `at`: grips win over
-/// the gumball's handles there.
-fn on_grip(app: &mut CadApp, xf: &Xf, at: Pos2) -> bool {
-    super::grip_at(app, xf, Some(at)).is_some() || crate::dyngrips::at(app, xf, Some(at)).is_some()
-}
-
-/// The gumball's share of this frame's pointer and keys: a press on a handle (not on a grip)
-/// starts a drag; during it, Esc cancels it, digits typed set its value, Enter runs it at once
-/// and every other key and text is swallowed (Space must not repeat the last command under the
-/// drag); letting go runs the command. Returns whether the gumball has the pointer (the canvas
+/// The gumball's share of this frame's pointer and keys: a press on a handle starts a drag;
+/// during it, Esc cancels it, digits typed set its value, Enter runs it at once and every other
+/// key and text is swallowed (Space must not repeat the last command under the drag); letting go
+/// runs the command. Returns whether the gumball has the pointer (the canvas
 /// then neither picks nor opens a window with it).
 pub(super) fn input(app: &mut CadApp, ctx: &egui::Context, xf: &Xf, hover: Option<Pos2>, inside: bool) -> bool {
     let (pressed, down, press_at, latest) =
@@ -306,9 +304,6 @@ pub(super) fn input(app: &mut CadApp, ctx: &egui::Context, xf: &Xf, hover: Optio
             return false;
         }
         let Some(at) = press_at.or(hover) else { return false };
-        if on_grip(app, xf, at) {
-            return false;
-        }
         let Some(o) = origin(app) else { return false };
         let f = frame(app, xf);
         let Some(part) = hit(xf, o, &f, at) else { return false };
@@ -396,7 +391,6 @@ pub(super) fn paint(app: &mut CadApp, p: &egui::Painter, xf: &Xf, hover: Option<
         return;
     }
     let Some(o) = dragged.or_else(|| origin(app)) else { return };
-    let hover = hover.filter(|h| !on_grip(app, xf, *h));
     let app = &*app;
     let drag = app.canvas.gumball.drag.as_ref().filter(|d| !d.cancelled);
     let f = drag.map_or_else(|| frame(app, xf), |d| d.frame);

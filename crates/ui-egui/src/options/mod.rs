@@ -29,6 +29,14 @@
 //! | `aiAllowFiles` | let the assistant open, save and export files |
 //! | `mcpEnabled` | run the loopback control server external AI apps (MCP) connect to |
 //! | `mcpPort` | its port, 1024–65535 (default 7979) |
+//! | `displayDetail` | how the drawing area simplifies as the view zooms out, per kind of object ([`detail`]) |
+//!
+//! Options ▸ Grid sets Rhino's grid options, which are system variables: GRIDMODE (show grid
+//! lines), GRIDUNIT (minor spacing), GRIDMAJOR (major line every N minor lines), GRIDLINECOUNT
+//! (lines each way from the origin, 0: the grid fills the view), GRIDAXES (show the grid's axes),
+//! UCSICON (show the axes icon) and SNAPUNIT (snap spacing). "Apply grid changes to" is
+//! `gridViewport`: `"active"` gives the current model tile a grid of its own, `"all"` shows its
+//! grid in every tile (`cadcraft_engine::cmd::options`).
 //!
 //! API keys are never part of OPTIONS: Options ▸ AI saves them in the system keychain. The AI
 //! settings are kept with the interface prefs ([`crate::ai_settings`]); `reset` leaves them.
@@ -41,8 +49,10 @@
 //! [`CadApp::load_profile`].
 
 mod ai;
+mod detail;
 mod dialog;
 
+pub use detail::{DisplayDetail, Lod};
 pub use dialog::dialog;
 
 use egui::Color32;
@@ -79,6 +89,8 @@ pub struct UiOptions {
     /// While a command runs: a quick right-click is Enter and a held one opens the shortcut menu
     /// (AutoCAD's time-sensitive right-click). Off: a right-click always opens the menu.
     pub time_sensitive_right_click: bool,
+    /// How the drawing area simplifies as the view zooms out.
+    pub detail: DisplayDetail,
 }
 
 impl Default for UiOptions {
@@ -89,6 +101,7 @@ impl Default for UiOptions {
             snap_marker_size: theme::SNAP_MARKER,
             selection_color: None,
             time_sensitive_right_click: true,
+            detail: DisplayDetail::default(),
         }
     }
 }
@@ -154,6 +167,7 @@ struct UiChanges {
     savetime: Option<u32>,
     savefilepath: Option<String>,
     time_sensitive_right_click: Option<bool>,
+    detail: Option<DisplayDetail>,
 }
 
 fn color_param(key: &str, v: &Value) -> Result<Option<Color32>, String> {
@@ -245,6 +259,7 @@ fn ui_json(app: &CadApp) -> Map<String, Value> {
     m.insert("SAVETIME".into(), json!(cadcraft_engine::autosave::savetime()));
     m.insert("SAVEFILEPATH".into(), json!(cadcraft_engine::autosave::savefilepath()));
     m.insert("timeSensitiveRightClick".into(), json!(o.time_sensitive_right_click));
+    m.insert("displayDetail".into(), o.detail.json());
     let ai = &app.ai;
     m.insert("aiProvider".into(), json!(ai.provider));
     m.insert("aiModel".into(), json!(ai.model()));
@@ -277,7 +292,9 @@ fn run_json(app: &mut CadApp, params: &Value) -> Result<Value, String> {
     }
     let mut engine = Map::new();
     for (k, v) in obj {
-        if k != "aiProvider" && !parse_ai(k, v, &mut ai)? && !parse_ui(k, v, &mut ui)? {
+        if k == "displayDetail" {
+            ui.detail = Some(app.options.detail.with(v)?);
+        } else if k != "aiProvider" && !parse_ai(k, v, &mut ai)? && !parse_ui(k, v, &mut ui)? {
             engine.insert(k.clone(), v.clone());
         }
     }
@@ -330,6 +347,11 @@ fn run_json(app: &mut CadApp, params: &Value) -> Result<Value, String> {
     if let Some(b) = ui.time_sensitive_right_click {
         app.options.time_sensitive_right_click = b;
     }
+    // A new level of detail is part of the display lists' keys: they build again in the
+    // background while the old ones stay on screen.
+    if let Some(d) = ui.detail {
+        app.options.detail = d;
+    }
     Ok(report(app))
 }
 
@@ -360,6 +382,7 @@ impl CadApp {
             "selectionColor": color_json(self.options.selection_color),
             "snapMarkerSize": self.options.snap_marker_size,
             "timeSensitiveRightClick": self.options.time_sensitive_right_click,
+            "displayDetail": self.options.detail.json(),
         })
         .to_string()
     }
@@ -398,6 +421,9 @@ impl CadApp {
         }
         if let Some(b) = c.time_sensitive_right_click {
             self.options.time_sensitive_right_click = b;
+        }
+        if let Some(d) = v.get("displayDetail").and_then(|d| self.options.detail.with(d).ok()) {
+            self.options.detail = d;
         }
     }
 }
@@ -464,7 +490,7 @@ mod tests {
 
     #[test]
     fn dialog_labels_have_ukrainian_translations() {
-        let sources = [include_str!("dialog.rs"), include_str!("ai.rs")];
+        let sources = [include_str!("dialog.rs"), include_str!("ai.rs"), include_str!("detail.rs")];
         let mut missing: Vec<String> = dialog::TABS.iter().filter(|(_, l)| crate::i18n::tr("uk", l) == *l).map(|(_, l)| l.to_string()).collect();
         for source in sources {
             for rest in source.split("crate::tl!(").skip(1).chain(source.split("crate::tf!(").skip(1)) {

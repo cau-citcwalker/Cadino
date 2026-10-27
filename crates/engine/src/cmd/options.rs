@@ -3,8 +3,17 @@
 //!
 //! The JSON form reads and changes them without a dialog: `{}` returns every profile variable by
 //! name, `{"PICKBOX": 5, "OSMODE": 7}` sets those (all or nothing), `{"reset": true}` restores the
-//! defaults first. The desktop app opens its Options dialog when OPTIONS is typed or chosen from
-//! the menu, and saves [`profile`] between runs ([`restore`] reads it back).
+//! defaults first.
+//!
+//! The grid variables (GRIDMODE, GRIDUNIT, SNAPUNIT, GRIDMAJOR, GRIDLINECOUNT, GRIDAXES) are the
+//! drawing's grid, which the profile keeps; a model tile may have a grid of its own instead
+//! (Rhino's "Apply grid changes to"): `"gridViewport": "active"` gives the current tile one, a
+//! copy of the grid it shows, so the grid variables in the same call (and later SETVARs) change
+//! only that tile; `"all"` makes the grid the current tile shows the drawing's and every tile
+//! show it. The report's `gridViewport` says which the current tile does.
+//!
+//! The desktop app opens its Options dialog when OPTIONS is typed or chosen from the menu, and
+//! saves [`profile`] between runs ([`restore`] reads it back).
 
 use serde_json::{Map, Value, json};
 
@@ -24,6 +33,9 @@ pub const PROFILE_VARS: &[&str] = &[
     "GRIDMODE",
     "GRIDUNIT",
     "GRIDMAJOR",
+    "GRIDLINECOUNT",
+    "GRIDAXES",
+    "UCSICON",
     "DYNMODE",
     "DYNPIFORMAT",
     "DYNPICOORDS",
@@ -72,33 +84,56 @@ pub fn is_profile_var(name: &str) -> bool {
     PROFILE_VARS.iter().any(|v| v.eq_ignore_ascii_case(name.trim()))
 }
 
-/// Every profile variable and its value, by name.
+/// Every profile variable and its value, by name (the grid variables the drawing's grid's, not a
+/// tile's own), and `gridViewport`: whether the current tile has a grid of its own.
 pub fn profile(s: &Session) -> Value {
     let mut m = Map::new();
+    let drawing = s.drawing_grid();
     for name in PROFILE_VARS {
-        if let Some(v) = crate::sysvars::get(s, name) {
+        let v = crate::sysvars::grid_value(&drawing, name).or_else(|| crate::sysvars::get(s, name));
+        if let Some(v) = v {
             m.insert((*name).to_string(), v);
         }
     }
+    m.insert("gridViewport".into(), json!(if s.tile_grid().is_some() { "active" } else { "all" }));
     Value::Object(m)
 }
 
 /// Set the profile variables named in `values` (an object; other keys are refused). All or
-/// nothing: one bad name or value leaves every setting as it was.
+/// nothing: one bad name or value leaves every setting, and the drawing, as they were.
 pub fn apply(s: &mut Session, values: &Value) -> Result<()> {
     let Some(obj) = values.as_object() else { return Err(bad("options", "expected an object of profile variables")) };
-    let before = s.settings.clone();
+    let before = Before::of(s);
     for (name, v) in obj {
         if !is_profile_var(name) {
-            s.settings = before;
+            before.restore(s);
             return Err(bad("options", format!("{name} is not a profile setting")));
         }
         if let Err(e) = crate::sysvars::set(s, name, v) {
-            s.settings = before;
+            before.restore(s);
             return Err(bad("options", format!("invalid value for {}: {e}", name.to_ascii_uppercase())));
         }
     }
     Ok(())
+}
+
+/// The settings and the drawing before an OPTIONS call, to put back when it fails: some profile
+/// variables are the drawing's (GRIDUNIT, SNAPUNIT, a tile's own grid).
+struct Before {
+    settings: Settings,
+    doc: Option<std::sync::Arc<cadcraft_doc::Drawing>>,
+}
+
+impl Before {
+    fn of(s: &Session) -> Before {
+        Before { settings: s.settings.clone(), doc: s.state().ok().map(|st| st.doc.clone()) }
+    }
+    fn restore(self, s: &mut Session) {
+        s.settings = self.settings;
+        if let (Some(d), Ok(st)) = (self.doc, s.state_mut()) {
+            st.doc = d;
+        }
+    }
 }
 
 /// Restore a saved [`profile`]: known variables with valid values are applied, anything else is
@@ -108,7 +143,14 @@ pub fn restore(s: &mut Session, saved: &Value) {
     for (name, v) in obj.iter().take(MAX_ENTRIES) {
         if is_profile_var(name) {
             let before = s.settings.clone();
-            if crate::sysvars::set(s, name, v).is_err() {
+            // The grid variables are the drawing's grid, not a tile's own.
+            let upper = name.trim().to_ascii_uppercase();
+            let set = if crate::sysvars::GRID_VARS.contains(&upper.as_str()) {
+                crate::sysvars::set_drawing_grid(s, &upper, v)
+            } else {
+                crate::sysvars::set(s, name, v)
+            };
+            if set.is_err() {
                 s.settings = before;
             }
         }
@@ -129,6 +171,9 @@ pub fn reset(s: &mut Session) {
     st.snapmode = d.snapmode;
     st.gridmode = d.gridmode;
     st.gridmajor = d.gridmajor;
+    st.gridlinecount = d.gridlinecount;
+    st.gridaxes = d.gridaxes;
+    st.ucsicon = d.ucsicon;
     st.dynmode = d.dynmode;
     st.dynpi_cartesian = d.dynpi_cartesian;
     st.dynpi_absolute = d.dynpi_absolute;
@@ -159,16 +204,32 @@ fn run_options(s: &mut Session, p: &Value) -> Result<Value> {
         Some(Value::Bool(b)) => *b,
         Some(_) => return Err(bad("options", "`reset` must be true or false")),
     };
-    let values: Map<String, Value> = obj.iter().filter(|(k, _)| k.as_str() != "reset").map(|(k, v)| (k.clone(), v.clone())).collect();
-    let before = s.settings.clone();
+    let scope = match obj.get("gridViewport") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(v)) if v.eq_ignore_ascii_case("active") => Some(true),
+        Some(Value::String(v)) if v.eq_ignore_ascii_case("all") => Some(false),
+        Some(_) => return Err(bad("options", "`gridViewport` must be \"active\" or \"all\"")),
+    };
+    let values: Map<String, Value> =
+        obj.iter().filter(|(k, _)| !matches!(k.as_str(), "reset" | "gridViewport")).map(|(k, v)| (k.clone(), v.clone())).collect();
+    let changes = reset_first || scope.is_some() || !values.is_empty();
+    let before = Before::of(s);
     if reset_first {
         reset(s);
     }
-    if let Err(e) = apply(s, &Value::Object(values)) {
-        s.settings = before;
+    let scoped = match scope {
+        Some(true) => s.own_grid(),
+        Some(false) => s.share_grid(),
+        None => Ok(()),
+    };
+    if let Err(e) = scoped.and_then(|()| apply(s, &Value::Object(values))) {
+        before.restore(s);
         return Err(e);
     }
-    s.touch();
+    // Nothing to redraw for a call that changes nothing (the interface's own preferences).
+    if changes {
+        s.touch();
+    }
     Ok(profile(s))
 }
 

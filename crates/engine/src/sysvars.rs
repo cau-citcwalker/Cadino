@@ -4,7 +4,11 @@ use serde_json::{Value, json};
 
 use crate::{EngineError, Result, Session};
 
+mod grid;
 mod table;
+
+pub(crate) use grid::put_drawing_grid;
+pub use grid::{NAMES as GRID_VARS, set_drawing as set_drawing_grid, value as grid_value};
 
 const SESSION_VARS: &[&str] = &[
     "OSMODE",
@@ -29,6 +33,8 @@ const SESSION_VARS: &[&str] = &[
     "UNDOCTL",
     "UNDOMARKS",
     "GRIDMAJOR",
+    "GRIDLINECOUNT",
+    "GRIDAXES",
     "DYNDIGRIP",
     "DYNDIVIS",
     "DYNMODE",
@@ -74,6 +80,10 @@ const SESSION_VARS: &[&str] = &[
 
 pub fn get(s: &Session, name: &str) -> Option<Value> {
     let n = name.trim().to_ascii_uppercase();
+    // The current viewport's grid (its own, else the drawing's).
+    if grid::is_grid_var(&n) {
+        return grid::value(&s.grid(), &n);
+    }
     let st = &s.settings;
     let v = match n.as_str() {
         "OSMODE" => json!(st.osmode),
@@ -92,16 +102,9 @@ pub fn get(s: &Session, name: &str) -> Option<Value> {
         // Marker, tooltip and tracking tooltip always on (1 + 4 + 32); polar 8, tracking 16.
         "AUTOSNAP" => json!(37 + 8 * u32::from(st.polarmode) + 16 * u32::from(st.otrack)),
         "POLARANG" => json!(st.polarang.to_degrees()),
-        "GRIDMODE" => json!(i32::from(st.gridmode)),
         "SNAPMODE" => json!(i32::from(st.snapmode)),
         "SNAPSTYL" => json!(i32::from(st.isodraft)),
         "SNAPISOPAIR" => json!(st.isoplane.index()),
-        "SNAPUNIT" | "GRIDUNIT" => {
-            let settings = s.drafting_settings();
-            let unit = if n == "SNAPUNIT" { settings.snapunit } else { settings.gridunit };
-            json!([unit.x, unit.y])
-        }
-        "GRIDMAJOR" => json!(st.gridmajor),
         "DYNDIGRIP" => json!(st.dyndigrip),
         "DYNDIVIS" => json!(st.dyndivis),
         "DYNMODE" => json!(i32::from(st.dynmode)),
@@ -250,6 +253,9 @@ pub fn set(s: &mut Session, name: &str, v: &Value) -> Result<()> {
     if is_read_only(&n) {
         return Err(EngineError::BadParams { cmd: "setvar".into(), msg: format!("{n} is read-only") });
     }
+    if grid::is_grid_var(&n) {
+        return grid::set(s, &n, v);
+    }
     let bad = || EngineError::BadParams { cmd: "setvar".into(), msg: format!("invalid value for {n}") };
     let st = &mut s.settings;
     match n.as_str() {
@@ -277,17 +283,9 @@ pub fn set(s: &mut Session, name: &str, v: &Value) -> Result<()> {
         }
         "QNEWTEMPLATE" => crate::cmd::file::set_qnew_template(v.as_str().ok_or_else(bad)?),
         "POLARANG" => st.polarang = as_f64(v).filter(|a| *a > 0.0).ok_or_else(bad)?.to_radians(),
-        "GRIDMODE" => st.gridmode = as_bool(v).ok_or_else(bad)?,
         "SNAPMODE" => st.snapmode = as_bool(v).ok_or_else(bad)?,
         "SNAPSTYL" => st.isodraft = as_i(v).filter(|b| (0..=1).contains(b)).ok_or_else(bad)? == 1,
         "SNAPISOPAIR" => st.isoplane = as_i(v).and_then(crate::snap::iso::IsoPlane::from_index).ok_or_else(bad)?,
-        "SNAPUNIT" | "GRIDUNIT" => {
-            let unit = as_pt(v)
-                .filter(|p| p.is_finite() && if n == "GRIDUNIT" { p.x >= 0.0 && p.y >= 0.0 } else { p.x > 0.0 && p.y > 0.0 })
-                .ok_or_else(bad)?;
-            s.doc_mut()?.header.set(&n, cadcraft_doc::HVal::Point(unit.to3(0.0)));
-        }
-        "GRIDMAJOR" => st.gridmajor = as_f64(v).ok_or_else(bad)?.clamp(1.0, 100.0) as u32,
         "DYNDIGRIP" => st.dyndigrip = as_i(v).filter(|i| (0..=31).contains(i)).and_then(|i| u32::try_from(i).ok()).ok_or_else(bad)?,
         "DYNDIVIS" => st.dyndivis = as_i(v).filter(|i| (0..=2).contains(i)).and_then(|i| u8::try_from(i).ok()).ok_or_else(bad)?,
         "DYNMODE" => st.dynmode = as_bool(v).ok_or_else(bad)?,

@@ -236,6 +236,12 @@ pub struct Options {
     /// Two pixels in world units: shorter dashes are continuous and filled font text uses
     /// screen-size detail. Zero keeps full detail (plots and image/vector exports).
     pub min_dash: f64,
+    /// A pixel in world units for the level of detail of hatch patterns (lines closer than about
+    /// this run together into a solid fill, a dash or dot repeat under two of them is one run) and
+    /// of filled font text (outline detail finer than it is dropped, an em under two of them is a
+    /// box). `None` follows [`Options::min_dash`] (half of it); 0 keeps full detail.
+    pub hatch_pixel: Option<f64>,
+    pub text_pixel: Option<f64>,
     /// Draw text (off for very coarse previews).
     pub text: bool,
     /// Highlighted (selected) handles are not special here; the canvas overlays them.
@@ -287,6 +293,11 @@ impl Options {
         Options { shaded: shaded || hidden, edges: edges || hidden, hidden, ..Default::default() }
     }
 
+    /// [`Options::hatch_pixel`] as hatches use it.
+    pub(crate) fn hatch_px(&self) -> f64 {
+        self.hatch_pixel.unwrap_or(self.min_dash / 2.0)
+    }
+
     /// Whether [`Options::cancel`] has been set.
     pub fn cancelled(&self) -> bool {
         self.cancel.as_ref().is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
@@ -298,6 +309,8 @@ impl Default for Options {
         Options {
             tolerance: 0.001,
             min_dash: 0.0,
+            hatch_pixel: None,
+            text_pixel: None,
             text: true,
             fill: true,
             lineweights: false,
@@ -518,7 +531,7 @@ impl Builder<'_> {
         let fill = self.opts.fill && ctx.d.header.i64("TEXTFILL", 1) != 0;
         // Plots note which filled outlines are font glyphs (see `DisplayList::texts`).
         let mut text = sh.text.iter().peekable();
-        let pixel = if self.plotting { 0.0 } else { self.opts.min_dash * 0.5 };
+        let pixel = if self.plotting { 0.0 } else { self.opts.text_pixel.unwrap_or(self.opts.min_dash * 0.5) };
         for (i, g) in sh.glyphs.iter().enumerate() {
             if fill {
                 while text.next_if(|t| t.outline < i).is_some() {}

@@ -27,11 +27,10 @@ pub fn tool_definitions(has_ui: bool) -> Value {
             "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "layer": {"type": "string"},
                 "window": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}, "minItems": 2, "maxItems": 2},
                 "crossing": {"type": "boolean"}, "limit": {"type": "integer", "minimum": 0}, "offset": {"type": "integer", "minimum": 0}}}}),
-        json!({"name": "render", "description": "Render the active drawing to a PNG and return it as an image: fitted to the extents by default, or just the area `window` [[x0,y0],[x1,y1]] (drawing units), e.g. one sheet or one room of a large drawing. With a window and no size the image is 1600 px wide with the window's shape. `view` looks at model space from a named direction (plan/top, front from -Y, back, left, right, iso = south-west isometric, iso_se, iso_ne, iso_nw), shaded with edges on white, without changing the drawing's view; `current` (default) renders what the canvas shows.",
+        json!({"name": "render", "description": "Render the active drawing to a PNG and return it as an image: fitted to the extents by default, or just the area `window` [[x0,y0],[x1,y1]] (drawing units), e.g. one sheet or one room of a large drawing. With a window and no size the image is 1600 px wide with the window's shape. `view` looks at model space from a named direction (plan/top, front from -Y, back, left, right, iso = south-west isometric, iso_se, iso_ne, iso_nw), shaded with edges on white, without changing the drawing's view; `current` (default) renders what the canvas shows. Writes no file (`save` with a .png path does).",
             "inputSchema": {"type": "object", "properties": {"width": {"type": "integer", "minimum": 16}, "height": {"type": "integer", "minimum": 16}, "fit": {"type": "boolean"},
                 "window": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}, "minItems": 2, "maxItems": 2},
-                "view": {"type": "string", "enum": ["current", "plan", "top", "front", "back", "left", "right", "iso", "iso_se", "iso_ne", "iso_nw"]},
-                "path": {"type": "string"}}}}),
+                "view": {"type": "string", "enum": ["current", "plan", "top", "front", "back", "left", "right", "iso", "iso_se", "iso_ne", "iso_nw"]}}}}),
         json!({"name": "find_text", "description": "Read the drawing's texts: TEXT, MTEXT (formatting removed), block attributes and multileaders, each with its text, insertion point `at`, height, rotation, style, layer and handle. Filter by `contains` (any case), `layer` and/or `window` [[x0,y0],[x1,y1]] around the insertion points; page with offset and limit (default 200). Use it to find room names, sheet titles and notes without reading all the geometry.",
             "inputSchema": {"type": "object", "properties": {"contains": {"type": "string"}, "layer": {"type": "string"},
                 "window": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}, "minItems": 2, "maxItems": 2},
@@ -47,7 +46,42 @@ pub fn tool_definitions(has_ui: bool) -> Value {
         tools.push(json!({"name": "ui_inspect", "description": "UI state: panels, canvas rect, view, cursor and snap, performance.", "inputSchema": {"type": "object", "properties": {}}}));
         tools.push(json!({"name": "ui_click", "description": "Click in the drawing area at world coordinates (or screen with space:\"screen\"). Right button = Enter.", "inputSchema": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}, "space": {"type": "string"}, "button": {"type": "string"}}, "required": ["x", "y"]}}));
     }
+    for t in &mut tools {
+        let a = annotations(t["name"].as_str().unwrap_or_default());
+        t["annotations"] = a;
+    }
     json!({ "tools": tools })
+}
+
+/// MCP tool annotations (2025-06-18): a title, and hints that let a client run the read-only tools
+/// without asking. Every other tool can change the drawing or write a file. The in-app providers
+/// send only name, description and schema, so these never reach their APIs.
+fn annotations(name: &str) -> Value {
+    // (title, read-only, idempotent)
+    let (title, read_only, idempotent) = match name {
+        "command_line" => ("Type at the command line", false, false),
+        "script" => ("Run a script", false, false),
+        "execute" => ("Run a command", false, false),
+        "list_commands" => ("List commands", true, true),
+        "inspect_drawing" => ("Inspect the drawing", true, true),
+        "query_entities" => ("Query entities", true, true),
+        "render" => ("Render a view", true, true),
+        "find_text" => ("Find text", true, true),
+        "new_drawing" => ("New drawing", false, false),
+        "open" => ("Open a drawing", false, false),
+        "save" => ("Save or export the drawing", false, true),
+        "cancel" => ("Cancel (Escape)", false, true),
+        // ponytail: it always writes a PNG (and overwrites `path`), so it isn't read-only.
+        "screenshot" => ("Screenshot the window", false, true),
+        "ui_inspect" => ("Inspect the window", true, true),
+        "ui_click" => ("Click in the drawing", false, false),
+        _ => (name, false, false),
+    };
+    if read_only {
+        json!({"title": title, "readOnlyHint": true, "openWorldHint": false})
+    } else {
+        json!({"title": title, "readOnlyHint": false, "destructiveHint": true, "idempotentHint": idempotent, "openWorldHint": false})
+    }
 }
 
 fn text(mut v: Value) -> Value {
@@ -64,7 +98,9 @@ fn without_breps(v: &mut Value) {
             if o.get("brep").is_some_and(Value::is_string)
                 && let Some(m) = o.get_mut("mesh")
             {
-                *m = json!(format!("<mesh, {} triangles>", m["tris"].as_array().map_or(0, Vec::len)));
+                // An open mesh is a surface, not a closed solid: say so, as the mesh goes.
+                let open = if m["open"] == true { ", open: a surface, not a solid" } else { "" };
+                *m = json!(format!("<mesh, {} triangles{open}>", m["tris"].as_array().map_or(0, Vec::len)));
             }
             for (k, x) in o.iter_mut() {
                 match x {
@@ -167,6 +203,11 @@ pub fn call_tool(b: &mut dyn Backend, name: &str, args: &Value) -> Result<Value,
         "ui_inspect" => b.call("ui.inspect", json!({})),
         "ui_click" => b.call("ui.pointer", a),
         "render" => {
+            // Read-only (see `annotations`): a `path` would write a file.
+            let mut a = a;
+            if let Some(o) = a.as_object_mut() {
+                o.remove("path");
+            }
             return Ok(match b.call("ui.render", a) {
                 Ok(v) => match v.get("pngBase64").and_then(Value::as_str) {
                     Some(data) => json!({"content": [{"type": "image", "data": data, "mimeType": "image/png"}]}),
@@ -193,7 +234,8 @@ mod tests {
         fn call(&mut self, _: &str, _: Value) -> Result<Value, String> {
             let mesh = json!({"verts": [{"x": 0, "y": 0, "z": 0}], "tris": [[0, 0, 0], [0, 0, 0]], "edges": []});
             let solid = json!({"type": "3D Solid", "geometry": {"brep": "x".repeat(1000), "mesh": mesh, "part": {"name": "Top"}}, "bbox3": [[0, 0, 0], [1, 1, 1]]});
-            Ok(json!({"entities": [solid, {"type": "Mesh", "mesh": mesh}], "brep": 7}))
+            let surface = json!({"type": "3D Solid", "geometry": {"brep": "x", "mesh": {"tris": [[0, 0, 0]], "open": true}}});
+            Ok(json!({"entities": [solid, {"type": "Mesh", "mesh": mesh}, surface], "brep": 7}))
         }
         fn has_ui(&self) -> bool {
             false
@@ -215,5 +257,40 @@ mod tests {
         assert_eq!((solid["bbox3"][1].clone(), solid["geometry"]["part"]["name"].clone()), (json!([1, 1, 1]), json!("Top")));
         assert!(v["entities"][1]["mesh"].is_object(), "a mesh beside no B-rep is kept");
         assert_eq!(v["brep"], 7, "only texts are replaced");
+        assert_eq!(v["entities"][2]["geometry"]["mesh"], "<mesh, 1 triangles, open: a surface, not a solid>");
+    }
+
+    struct Rec(Vec<(String, Value)>);
+
+    impl Backend for Rec {
+        fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+            self.0.push((method.into(), params));
+            Ok(json!({}))
+        }
+        fn has_ui(&self) -> bool {
+            true
+        }
+        fn describe(&self) -> String {
+            "rec".into()
+        }
+    }
+
+    /// Clients may run read-only tools without asking (MCP 2025-06-18 annotations): those must
+    /// change nothing, so `render` drops a `path` that would write a file.
+    #[test]
+    fn annotations_mark_the_read_only_tools() {
+        let defs = tool_definitions(true);
+        let tools = defs["tools"].as_array().unwrap();
+        let read_only: Vec<&str> = tools.iter().filter(|t| t["annotations"]["readOnlyHint"] == true).filter_map(|t| t["name"].as_str()).collect();
+        assert_eq!(read_only, ["list_commands", "inspect_drawing", "query_entities", "render", "find_text", "ui_inspect"]);
+        for t in tools {
+            let a = &t["annotations"];
+            assert!(a["title"].is_string() && a["title"] != t["name"], "{t}");
+            assert_eq!(a["openWorldHint"], false, "{t}");
+            assert_eq!(a["destructiveHint"] == true, a["readOnlyHint"] == false, "{t}");
+        }
+        let mut b = Rec(Vec::new());
+        call_tool(&mut b, "render", &json!({"view": "iso", "path": "C:/x.png"})).unwrap();
+        assert_eq!(b.0, [("ui.render".to_string(), json!({"view": "iso"}))]);
     }
 }

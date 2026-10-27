@@ -1,13 +1,90 @@
-//! The floating command line: history, the active prompt with clickable keywords, typed input
-//! (keyboard focus stays on the drawing — typing anywhere goes here) and AutoComplete.
+//! The command line: history, the active prompt with clickable keywords, typed input (keyboard
+//! focus stays on the drawing — typing anywhere goes here) and AutoComplete. It floats over the
+//! drawing, moved by the handle at its left end, or docks full-width at the drawing area's top or
+//! bottom edge, as AutoCAD's does ([`Position`], `ui.cmdline.position`).
 
 use std::collections::HashSet;
 
 use cadcraft_engine::Input;
-use egui::{Key, Pos2, Rect, Sense, Stroke, pos2, vec2};
+use egui::{Key, Pos2, Rect, Sense, Stroke, Vec2, pos2, vec2};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 use crate::CadApp;
 use crate::theme::Tokens;
+
+/// Where the command line docks: nowhere (it floats over the drawing), or at the drawing area's
+/// top or bottom edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Dock {
+    #[default]
+    Floating,
+    Top,
+    Bottom,
+}
+
+/// Where the command line sits (saved with the workspace).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Position {
+    pub dock: Dock,
+    /// Where the floating bar sits in the room it can move in: `[0, 0]` the drawing area's
+    /// top-left corner, `[1, 1]` its bottom-right, so it keeps its place when the area resizes.
+    /// `None`: centred at the bottom. Kept while docked, for Floating to return to.
+    pub at: Option<[f64; 2]>,
+}
+
+impl Position {
+    /// `at` within `[0, 1]`, or `None` when it isn't a pair of numbers.
+    pub fn sanitized(self) -> Self {
+        let at = self.at.filter(|a| a.iter().all(|v| v.is_finite())).map(|a| a.map(|v| v.clamp(0.0, 1.0)));
+        Self { at, ..self }
+    }
+}
+
+/// `ui.cmdline.position` `{"dock": "floating"|"top"|"bottom", "at": [x, y]|null}`: dock the
+/// command line, or float it at `at` ([`Position::at`]; null: the bottom centre). What is left out
+/// stays; replies with the position.
+pub fn route(app: &mut CadApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
+    (id == "ui.cmdline.position").then(|| set_position(app, params))
+}
+
+fn set_position(app: &mut CadApp, params: &Value) -> Result<Value, String> {
+    let mut pos = app.ui.command_line_position.sanitized();
+    if let Some(d) = params.get("dock") {
+        pos.dock = serde_json::from_value(d.clone()).map_err(|_| "dock must be floating, top or bottom")?;
+    }
+    match params.get("at") {
+        Some(Value::Null) => pos.at = None,
+        Some(a) => {
+            let at = serde_json::from_value::<[f64; 2]>(a.clone()).ok().filter(|a| a.iter().all(|v| v.is_finite()));
+            pos.at = Some(at.ok_or("at must be [x, y] (0 to 1 across the drawing area)")?);
+        }
+        None => {}
+    }
+    app.ui.command_line_position = pos.sanitized();
+    serde_json::to_value(app.ui.command_line_position).map_err(|e| e.to_string())
+}
+
+/// The command line menu's placement items (Dock at Bottom, Dock at Top, Floating, Reset Position).
+fn position_entries(app: &CadApp) -> Vec<crate::menus::Entry> {
+    let p = app.ui.command_line_position;
+    [
+        ("Dock at Bottom", json!({"dock": "bottom"}), p.dock != Dock::Bottom),
+        ("Dock at Top", json!({"dock": "top"}), p.dock != Dock::Top),
+        ("Floating", json!({"dock": "floating"}), p.dock != Dock::Floating),
+        ("Reset Position", json!({"dock": "floating", "at": null}), p != Position::default()),
+    ]
+    .into_iter()
+    .map(|(label, params, enabled)| crate::menus::Entry::Item {
+        label: label.into(),
+        id: format!("run:ui.cmdline.position:{params}"),
+        shortcut: None,
+        enabled,
+    })
+    .collect()
+}
 
 #[derive(Default)]
 pub struct CmdLine {
@@ -33,11 +110,19 @@ pub struct CmdLine {
     pub option_rows: Vec<(Rect, String)>,
     /// Where the Dynamic Input tooltip stays while the options menu is open.
     pub options_anchor: Option<Pos2>,
+    /// Moving the command line by its handle: the grab point from the bar's top-left corner, and
+    /// the pointer.
+    moving: Option<(Vec2, Pos2)>,
 }
 
 /// The most history lines the command line shows above its bar.
 pub const MAX_LINES: usize = 12;
 const LINE_H: f32 = 16.0;
+const BAR_H: f32 = 24.0;
+/// The move handle at the bar's left end.
+const HANDLE_W: f32 = 12.0;
+/// A command line dropped this near the drawing area's top or bottom edge docks there.
+const DOCK_SNAP: f32 = 4.0;
 
 /// The Dynamic Input frame for the prompt on screen, or `None` when the value boxes are not live
 /// (Dynamic Input off, no point prompt or a pending selection window).
@@ -407,40 +492,145 @@ pub fn submit(app: &mut CadApp) {
     }
 }
 
-fn visible_lines(app: &CadApp, canvas: Rect, bar: Rect) -> usize {
-    let available = ((bar.top() - canvas.top() - 8.0).max(0.0) / LINE_H) as usize;
-    app.ui.history_lines.min(MAX_LINES).min(available)
+/// Where the command line is docked, while it is shown and not being moved.
+fn docked(app: &CadApp) -> Option<Dock> {
+    let dock = app.ui.command_line_position.dock;
+    (app.ui.show_command_line && app.cmd.moving.is_none() && dock != Dock::Floating).then_some(dock)
 }
 
+/// The input bar in `area` (the drawing panel, a docked strip included), and whether the history
+/// and AutoComplete open below it (it sits high) rather than above.
+fn bar_rect(app: &CadApp, area: Rect) -> (Rect, bool) {
+    match docked(app) {
+        Some(Dock::Top) => return (Rect::from_min_size(area.min, vec2(area.width(), BAR_H)), true),
+        Some(_) => return (Rect::from_min_size(pos2(area.left(), area.bottom() - BAR_H), vec2(area.width(), BAR_H)), false),
+        None => {}
+    }
+    let w = (area.width() * 0.48).clamp(360.0, 760.0).min((area.width() - 8.0).max(0.0));
+    let room = vec2((area.width() - w).max(0.0), (area.height() - BAR_H).max(0.0));
+    let min = match (app.cmd.moving, app.ui.command_line_position.sanitized().at) {
+        (Some((grab, pointer)), _) => pointer - grab,
+        (None, Some([x, y])) => area.min + vec2(x as f32, y as f32) * room,
+        (None, None) => pos2(area.center().x - w / 2.0, area.bottom() - BAR_H - 10.0),
+    };
+    // Inside the drawing area, whatever its size now (min/max: NaN-safe).
+    let min = pos2(min.x.min(area.left() + room.x).max(area.left()), min.y.min(area.top() + room.y).max(area.top()));
+    let bar = Rect::from_min_size(min, vec2(w, BAR_H));
+    (bar, bar.center().y < area.center().y)
+}
+
+/// Where a command line moved to `min` (its bar's top-left corner, before keeping it inside the
+/// area) docks when dropped: pushed against the drawing area's top or bottom edge.
+fn drop_dock(min: Pos2, area: Rect) -> Option<Dock> {
+    if min.y <= area.top() + DOCK_SNAP {
+        Some(Dock::Top)
+    } else if min.y + BAR_H >= area.bottom() - DOCK_SNAP {
+        Some(Dock::Bottom)
+    } else {
+        None
+    }
+}
+
+/// How many history lines show beside the bar, logged or not: a docked strip holds the chosen
+/// number (at most half the panel); a floating bar as many as fit before the area's edge.
+fn visible_lines(app: &CadApp, area: Rect, bar: Rect, below: bool) -> usize {
+    let room = match docked(app) {
+        Some(_) => area.height() * 0.5 - BAR_H - 4.0,
+        None if below => area.bottom() - bar.bottom() - 8.0,
+        None => bar.top() - area.top() - 8.0,
+    };
+    app.ui.history_lines.min(MAX_LINES).min((room.max(0.0) / LINE_H) as usize)
+}
+
+/// The docked strip: the bar and its history lines (`None` unless docked).
+fn strip(app: &CadApp, area: Rect) -> Option<Rect> {
+    let dock = docked(app)?;
+    let (bar, below) = bar_rect(app, area);
+    let n = visible_lines(app, area, bar, below);
+    let h = BAR_H + if n > 0 { LINE_H * n as f32 + 4.0 } else { 0.0 };
+    Some(if dock == Dock::Top {
+        Rect::from_min_size(area.min, vec2(area.width(), h))
+    } else {
+        Rect::from_min_max(pos2(area.left(), area.bottom() - h), area.max)
+    })
+}
+
+/// The drawing area left beside a docked command line (all of `area` otherwise).
+fn drawing_area(app: &CadApp, area: Rect) -> Rect {
+    let mut r = area;
+    match (docked(app), strip(app, area)) {
+        (Some(Dock::Top), Some(s)) => r.min.y = s.max.y,
+        (_, Some(s)) => r.max.y = s.min.y,
+        _ => {}
+    }
+    r
+}
+
+/// The drawing panel's body: the drawing, with the command line docked above or below it.
+pub fn panel(app: &mut CadApp, ui: &mut egui::Ui) {
+    if docked(app).is_none() {
+        crate::canvas::show(app, ui);
+        return;
+    }
+    let area = ui.max_rect();
+    let drawing = drawing_area(app, area);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(drawing), |ui| crate::canvas::show(app, ui));
+    draw(app, ui, area);
+}
+
+/// The floating command line over the drawing (`canvas`, the whole drawing panel); [`panel`]
+/// draws a docked one.
 pub fn show(app: &mut CadApp, ui: &mut egui::Ui, canvas: Rect) {
+    if docked(app).is_none() {
+        draw(app, ui, canvas);
+    }
+}
+
+fn draw(app: &mut CadApp, ui: &mut egui::Ui, area: Rect) {
     let t = Tokens::get();
-    let w = (canvas.width() * 0.48).clamp(360.0, 760.0).min((canvas.width() - 8.0).max(0.0));
-    let h = 24.0;
-    let bar = Rect::from_min_size(pos2(canvas.center().x - w / 2.0, canvas.bottom() - h - 10.0), vec2(w, h));
-    let p = ui.painter_at(canvas);
-    history(app, ui, canvas, bar);
-    // History lines above the bar (the expanded window replaces them).
-    let n = if app.cmd.expanded { 0 } else { visible_lines(app, canvas, bar) };
-    let lines: Vec<String> = app.session.log.iter().rev().take(n).rev().cloned().collect();
-    if !lines.is_empty() {
-        let lh = 16.0;
-        let hr = Rect::from_min_size(pos2(bar.left(), bar.top() - lh * lines.len() as f32 - 4.0), vec2(w, lh * lines.len() as f32 + 2.0));
-        p.rect_filled(hr, 3.0, t.cmd_history);
+    if let Some((_, pointer)) = app.cmd.moving.as_mut()
+        && let Some(p) = ui.input(|i| i.pointer.latest_pos())
+    {
+        *pointer = p;
+    }
+    let p = ui.painter_at(area);
+    // The docked strip's background, under the history window.
+    if let Some(s) = strip(app, area) {
+        p.rect_filled(s, 0.0, t.cmd_bg);
+        p.hline(s.x_range(), if docked(app) == Some(Dock::Top) { s.bottom() } else { s.top() }, Stroke::new(1.0, t.border));
+    }
+    history(app, ui, area);
+    let z = zones(app, area);
+    let (bar, h) = (z.bar, BAR_H);
+    // Moving: where it docks if dropped now.
+    if let Some((grab, pointer)) = app.cmd.moving
+        && let Some(dock) = drop_dock(pointer - grab, area)
+    {
+        let y = if dock == Dock::Top { area.top() } else { area.bottom() - h };
+        p.rect_filled(Rect::from_min_size(pos2(area.left(), y), vec2(area.width(), h)), 0.0, t.accent.gamma_multiply(0.35));
+    }
+    // History lines beside the bar (the expanded window replaces them), newest nearest it.
+    if let Some(r) = z.lines {
+        let lines: Vec<String> = app.session.log.iter().rev().take(z.slots).rev().cloned().collect();
+        if z.strip.is_none() {
+            p.rect_filled(r, 3.0, t.cmd_history);
+        }
+        let top = if z.below { r.top() + 1.0 } else { r.bottom() - 1.0 - LINE_H * lines.len() as f32 };
         for (i, l) in lines.iter().enumerate() {
-            p.text(
-                pos2(hr.left() + 8.0, hr.top() + 1.0 + lh * i as f32),
-                egui::Align2::LEFT_TOP,
-                crate::i18n::line(l),
-                crate::theme::small(),
-                t.text_dim,
-            );
+            p.text(pos2(r.left() + 8.0, top + LINE_H * i as f32), egui::Align2::LEFT_TOP, crate::i18n::line(l), crate::theme::small(), t.text_dim);
         }
     }
-    p.rect_filled(bar, 3.0, t.cmd_bg);
-    p.rect_stroke(bar, 3.0, Stroke::new(1.0, t.cmd_border), egui::StrokeKind::Inside);
+    let radius = if z.strip.is_some() { 0.0 } else { 3.0 };
+    p.rect_filled(bar, radius, t.cmd_bg);
+    p.rect_stroke(bar, radius, Stroke::new(1.0, t.cmd_border), egui::StrokeKind::Inside);
+    // The move handle: two columns of dots.
+    for i in 0..8 {
+        let at = pos2(z.handle.left() + 4.5 + 3.5 * (i % 2) as f32, bar.center().y - 5.25 + 3.5 * (i / 2) as f32);
+        p.circle_filled(at, 1.0, t.text_faint);
+    }
     // Prompt glyph.
-    p.text(pos2(bar.left() + 8.0, bar.center().y), egui::Align2::LEFT_CENTER, ">_", crate::theme::mono(), t.text_dim);
-    let mut x = bar.left() + 30.0;
+    p.text(pos2(bar.left() + HANDLE_W + 4.0, bar.center().y), egui::Align2::LEFT_CENTER, ">_", crate::theme::mono(), t.text_dim);
+    let mut x = bar.left() + HANDLE_W + 26.0;
     let prompt = app.session.current_prompt();
     let font = crate::theme::body();
     match &prompt {
@@ -531,118 +721,186 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui, canvas: Rect) {
     crate::icons::paint(
         &p,
         Rect::from_center_size(pos2(bar.right() - 14.0, bar.center().y), vec2(14.0, 14.0)),
-        if app.cmd.expanded { crate::icons::Icon::ChevronDown } else { crate::icons::Icon::ChevronUp },
+        // Pointing where the history window opens, or back when it is open.
+        if app.cmd.expanded != z.below { crate::icons::Icon::ChevronDown } else { crate::icons::Icon::ChevronUp },
         false,
     );
     // AutoComplete list.
-    if !app.session.prompting() {
+    if let Some(lr) = z.list {
         let sug = suggestions(&app.cmd.buffer);
-        if !sug.is_empty() {
-            let rh = 20.0;
-            let lr = Rect::from_min_size(
-                pos2(
-                    bar.left() + 24.0,
-                    bar.top() - 6.0 - rh * sug.len() as f32 - (if lines.is_empty() { 0.0 } else { 16.0 * lines.len() as f32 + 6.0 }),
-                ),
-                vec2((bar.width() - 24.0).max(0.0), rh * sug.len() as f32),
+        let rh = 20.0;
+        p.rect_filled(lr, 3.0, t.list_bg);
+        p.rect_stroke(lr, 3.0, Stroke::new(1.0, t.cmd_border), egui::StrokeKind::Inside);
+        for (i, s) in sug.iter().enumerate() {
+            let r = Rect::from_min_size(pos2(lr.left(), lr.top() + rh * i as f32), vec2(lr.width(), rh));
+            let resp = ui.interact(r, ui.id().with(("sug", i)), Sense::click());
+            if resp.hovered() || i == 0 {
+                p.rect_filled(r.shrink(1.0), 2.0, if resp.hovered() { t.cmd_keyword_hover } else { t.list_row });
+            }
+            p.text(Pos2::new(r.left() + 8.0, r.center().y), egui::Align2::LEFT_CENTER, &s.display, crate::theme::body(), t.text);
+            p.text(
+                Pos2::new(r.right() - 8.0, r.center().y),
+                egui::Align2::RIGHT_CENTER,
+                crate::i18n::t(s.label),
+                crate::theme::small(),
+                t.text_faint,
             );
-            p.rect_filled(lr, 3.0, t.list_bg);
-            p.rect_stroke(lr, 3.0, Stroke::new(1.0, t.cmd_border), egui::StrokeKind::Inside);
-            for (i, s) in sug.iter().enumerate() {
-                let r = Rect::from_min_size(pos2(lr.left(), lr.top() + rh * i as f32), vec2(lr.width(), rh));
-                let resp = ui.interact(r, ui.id().with(("sug", i)), Sense::click());
-                if resp.hovered() || i == 0 {
-                    p.rect_filled(r.shrink(1.0), 2.0, if resp.hovered() { t.cmd_keyword_hover } else { t.list_row });
-                }
-                p.text(Pos2::new(r.left() + 8.0, r.center().y), egui::Align2::LEFT_CENTER, &s.display, crate::theme::body(), t.text);
-                p.text(
-                    Pos2::new(r.right() - 8.0, r.center().y),
-                    egui::Align2::RIGHT_CENTER,
-                    crate::i18n::t(s.label),
-                    crate::theme::small(),
-                    t.text_faint,
-                );
-                if resp.clicked() {
-                    app.cmd.buffer.clear();
-                    app.start(&s.id.to_ascii_lowercase());
-                }
+            if resp.clicked() {
+                app.cmd.buffer.clear();
+                app.start(&s.id.to_ascii_lowercase());
             }
         }
     }
 }
 
-/// The command line's areas, laid out like [`show`] draws them.
+/// The command line's areas, laid out like [`draw`] draws them.
 struct Zones {
-    /// The inline history lines (when there are any and the window is closed).
+    /// The input line.
+    bar: Rect,
+    /// The history and AutoComplete open below the bar (it sits high), not above.
+    below: bool,
+    /// The docked strip: the bar and its history lines.
+    strip: Option<Rect>,
+    /// How many history lines show beside the bar.
+    slots: usize,
+    /// The history lines (when there are any and the window is closed).
     lines: Option<Rect>,
     /// The expanded history window.
     window: Option<Rect>,
     chevron: Rect,
-    /// The top edge that resizes the inline history.
+    /// The move handle at the bar's left end.
+    handle: Rect,
+    /// The far edge that resizes the history lines.
     grip: Rect,
+    /// The AutoComplete list.
+    list: Option<Rect>,
     /// Everything, AutoComplete list included: kept away from the drawing underneath.
     all: Rect,
 }
 
-fn zones(app: &CadApp, canvas: Rect, bar: Rect) -> Zones {
-    let n = if app.cmd.expanded { 0 } else { visible_lines(app, canvas, bar).min(app.session.log.len()) };
-    let lines =
-        (n > 0).then(|| Rect::from_min_size(pos2(bar.left(), bar.top() - LINE_H * n as f32 - 4.0), vec2(bar.width(), LINE_H * n as f32 + 2.0)));
+fn zones(app: &CadApp, area: Rect) -> Zones {
+    let (bar, below) = bar_rect(app, area);
+    let strip = strip(app, area);
+    let n = visible_lines(app, area, bar, below);
+    // A docked strip keeps its lines while the log is shorter; a floating bar shows what's logged.
+    let slots = if app.cmd.expanded {
+        0
+    } else if strip.is_some() {
+        n
+    } else {
+        n.min(app.session.log.len())
+    };
+    // A rect `h` high on the history's side of the bar.
+    let beside = |gap: f32, h: f32| {
+        let y = if below { bar.bottom() + gap } else { bar.top() - gap - h };
+        Rect::from_min_size(pos2(bar.left(), y), vec2(bar.width(), h))
+    };
+    let lines = (slots > 0).then(|| beside(2.0, LINE_H * slots as f32 + 2.0));
     let window = app.cmd.expanded.then(|| {
         // As tall as the log (at least three lines), at most half the drawing area.
         let full = LINE_H * app.session.log.len().max(3) as f32 + 4.0;
-        let h = full.min((canvas.height() * 0.5).max(3.0 * LINE_H));
-        Rect::from_min_size(pos2(bar.left(), bar.top() - h - 4.0), vec2(bar.width(), h + 2.0))
+        beside(2.0, full.min((area.height() * 0.5).max(3.0 * LINE_H)) + 2.0)
     });
-    let top = window.or(lines).map_or(bar.top(), |r| r.top());
-    let grip = Rect::from_min_max(pos2(bar.left(), top - 3.0), pos2(bar.right(), top + 3.0));
+    let far = window.or(lines).unwrap_or(bar);
+    let edge = if below { far.bottom() } else { far.top() };
+    let grip = Rect::from_min_max(pos2(bar.left(), edge - 3.0), pos2(bar.right(), edge + 3.0));
+    let k = if app.session.prompting() { 0 } else { suggestions(&app.cmd.buffer).len() };
+    let list = (k > 0).then(|| {
+        let h = 20.0 * k as f32;
+        let y = match lines {
+            Some(r) if below => r.bottom() + 8.0,
+            Some(r) => r.top() - 8.0 - h,
+            None if below => bar.bottom() + 6.0,
+            None => bar.top() - 6.0 - h,
+        };
+        Rect::from_min_size(pos2(bar.left() + 24.0, y), vec2((bar.width() - 24.0).clamp(0.0, 736.0), h))
+    });
     let mut all = bar.union(grip);
-    if !app.session.prompting() {
-        let k = suggestions(&app.cmd.buffer).len();
-        if k > 0 {
-            let above = if n == 0 { 0.0 } else { LINE_H * n as f32 + 6.0 };
-            all = all.union(Rect::from_min_size(pos2(bar.left(), bar.top() - 6.0 - 20.0 * k as f32 - above), vec2(bar.width(), 1.0)));
-        }
+    for r in [strip, list].into_iter().flatten() {
+        all = all.union(r);
     }
-    Zones { lines, window, chevron: Rect::from_center_size(pos2(bar.right() - 14.0, bar.center().y), vec2(24.0, 22.0)), grip, all }
+    Zones {
+        bar,
+        below,
+        strip,
+        slots,
+        lines,
+        window,
+        chevron: Rect::from_center_size(pos2(bar.right() - 14.0, bar.center().y), vec2(24.0, 22.0)),
+        handle: Rect::from_min_size(bar.min, vec2(HANDLE_W, BAR_H)),
+        grip,
+        list,
+        all,
+    }
 }
 
 /// The pointer on the command line: one widget under all of it keeps clicks, drags and the wheel
 /// off the drawing (the keywords and AutoComplete rows sit on top of it). Clicking the history
 /// lines or the chevron opens/closes the history window (`ui.toggle.history`, also F2); dragging
-/// the top edge sets how many lines show (`ui.cmdline.lines`).
-fn history(app: &mut CadApp, ui: &mut egui::Ui, canvas: Rect, bar: Rect) {
-    let z = zones(app, canvas, bar);
-    let resp = ui.interact(z.all, ui.id().with("cmdline"), Sense::click_and_drag());
+/// the far edge sets how many lines show (`ui.cmdline.lines`); dragging the handle moves it, and
+/// dropping it against the drawing area's top or bottom edge docks it (`ui.cmdline.position`).
+fn history(app: &mut CadApp, ui: &mut egui::Ui, area: Rect) {
+    let z = zones(app, area);
+    // One id wherever it is drawn, so a move started docked carries on floating.
+    let resp = ui.interact(z.all, egui::Id::new("cadcraft-cmdline"), Sense::click_and_drag());
     let at = resp.hover_pos().or(resp.interact_pointer_pos());
     let on_grip = |p: Pos2| z.grip.contains(p) && z.window.is_none();
+    let on_handle = |p: Pos2| z.handle.contains(p) && !on_grip(p);
     let on_toggle = |p: Pos2| z.chevron.contains(p) || z.lines.is_some_and(|r| r.contains(p));
-    if app.cmd.resize_from.is_some() || at.is_some_and(on_grip) {
+    if app.cmd.moving.is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    } else if app.cmd.resize_from.is_some() || at.is_some_and(on_grip) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    } else if at.is_some_and(on_handle) {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
     } else if at.is_some_and(on_toggle) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     if resp.drag_started()
         && let Some(o) = ui.input(|i| i.pointer.press_origin())
-        && on_grip(o)
     {
-        app.cmd.resize_from = Some((o.y, visible_lines(app, canvas, bar)));
+        if on_grip(o) {
+            app.cmd.resize_from = Some((o.y, visible_lines(app, area, z.bar, z.below)));
+        } else if on_handle(o) {
+            app.cmd.moving = Some((o - z.bar.min, o));
+        }
     }
     if let Some((y0, n0)) = app.cmd.resize_from {
         if let (true, Some(p)) = (resp.dragged(), resp.interact_pointer_pos()) {
-            let n = (n0 as f32 + (y0 - p.y) / LINE_H).round().clamp(0.0, MAX_LINES as f32) as usize;
+            let dy = if z.below { p.y - y0 } else { y0 - p.y };
+            let n = (n0 as f32 + dy / LINE_H).round().clamp(0.0, MAX_LINES as f32) as usize;
             if n != app.ui.history_lines {
-                let _ = app.run("ui.cmdline.lines", serde_json::json!({ "lines": n }));
+                let _ = app.run("ui.cmdline.lines", json!({ "lines": n }));
             }
         } else {
             app.cmd.resize_from = None;
         }
     }
-    if resp.clicked() && resp.interact_pointer_pos().is_some_and(on_toggle) {
-        let _ = app.run("ui.toggle.history", serde_json::json!({}));
+    if let Some((grab, pointer)) = app.cmd.moving
+        && !resp.dragged()
+    {
+        app.cmd.moving = None;
+        let params = match drop_dock(pointer - grab, area) {
+            Some(dock) => json!({ "dock": dock }),
+            None => {
+                let room = (area.size() - z.bar.size()).max(Vec2::ZERO);
+                let d = z.bar.min - area.min;
+                let frac = |d: f32, room: f32| if room > 0.0 { f64::from(d) / f64::from(room) } else { 0.0 };
+                json!({ "dock": Dock::Floating, "at": [frac(d.x, room.x), frac(d.y, room.y)] })
+            }
+        };
+        let _ = app.run("ui.cmdline.position", params);
     }
-    crate::shortcut_menus::attach(app, &resp, crate::shortcut_menus::command_line_entries);
-    if let Some(r) = zones(app, canvas, bar).window {
+    if resp.clicked() && resp.interact_pointer_pos().is_some_and(on_toggle) {
+        let _ = app.run("ui.toggle.history", json!({}));
+    }
+    crate::shortcut_menus::attach(app, &resp, |app| {
+        let mut groups = crate::shortcut_menus::command_line_entries(app);
+        // Placement goes before the last group (Copy History, Clear).
+        groups.insert(groups.len().saturating_sub(1), position_entries(app));
+        groups
+    });
+    if let Some(r) = zones(app, area).window {
         history_window(app, ui, r);
     }
 }
@@ -685,10 +943,8 @@ mod tests {
             app.session.echo(format!("line {i}"));
         }
         let canvas = Rect::from_min_size(Pos2::ZERO, vec2(300.0, 180.0));
-        let w = (canvas.width() * 0.48).clamp(360.0, 760.0).min((canvas.width() - 8.0).max(0.0));
-        let bar = Rect::from_min_size(pos2(canvas.center().x - w / 2.0, canvas.bottom() - 34.0), vec2(w, 24.0));
-        let z = zones(&app, canvas, bar);
-        assert!(canvas.contains_rect(bar));
+        let z = zones(&app, canvas);
+        assert!(canvas.contains_rect(z.bar));
         assert!(canvas.contains_rect(z.chevron));
         assert!(z.lines.is_some_and(|r| canvas.contains_rect(r)));
         assert!(canvas.contains_rect(z.grip));
@@ -756,9 +1012,7 @@ mod tests {
         frame(&mut app, &ctx, Vec::new());
         frame(&mut app, &ctx, Vec::new());
         let canvas = app.canvas.rect.unwrap_or(Rect::NOTHING);
-        let w = (canvas.width() * 0.48).clamp(360.0, 760.0).min((canvas.width() - 8.0).max(0.0));
-        let bar = Rect::from_min_size(pos2(canvas.center().x - w / 2.0, canvas.bottom() - 34.0), vec2(w, 24.0));
-        let z = zones(&app, canvas, bar);
+        let z = zones(&app, canvas);
         let Some(lines) = z.lines else { panic!("three history lines show by default") };
         // A click on the history lines opens the history window, and doesn't start a selection.
         for (at, pressed) in [(lines.center(), true), (lines.center(), false)] {
@@ -967,5 +1221,192 @@ mod autocomplete_tests {
         type_line(&mut app, &ctx, "", key(egui::Key::Escape));
         type_line(&mut app, &ctx, "zzqx", key(egui::Key::Enter));
         assert!(unknown(&app));
+    }
+}
+
+#[cfg(test)]
+mod position_tests {
+    use super::*;
+    use cadcraft_engine::Session;
+    use egui::{Event, Modifiers, PointerButton};
+    use egui_kittest::Harness;
+
+    const SIZE: Vec2 = vec2(1280.0, 800.0);
+
+    fn harness(app: CadApp, size: Vec2) -> Harness<'static, CadApp> {
+        let mut h = Harness::builder().with_size(size).build_ui_state(
+            |ui, app: &mut CadApp| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(4);
+        h
+    }
+
+    fn app(position: Position) -> CadApp {
+        let mut app = CadApp::new(Session::new(), crate::Services::default());
+        for i in 0..5 {
+            app.session.echo(format!("line {i}"));
+        }
+        app.ui.command_line_position = position;
+        app
+    }
+
+    /// The drawing panel at `size` (the drawing area while the command line floats).
+    fn area(size: Vec2) -> Rect {
+        let h = harness(app(Position::default()), size);
+        h.state().canvas.rect.unwrap_or(Rect::NOTHING)
+    }
+
+    fn drawing(h: &Harness<'_, CadApp>) -> Rect {
+        h.state().canvas.rect.unwrap_or(Rect::NOTHING)
+    }
+
+    fn drag(h: &mut Harness<'_, CadApp>, from: Pos2, to: Pos2) {
+        h.event(Event::PointerMoved(from));
+        h.run_steps(2);
+        h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        h.run_steps(2);
+        for step in 1..=8 {
+            h.event(Event::PointerMoved(from.lerp(to, step as f32 / 8.0)));
+            h.run_steps(1);
+        }
+        h.event(Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+        h.run_steps(4);
+    }
+
+    #[test]
+    fn dragging_the_handle_floats_and_docks_it_and_the_place_persists() {
+        let area = area(SIZE);
+        let mut h = harness(app(Position::default()), SIZE);
+        let z = zones(h.state(), area);
+        assert_eq!((z.bar.center().x, z.below), (area.center().x, false), "bottom centre by default");
+
+        // Into the middle of the drawing: it floats there, and the drawing saw no click.
+        let to = area.center() + vec2(-200.0, -100.0);
+        drag(&mut h, z.handle.center(), to);
+        assert_eq!(h.state().ui.command_line_position.dock, Dock::Floating);
+        let moved = zones(h.state(), area);
+        assert!((moved.handle.center() - to).length() < 0.5, "{:?} {to:?}", moved.handle);
+        assert!(moved.below, "above the middle: the history opens below");
+        assert!(h.state().session.pending_window.is_none() && h.state().session.selection().is_empty());
+        assert_eq!(drawing(&h), area, "a floating command line takes no room");
+
+        // The saved workspace puts it back in the same place.
+        let saved = serde_json::to_string(&h.state().ui).unwrap_or_default();
+        let mut again = app(Position::default());
+        again.ui = serde_json::from_str(&saved).unwrap_or_default();
+        let reloaded = harness(again, SIZE);
+        assert_eq!(zones(reloaded.state(), area).bar, moved.bar);
+
+        // Against the top edge: docked there, full width, above the drawing.
+        drag(&mut h, moved.handle.center(), pos2(moved.handle.center().x, area.top() - 40.0));
+        assert_eq!(h.state().ui.command_line_position.dock, Dock::Top);
+        let top = zones(h.state(), area);
+        assert_eq!((top.bar.top(), top.bar.width(), top.below), (area.top(), area.width(), true));
+        let strip = top.strip.unwrap_or(Rect::NOTHING);
+        assert_eq!((drawing(&h).top(), drawing(&h).bottom()), (strip.bottom(), area.bottom()));
+        assert!(strip.height() >= BAR_H + 3.0 * LINE_H, "three history lines under the bar");
+
+        // From there against the bottom edge: docked below the drawing.
+        drag(&mut h, top.handle.center(), pos2(top.handle.center().x, area.bottom() + 40.0));
+        assert_eq!(h.state().ui.command_line_position.dock, Dock::Bottom);
+        let bottom = zones(h.state(), area);
+        assert_eq!((bottom.bar.bottom(), bottom.bar.width(), bottom.below), (area.bottom(), area.width(), false));
+        let strip = bottom.strip.unwrap_or(Rect::NOTHING);
+        assert_eq!((drawing(&h).top(), drawing(&h).bottom()), (area.top(), strip.top()));
+
+        // Ctrl+9 hides it and gives the drawing its room back; again shows it docked.
+        let ctrl = if cfg!(target_os = "macos") { Modifiers::MAC_CMD | Modifiers::COMMAND } else { Modifiers::CTRL | Modifiers::COMMAND };
+        h.key_press_modifiers(ctrl, Key::Num9);
+        h.run_steps(3);
+        assert!(!h.state().ui.show_command_line);
+        assert_eq!(drawing(&h), area);
+        h.key_press_modifiers(ctrl, Key::Num9);
+        h.run_steps(3);
+        assert_eq!(drawing(&h).bottom(), strip.top());
+
+        // The menu's Floating returns to where it floated; Reset Position to the bottom centre.
+        let _ = h.state_mut().run("ui.cmdline.position", json!({"dock": "floating"}));
+        h.run_steps(3);
+        assert_eq!(zones(h.state(), area).bar, moved.bar);
+        let _ = h.state_mut().run("ui.cmdline.position", json!({"dock": "floating", "at": null}));
+        h.run_steps(3);
+        assert_eq!(zones(h.state(), area).bar, z.bar);
+    }
+
+    #[test]
+    fn a_floating_command_line_keeps_inside_a_resized_drawing_area() {
+        // Dragged near the bottom-right corner, then the window shrinks and grows.
+        let area = area(SIZE);
+        let mut h = harness(app(Position::default()), SIZE);
+        let z = zones(h.state(), area);
+        drag(&mut h, z.handle.center(), area.right_bottom() - vec2(20.0, 30.0));
+        assert_eq!(h.state().ui.command_line_position.dock, Dock::Floating, "not pushed against the edge");
+        for size in [vec2(820.0, 560.0), vec2(1600.0, 1000.0)] {
+            h.set_size(size);
+            h.run_steps(4);
+            let a = drawing(&h);
+            let z = zones(h.state(), a);
+            assert!(a.contains_rect(z.bar) && z.lines.is_some_and(|r| a.contains_rect(r)), "{size:?}: {:?} in {a:?}", z.bar);
+            assert!((a.right() - z.bar.right()).abs() < 1.0, "{size:?}: still at the right");
+        }
+        // Hostile saved places are kept inside too.
+        for at in [[5.0, -3.0], [f64::INFINITY, f64::NAN]] {
+            h.state_mut().ui.command_line_position.at = Some(at);
+            h.run_steps(2);
+            let a = drawing(&h);
+            assert!(a.contains_rect(zones(h.state(), a).bar), "{at:?}");
+        }
+    }
+
+    #[test]
+    fn history_and_autocomplete_open_away_from_the_edge() {
+        let area = area(SIZE);
+        let high = Position { dock: Dock::Floating, at: Some([0.5, 0.1]) };
+        let cases = [
+            (high, true),
+            (Position::default(), false),
+            (Position { dock: Dock::Top, at: None }, true),
+            (Position { dock: Dock::Bottom, at: None }, false),
+        ];
+        for (position, below) in cases {
+            let mut app = app(position);
+            app.cmd.buffer = "l".into();
+            let mut h = harness(app, SIZE);
+            let z = zones(h.state(), area);
+            let (Some(lines), Some(list)) = (z.lines, z.list) else { panic!("{position:?}: lines and list show") };
+            assert_eq!(z.below, below, "{position:?}");
+            if below {
+                assert!(z.bar.bottom() < lines.top() && lines.bottom() < list.top(), "{position:?}");
+            } else {
+                assert!(list.bottom() < lines.top() && lines.bottom() < z.bar.top(), "{position:?}");
+            }
+            assert!(area.contains_rect(list), "{position:?}: {list:?}");
+            // The flipped list still takes clicks: its first row runs LINE.
+            let row = pos2(list.left() + 20.0, list.top() + 10.0);
+            h.event(Event::PointerMoved(row));
+            h.run_steps(1);
+            for pressed in [true, false] {
+                h.event(Event::PointerButton { pos: row, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+                h.run_steps(1);
+            }
+            h.run_steps(2);
+            assert_eq!(h.state().session.running.as_ref().map(|r| r.id.as_str()), Some("line"), "{position:?}");
+        }
+    }
+
+    #[test]
+    fn position_command_checks_its_parameters() {
+        let mut app = CadApp::new(Session::new(), crate::Services::default());
+        assert_eq!(app.run("ui.cmdline.position", json!({"dock": "top"})), Ok(json!({"dock": "top", "at": null})));
+        assert_eq!(app.run("ui.cmdline.position", json!({"at": [0.25, 2.0]})), Ok(json!({"dock": "top", "at": [0.25, 1.0]})));
+        for bad in [json!({"dock": "left"}), json!({"dock": 3}), json!({"at": "x"}), json!({"at": [1.0]}), json!({"at": [null, 0]})] {
+            assert!(app.run("ui.cmdline.position", bad.clone()).is_err(), "{bad}");
+        }
+        assert_eq!(app.ui.command_line_position, Position { dock: Dock::Top, at: Some([0.25, 1.0]) });
+        assert_eq!(app.run("ui.cmdline.position", json!({"dock": "floating", "at": null})), Ok(json!({"dock": "floating", "at": null})));
     }
 }

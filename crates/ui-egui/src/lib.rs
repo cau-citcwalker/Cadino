@@ -111,6 +111,9 @@ pub struct UiState {
     pub show_file_tabs: bool,
     pub show_status_bar: bool,
     pub show_command_line: bool,
+    /// Where the command line sits: floating over the drawing, or docked at its top or bottom
+    /// edge (`ui.cmdline.position`).
+    pub command_line_position: cmdline::Position,
     pub show_viewcube: bool,
     /// Rhino's gumball on objects selected in 3D views (`ui.gumball`).
     pub gumball: bool,
@@ -202,6 +205,7 @@ impl Default for UiState {
             show_file_tabs: true,
             show_status_bar: true,
             show_command_line: true,
+            command_line_position: cmdline::Position::default(),
             show_viewcube: true,
             gumball: true,
             gumball_align: GumballAlign::default(),

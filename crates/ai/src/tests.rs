@@ -141,6 +141,9 @@ fn anthropic_tool_round_trip() {
     assert!(body["system"][0]["text"].as_str().unwrap().starts_with(prompt::SYSTEM));
     let tools = body["tools"].as_array().unwrap();
     assert!(tools.iter().all(|t| t["eager_input_streaming"] == true && t["input_schema"]["type"] == "object"));
+    // The MCP annotations stay out of the API's tool schema (unknown fields are refused).
+    let keys = ["name", "description", "input_schema", "eager_input_streaming"];
+    assert!(tools.iter().all(|t| t.as_object().unwrap().keys().all(|k| keys.contains(&k.as_str()))), "{tools:?}");
     assert!(tools.iter().any(|t| t["name"] == "save") && tools.iter().any(|t| t["name"] == "open"), "the same tools whatever the settings");
     // The second request carries the assistant turn verbatim (thinking with its signature) and
     // every result in one user message.
@@ -181,6 +184,11 @@ fn openai_compatible_tool_round_trip() {
     assert_eq!(body["messages"][0]["role"], "system");
     assert_eq!(body["messages"][1], json!({"role": "user", "content": "Draw a circle"}));
     assert_eq!(body["tools"][0]["type"], "function");
+    let keys = ["name", "description", "parameters"];
+    assert!(
+        body["tools"].as_array().unwrap().iter().all(|t| t["function"].as_object().unwrap().keys().all(|k| keys.contains(&k.as_str()))),
+        "no MCP annotations"
+    );
     assert!(body.get("stream_options").is_none());
     let msgs = seen[1].1["messages"].as_array().unwrap();
     assert_eq!(msgs[2]["tool_calls"][0]["id"], "call_1", "a missing id is made up");

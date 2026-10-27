@@ -854,6 +854,31 @@ pub struct VportTile {
     /// VIEWMODE 71 bits 2, 4 and 16, and 43 and 44 measured from the target).
     #[serde(default)]
     pub clip: cadcraft_geom::Clip,
+    /// A grid of the tile's own (Rhino's Options ▸ Grid, "Apply grid changes to the active
+    /// viewport only"); `None`: the tile shows the drawing's grid.
+    #[serde(default)]
+    pub grid: Option<TileGrid>,
+}
+
+/// A model tile's own grid and snap spacing, as AutoCAD keeps them per VPORT record and Rhino
+/// per viewport: the values of GRIDMODE, GRIDUNIT, SNAPUNIT, GRIDMAJOR, GRIDLINECOUNT and
+/// GRIDAXES while the tile is current.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TileGrid {
+    /// GRIDMODE: the grid lines show.
+    pub on: bool,
+    /// GRIDUNIT: the minor spacing; a zero component follows `snap`.
+    pub unit: Vec2,
+    /// SNAPUNIT.
+    pub snap: Vec2,
+    /// GRIDMAJOR: a major line every this many minor ones (1-100).
+    pub major: u32,
+    /// GRIDLINECOUNT: how many spacings the grid reaches each way from the origin (0: it fills
+    /// the view; at most 1000).
+    pub count: u32,
+    /// GRIDAXES: the grid's x and y axes show.
+    pub axes: bool,
 }
 
 fn plan_dir() -> [f64; 3] {
@@ -876,6 +901,7 @@ impl Default for VportTile {
             camera: None,
             twist: 0.0,
             clip: cadcraft_geom::Clip::OFF,
+            grid: None,
         }
     }
 }

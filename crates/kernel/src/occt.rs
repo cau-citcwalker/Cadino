@@ -19,7 +19,7 @@ use opencascade::mesh::Mesher;
 use opencascade::primitives::{Compound, Edge, Face, Shape, Shell, Solid, Wire};
 
 use crate::curve::{Cut, Run, closed, unit};
-use crate::{BoolOp, Built, Curve, Imported, KernelError, Outline, Placed, Primitive, Result, Seg, similarity};
+use crate::{BoolOp, Built, Curve, Imported, KernelError, Label, Outline, Placed, Primitive, Result, Seg, similarity};
 
 mod ops;
 pub use ops::op;
@@ -218,16 +218,7 @@ fn swept(runs: &[Run], solid: bool) -> Shape {
 }
 
 pub fn boolean(op: BoolOp, a: Placed, b: Placed) -> Result<Built> {
-    let (sa, sb) = (placed(a)?, placed(b)?);
-    let r: Shape = match op {
-        BoolOp::Union => sa.union(&sb).into(),
-        BoolOp::Subtract => sa.subtract(&sb).into(),
-        BoolOp::Intersect => sa.intersect(&sb).into(),
-    };
-    if r.faces().next().is_none() {
-        return Err(KernelError::Failed("the result is empty".into()));
-    }
-    built(r)
+    ops::boolean(op, a, b)
 }
 
 pub fn slice(s: Placed, origin: Vec3, normal: Vec3) -> Result<Vec<Option<Built>>> {
@@ -289,10 +280,8 @@ pub fn tessellate(brep: &str) -> Result<Mesh3> {
     mesh(&read_brep(brep)?, brep)
 }
 
-pub fn export_step(solids: &[Placed], path: &Path) -> Result<()> {
-    let shapes = solids.iter().map(|s| placed(*s)).collect::<Result<Vec<_>>>()?;
-    let _one = exchanging();
-    Shape::write_all_step(&shapes, path).map_err(failed("STEP export"))
+pub fn export_step(solids: &[Placed], labels: &[Label], path: &Path) -> Result<()> {
+    ops::exchange(solids, labels, &[], false, path)
 }
 
 pub fn export_stl(solids: &[Placed], path: &Path) -> Result<()> {
@@ -316,13 +305,9 @@ fn exchanging() -> std::sync::MutexGuard<'static, ()> {
     ONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Solids (as trimmed surfaces: OpenCASCADE's default IGES mode, in millimetres) and curves.
-pub fn export_iges(solids: &[Placed], curves: &[Curve], path: &Path) -> Result<()> {
-    let mut shapes = solids.iter().map(|s| placed(*s)).collect::<Result<Vec<_>>>()?;
-    shapes.extend(curves.iter().map(|c| Shape::from(wire(c))));
-    let all: Shape = Compound::from_shapes(&shapes).into();
-    let _one = exchanging();
-    all.write_iges(path).map_err(failed("IGES export"))
+/// Solids (in BRep mode: each one closed object), surfaces and curves, in millimetres.
+pub fn export_iges(solids: &[Placed], labels: &[Label], curves: &[Curve], path: &Path) -> Result<()> {
+    ops::exchange(solids, labels, curves, true, path)
 }
 
 /// Most points the free curves of one IGES file may come back with (hostile files).
@@ -1047,6 +1032,32 @@ mod tests {
         assert_eq!(again.tris.len(), r.mesh.tris.len());
     }
 
+    /// Joined boxes touching face to face leave no seams on the faces they share a plane on
+    /// (six faces, not ten), and a cut through a slab leaves none either; an edge imprinted
+    /// before stays.
+    #[test]
+    fn booleans_merge_faces_left_on_one_surface() {
+        let cube = |a: Vec3, b: Vec3| primitive(&Primitive::Box { a, b }).unwrap();
+        let faces = |b: &Built| crate::topology(placed(b)).unwrap().faces.len();
+        let (a, b) = (cube(Vec3::ZERO, Vec3::new(10.0, 10.0, 10.0)), cube(Vec3::new(10.0, 0.0, 0.0), Vec3::new(20.0, 10.0, 10.0)));
+        let joined = boolean(BoolOp::Union, placed(&a), placed(&b)).unwrap();
+        assert_eq!(faces(&joined), 6);
+        // A notch cut across the slab's whole width, then a box filling it again: one box.
+        let notch = cube(Vec3::new(5.0, -1.0, 8.0), Vec3::new(15.0, 11.0, 11.0));
+        let cut = boolean(BoolOp::Subtract, placed(&joined), placed(&notch)).unwrap();
+        assert_eq!(faces(&cut), 10);
+        let fill = cube(Vec3::new(5.0, 0.0, 8.0), Vec3::new(15.0, 10.0, 10.0));
+        assert_eq!(faces(&boolean(BoolOp::Union, placed(&cut), placed(&fill)).unwrap()), 6);
+        // The line imprinted across the top stays when another box is joined on.
+        let line = Curve::Segs(vec![Seg::Line { a: Vec3::new(5.0, 0.0, 10.0), b: Vec3::new(5.0, 10.0, 10.0) }]);
+        let marked = crate::imprint(placed(&a), &[], &[line]).unwrap();
+        assert_eq!(faces(&marked), 7);
+        assert_eq!(faces(&boolean(BoolOp::Union, placed(&marked), placed(&b)).unwrap()), 7);
+        // Intersecting overlapping boxes: one box.
+        let c = cube(Vec3::new(5.0, 0.0, 0.0), Vec3::new(20.0, 10.0, 10.0));
+        assert_eq!(faces(&boolean(BoolOp::Intersect, placed(&joined), placed(&c)).unwrap()), 6);
+    }
+
     #[test]
     fn moved_solid_is_placed() {
         let a = primitive(&Primitive::Box { a: Vec3::ZERO, b: Vec3::new(1.0, 1.0, 1.0) }).unwrap();
@@ -1528,6 +1539,8 @@ mod modelling_tests {
 mod exchange_tests {
     use cadcraft_geom::{Mat4, Vec3};
 
+    use opencascade::primitives::Shape;
+
     use crate::tests::xform;
     use crate::{Built, Curve, KernelError, Placed, Primitive, Seg};
 
@@ -1598,7 +1611,7 @@ mod exchange_tests {
         let too_small = Curve::Segs(vec![Seg::Line { a: Vec3::ZERO, b: Vec3::ZERO }]);
         let path = temp("round.igs");
         let solids = [Placed { brep: &b.brep, xform: &Mat4::IDENTITY }, Placed { brep: &b.brep, xform: &turned }];
-        let written = crate::export_iges(&solids, &[line, arc, rect, over, too_small], &path).unwrap();
+        let written = crate::export_iges(&solids, &[], &[line, arc, rect, over, too_small], &path).unwrap();
         assert_eq!(written, 4, "the zero-length line is left out");
         let got = crate::import_iges(&path).unwrap();
         let _ = std::fs::remove_file(&path);
@@ -1640,7 +1653,7 @@ mod exchange_tests {
             .collect();
         let path = temp("touching.igs");
         let solids: Vec<Placed> = boxes.iter().map(|b| Placed { brep: &b.brep, xform: &Mat4::IDENTITY }).collect();
-        crate::export_iges(&solids, &[], &path).unwrap();
+        crate::export_iges(&solids, &[], &[], &path).unwrap();
         let got = crate::import_iges(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!(got.shapes.len(), 3, "{} shapes", got.shapes.len());
@@ -1700,7 +1713,7 @@ mod exchange_tests {
     /// OpenCASCADE drops the groups of one and it comes back whole too.
     #[test]
     fn iges_one_group_per_surface_comes_back_whole() {
-        use opencascade::primitives::{Compound, Shape};
+        use opencascade::primitives::Compound;
         let b = cube();
         let shape = super::read_brep(&b.brep).unwrap();
         let wrapped: Vec<Shape> = shape.faces().map(|f| Compound::from_shapes(&[Shape::from(&f)]).into()).collect();
@@ -1739,7 +1752,7 @@ mod exchange_tests {
             if with_other {
                 solids.push(Placed { brep: &other.brep, xform: &Mat4::IDENTITY });
             }
-            crate::export_iges(&solids, &[], &path).unwrap();
+            crate::export_iges(&solids, &[], &[], &path).unwrap();
             let got = crate::import_iges(&path).unwrap();
             let _ = std::fs::remove_file(&path);
             assert_eq!(got.shapes.len(), solids.len(), "{with_other}");
@@ -1757,7 +1770,7 @@ mod exchange_tests {
         let pin = Curve::Segs(vec![Seg::Circle { center: v(50.2, 50.2, 0.0), radius: 2.5, normal: Vec3::Z }]);
         let stray = Curve::Segs(vec![Seg::Line { a: v(1e6, 0.0, 0.0), b: v(1e6 + 10.0, 0.0, 0.0) }]);
         let path = temp("far.igs");
-        crate::export_iges(&[Placed { brep: &cabinet.brep, xform: &Mat4::IDENTITY }], &[pin, stray], &path).unwrap();
+        crate::export_iges(&[Placed { brep: &cabinet.brep, xform: &Mat4::IDENTITY }], &[], &[pin, stray], &path).unwrap();
         let got = crate::import_iges(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         let circle = got.curves.iter().find(|c| c.len() > 8 && c.first() == c.last()).expect("the pin hole");
@@ -1765,12 +1778,99 @@ mod exchange_tests {
         assert_eq!(got.curves.len(), 2, "{:?}", got.curves.len());
     }
 
+    /// How many shapes of the kind (`So` solid, `Fa` face) the B-rep text holds.
+    fn count(brep: &str, kind: &str) -> usize {
+        brep.lines().filter(|l| l.trim() == kind).count()
+    }
+
+    /// The entity type and form of each of an IGES file's directory entries (two lines each).
+    fn iges_entries(text: &str) -> Vec<(String, String)> {
+        let de: Vec<&str> = text.lines().filter(|l| l.as_bytes().get(72) == Some(&b'D')).collect();
+        let field = |l: Option<&&str>, at: std::ops::Range<usize>| l.and_then(|l| l.get(at)).unwrap_or("").trim().to_owned();
+        de.chunks(2).map(|c| (field(c.first(), 0..8), field(c.get(1), 32..40))).collect()
+    }
+
+    fn iges_types(text: &str) -> Vec<String> {
+        iges_entries(text).into_iter().map(|(t, _)| t).collect()
+    }
+
+    /// A shelf with a dowel through it, joined: one closed solid in the IGES file (a manifold
+    /// solid, entity 186, not a trimmed surface per face, which Rhino would show as surfaces to
+    /// join) and in the STEP file, which carries its name, layer and colour; both in millimetres.
+    #[test]
+    fn exported_solids_are_whole_named_and_coloured() {
+        let id = Mat4::IDENTITY;
+        let shelf = crate::primitive(&Primitive::Box { a: Vec3::ZERO, b: v(600.0, 560.0, 18.0) }).unwrap();
+        let dowel = crate::primitive(&Primitive::Cylinder { base: v(300.0, 280.0, 0.0), radius: 20.0, height: 100.0 }).unwrap();
+        let joined =
+            crate::boolean(crate::BoolOp::Union, Placed { brep: &shelf.brep, xform: &id }, Placed { brep: &dowel.brep, xform: &id }).unwrap();
+        let solids = [Placed { brep: &joined.brep, xform: &id }];
+        let labels = [crate::Label { name: "선반 Shelf \u{1F6AA}".into(), layer: "문짝".into(), color: Some([255, 128, 0]) }];
+        let (igs, stp) = (temp("labelled.igs"), temp("labelled.stp"));
+        crate::export_iges(&solids, &labels, &[], &igs).unwrap();
+        crate::export_step(&solids, &labels, &stp).unwrap();
+        let (itext, stext) = (std::fs::read_to_string(&igs).unwrap(), std::fs::read_to_string(&stp).unwrap());
+        let types = iges_types(&itext);
+        assert!(types.iter().any(|t| t == "186") && types.iter().any(|t| t == "514"), "{types:?}");
+        assert!(!types.iter().any(|t| t == "144" || t == "143" || t == "402"), "no loose trimmed surfaces or groups: {types:?}");
+        assert!(itext.contains("2HMM"), "millimetres");
+        // OpenCASCADE reads one solid from each (IGESIN then keeps it as one closed object).
+        let read = {
+            let _one = super::exchanging();
+            Shape::read_iges(&igs).unwrap()
+        };
+        let back = crate::import_step(&stp).unwrap();
+        let got = crate::import_iges(&igs).unwrap();
+        let _ = (std::fs::remove_file(&igs), std::fs::remove_file(&stp));
+        for brep in [super::write_brep(&read).unwrap(), back.brep] {
+            assert_eq!(count(&brep, "So"), 1, "one solid");
+            assert_eq!(count(&brep, "Fa"), count(&joined.brep, "Fa"));
+        }
+        assert!(got.shapes.len() == 1 && !got.shapes[0].mesh.open);
+        // Rhino's object name, layer and colour (sRGB, 128 / 255); text past the basic alphabet
+        // escaped as ISO 10303-21 has it (선반 U+C120 U+BC18, the door U+1F6AA, 문짝 U+BB38 U+C9DD).
+        assert!(stext.is_ascii(), "no raw UTF-8");
+        assert!(stext.contains(r"'\X2\C120BC18\X0\ Shelf \X4\0001F6AA\X0\'"), "the name");
+        assert!(stext.contains(r"PRESENTATION_LAYER_ASSIGNMENT('\X2\BB38C9DD\X0\'"), "the layer");
+        assert!(stext.contains("COLOUR_RGB('',1.,0.50196"), "the colour");
+        assert!(stext.contains(".MILLI."), "millimetres");
+        // Unlabelled solids have no name, layer or colour of their own.
+        crate::export_step(&solids, &[], &stp).unwrap();
+        let plain = std::fs::read_to_string(&stp).unwrap();
+        let _ = std::fs::remove_file(&stp);
+        assert!(!plain.contains("PRESENTATION_LAYER_ASSIGNMENT") && !plain.contains("COLOUR_RGB"));
+    }
+
+    /// An open surface goes out as one shell (entity 514 under no solid), a closed one sewn into a
+    /// solid; both come back whole.
+    #[test]
+    fn exported_surfaces_are_one_object_each() {
+        let id = Mat4::IDENTITY;
+        let b = crate::primitive(&Primitive::Box { a: Vec3::ZERO, b: v(10.0, 10.0, 10.0) }).unwrap();
+        let closed = crate::to_surface(Placed { brep: &b.brep, xform: &id }).unwrap();
+        let r = [v(20.0, 0.0, 0.0), v(30.0, 0.0, 0.0), v(30.0, 10.0, 0.0), v(20.0, 10.0, 0.0)];
+        let square = Curve::Segs((0..4).map(|i| Seg::Line { a: r[i], b: r[(i + 1) % 4] }).collect());
+        let open = crate::planar_surface(&square, &[]).unwrap();
+        let igs = temp("surfaces.igs");
+        crate::export_iges(&[Placed { brep: &closed.brep, xform: &id }, Placed { brep: &open.brep, xform: &id }], &[], &[], &igs).unwrap();
+        let entries = iges_entries(&std::fs::read_to_string(&igs).unwrap());
+        let got = crate::import_iges(&igs).unwrap();
+        let _ = std::fs::remove_file(&igs);
+        assert_eq!(entries.iter().filter(|(t, _)| t == "186").count(), 1, "{entries:?}");
+        // The box's shell is closed (form 1), the square's open (form 2), as IGES readers take them.
+        let shells: Vec<&str> = entries.iter().filter(|(t, _)| t == "514").map(|(_, f)| f.as_str()).collect();
+        assert_eq!(shells.len(), 2, "the box's shell and the square's: {entries:?}");
+        assert!(shells.contains(&"1") && shells.contains(&"2"), "{shells:?}");
+        assert_eq!(got.shapes.len(), 2);
+        assert_eq!(got.shapes.iter().filter(|s| s.mesh.open).count(), 1);
+    }
+
     #[test]
     fn iges_curves_alone_and_bad_files() {
         let path = temp("curves.igs");
         let circle = Curve::Segs(vec![Seg::Circle { center: v(5.0, 5.0, 2.0), radius: 3.0, normal: Vec3::Z }]);
         let spline = Curve::Spline { points: vec![v(0.0, 0.0, 0.0), v(5.0, 3.0, 1.0), v(10.0, 0.0, 2.0)], tangents: None };
-        assert_eq!(crate::export_iges(&[], &[circle, spline], &path).unwrap(), 2);
+        assert_eq!(crate::export_iges(&[], &[], &[circle, spline], &path).unwrap(), 2);
         let got = crate::import_iges(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         assert!(got.shapes.is_empty());
@@ -1778,7 +1878,7 @@ mod exchange_tests {
         let circle = got.curves.iter().find(|c| c.first() == c.last()).expect("the circle, closed");
         assert!(circle.iter().all(|p| (p.z - 2.0).abs() < 1e-9 && ((*p - v(5.0, 5.0, 2.0)).len() - 3.0).abs() < 1e-6));
         // Nothing to write; nothing to read; not IGES.
-        assert!(matches!(crate::export_iges(&[], &[], &path), Err(KernelError::Invalid(_))));
+        assert!(matches!(crate::export_iges(&[], &[], &[], &path), Err(KernelError::Invalid(_))));
         assert!(crate::import_iges(&temp("missing.igs")).is_err());
         let junk = temp("junk.igs");
         std::fs::write(&junk, "not an IGES file\n\0\u{1}garbage").unwrap();

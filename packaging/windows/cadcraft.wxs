@@ -63,6 +63,7 @@
 
     <Feature Id="Main" Title="Cadino" Level="1">
       <ComponentGroupRef Id="CadinoFiles" />
+      <ComponentGroupRef Id="SkillFiles" />
     </Feature>
     <!-- Its own (hidden) feature: the advertised Start Menu shortcut health-checks its feature,
          Main, and the desktop shortcut's key path is in the installing user's HKCU. Were it in
@@ -100,6 +101,11 @@
       <Component Id="LicenseMit"><File Source="$(var.BinDir)\LICENSE-MIT" KeyPath="yes" /></Component>
       <Component Id="LicenseApache"><File Source="$(var.BinDir)\LICENSE-APACHE" KeyPath="yes" /></Component>
       <Component Id="Notice"><File Source="$(var.BinDir)\NOTICE" KeyPath="yes" /></Component>
+    </ComponentGroup>
+
+    <!-- The Cadino skill for Claude and Codex (skills\cadino\README.md says how to install it). -->
+    <ComponentGroup Id="SkillFiles" Directory="INSTALLFOLDER" Subdirectory="skills">
+      <Files Include="$(var.BinDir)\skills\**" />
     </ComponentGroup>
 
     <!-- Optional desktop shortcut, removed on uninstall. A non-advertised shortcut needs a registry

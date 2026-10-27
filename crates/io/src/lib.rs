@@ -190,6 +190,8 @@ pub fn write_dxf(d: &Drawing) -> String {
     dxf_write::write(d)
 }
 
+/// ACIS bodies (SAT, SAB) for 3D solids written for other programs.
+mod acis;
 /// Regions, written as closed polylines.
 mod dxf_region;
 mod dxf_solid;

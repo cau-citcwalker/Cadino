@@ -83,6 +83,7 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("ui.toggle.history", "Command History", &["Window", "Command History"], Some("F2")),
     ("ui.cmdline.lines", "Command Line History Lines", &[], None),
     ("ui.cmdline.clear", "Clear Command History", &[], None),
+    ("ui.cmdline.position", "Command Line Position", &[], None),
     ("ui.dialog.language", "Interface Language", &["Edit", "Interface Language"], None),
     ("ui.language", "Language", &[], None),
     ("ui.noop", "", &[], None),
@@ -106,6 +107,9 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
         return Some(r);
     }
     if let Some(r) = crate::bedit::route(app, id, params) {
+        return Some(r);
+    }
+    if let Some(r) = crate::cmdline::route(app, id, params) {
         return Some(r);
     }
     if let Some(r) = crate::managers::route(app, id, params) {

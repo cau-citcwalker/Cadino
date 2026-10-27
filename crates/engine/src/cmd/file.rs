@@ -175,6 +175,11 @@ pub fn specs() -> Vec<CommandSpec> {
             .key("Cmd+Shift+S")
             .params("{path, version?: 2000|2004|2007|2010|2013|2018, binary?: bool}")
             .noundo(),
+        CommandSpec::new("dwgout", "AutoCAD DWG...", run_dwgout)
+            .menu(&["File", "Export", "AutoCAD DWG..."])
+            .params("{path? (else returns base64 `data`), version?: 2018|2013|2010|2007|2004|2000 (default 2018)} → {version, bytes, path? | data, notSaved?}: a separate DWG copy for AutoCAD; the drawing keeps its own file name, format and unsaved changes (typed DWGOUT: the version, then the file name)")
+            .noundo()
+            .interactive(|_| Ok(Box::new(DwgOutM::default()))),
         CommandSpec::new("document.switch", "Switch Drawing", run_switch).params("{index}").enabled(always).noundo(),
         CommandSpec::new("document.bytes", "Drawing as bytes", run_bytes)
             .params("{format?: dxf, version?: 2000…2018, binary?: bool} → {data: base64}")
@@ -479,6 +484,124 @@ fn run_saveas(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(r)
 }
 
+/// DWGOUT: a copy of the drawing as an AutoCAD DWG file of `version` (2018 by default). Unlike
+/// SAVEAS the drawing keeps its own file name, format and unsaved changes.
+fn run_dwgout(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "dwgout";
+    let SaveAs { version, binary } = save_options(CMD, p)?;
+    if binary {
+        return Err(bad(CMD, "`binary` applies to DXF files only"));
+    }
+    let version = version.unwrap_or(Version::R2018);
+    let path = match str_param(p, "path") {
+        Some(path) => Some(dwg_path(path).ok_or_else(|| bad(CMD, format!("{path}: DWGOUT writes .dwg files")))?),
+        None => None,
+    };
+    if path.is_some() {
+        crate::limits::files(CMD)?;
+    }
+    if s.doc()?.refedit.is_some() {
+        return Err(bad(CMD, "A block reference is being edited in place: finish with REFCLOSE (Save or Discard) first."));
+    }
+    let lost = not_saved_as(s.doc()?, version);
+    let bytes = write_bytes(s, CMD, path.as_deref().unwrap_or("drawing.dwg"), &SaveAs { version: Some(version), binary: false })?;
+    let mut r = json!({ "version": version.year(), "bytes": bytes.len() });
+    match &path {
+        Some(path) => {
+            store(path, &bytes)?;
+            r["path"] = json!(path);
+            r["message"] = json!(format!("AutoCAD {} DWG copy written: {path}", version.year()));
+        }
+        None => r["data"] = json!(base64_encode(&bytes)),
+    }
+    report_not_saved(s, &mut r, &lost);
+    Ok(r)
+}
+
+/// `path` as a DWG file name: `.dwg` added when it has no extension; `None` for another one.
+fn dwg_path(path: &str) -> Option<String> {
+    match std::path::Path::new(path.trim()).extension() {
+        None => Some(format!("{}.dwg", path.trim())),
+        Some(e) if e.eq_ignore_ascii_case("dwg") => Some(path.trim().to_string()),
+        Some(_) => None,
+    }
+}
+
+/// DWGOUT's suggested file: `<drawing folder>/<drawing name>.dwg`, or `<name>-<year>.dwg` when
+/// that is the drawing's own file (the copy never replaces it unasked).
+fn dwgout_default(s: &Session, version: Version) -> String {
+    let st = s.state().ok();
+    let own = st.and_then(|st| st.path.clone());
+    let title = st.map(|st| st.title.clone()).unwrap_or_default();
+    let stem = std::path::Path::new(&title).file_stem().map(|n| n.to_string_lossy().into_owned()).filter(|n| !n.is_empty());
+    let stem = stem.unwrap_or_else(|| "Drawing".into());
+    let dir = own.as_deref().and_then(|p| std::path::Path::new(p).parent()).filter(|d| !d.as_os_str().is_empty());
+    let at = |name: String| dir.map_or_else(|| name.clone(), |d| d.join(&name).to_string_lossy().into_owned());
+    let plain = at(format!("{stem}.dwg"));
+    if own.as_deref().is_some_and(|o| same_file(o, &plain)) { at(format!("{stem}-{}.dwg", version.year())) } else { plain }
+}
+
+/// Whether paths `a` and `b` name the same file, whatever their separators (`/` or `\` on
+/// Windows) and letter case (case-insensitive file systems; elsewhere a false match only makes
+/// DWGOUT suggest another name).
+fn same_file(a: &str, b: &str) -> bool {
+    let parts = |p: &str| -> Vec<String> {
+        std::path::Path::new(p).components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).filter(|c| c != ".").collect()
+    };
+    parts(a) == parts(b)
+}
+
+/// The versions DWGOUT offers, newest (the default) first.
+const DWG_VERSIONS: &[&str] = &["2018", "2013", "2010", "2007", "2004", "2000"];
+
+/// DWGOUT typed at the command line or chosen from the menu: the version, then the file name
+/// (with FILEDIA 1 the UI asks for it with its file dialog). Both end in the JSON form.
+#[derive(Default)]
+struct DwgOutM {
+    version: Option<Version>,
+}
+
+impl Interactive for DwgOutM {
+    fn name(&self) -> &'static str {
+        "DWGOUT"
+    }
+    fn prompt(&self, s: &Session) -> Prompt {
+        match self.version {
+            None => Prompt::new("Enter AutoCAD DWG version", Accept { point: false, number: false, text: true, select: false, enter: true })
+                .kw(DWG_VERSIONS)
+                .default("2018"),
+            Some(v) => Prompt::new("Enter file name", Accept::WORD).default(dwgout_default(s, v)).picker(crate::Picker::File {
+                save: true,
+                label: "AutoCAD DWG",
+                exts: &["dwg"],
+            }),
+        }
+    }
+    fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        if i == Input::Cancel {
+            return Ok(Step::Cancel);
+        }
+        let Some(v) = self.version else {
+            self.version = match &i {
+                Input::Enter => Some(Version::R2018),
+                Input::Keyword(t) | Input::Text(t) => Some(Version::parse(t).ok_or_else(|| EngineError::Other("Invalid option keyword.".into()))?),
+                _ => None,
+            };
+            return Ok(Step::Continue);
+        };
+        let typed = match &i {
+            Input::Text(t) | Input::Keyword(t) => t.trim().trim_matches('"').trim().to_string(),
+            _ => String::new(),
+        };
+        let path = if typed.is_empty() { dwgout_default(s, v) } else { typed };
+        let r = run_dwgout(s, &json!({ "path": path, "version": v.year() }))?;
+        if let Some(m) = r.get("message").and_then(Value::as_str) {
+            s.echo(m.to_string());
+        }
+        Ok(Step::Done)
+    }
+}
+
 /// The version a drawing is saved in at `path` when none is asked for: its `$ACADVER` (2018 by
 /// default), and for DWG at least 2004 (the io layer's rule: R2000 DWG has no true colours).
 fn drawing_version(s: &Session, path: &str) -> Version {
@@ -705,6 +828,27 @@ mod tests {
         s.execute("close", &json!({"index": 0})).unwrap();
         assert_eq!(active_title(&s), "Drawing2");
         assert_eq!(s.docs.len(), 2);
+    }
+
+    /// DWGOUT never suggests the drawing's own file, however its path is spelled: a drawing
+    /// opened as `E:/work/x.dwg` (MCP, AI and typed opens use forward slashes) gets `x-2018.dwg`,
+    /// not a path that differs only in its separators and would overwrite it.
+    #[test]
+    fn dwgout_suggests_a_copy_beside_the_drawing_not_the_drawing() {
+        use super::{Version, dwgout_default, same_file};
+        assert!(same_file("E:/work/x.dwg", &std::path::Path::new("E:/work").join("x.dwg").to_string_lossy()));
+        assert!(same_file("e:/WORK/./X.DWG", "E:/work/x.dwg"));
+        assert!(!same_file("E:/work/x.dwg", "E:/work/y.dwg") && !same_file("E:/work/x.dwg", "E:/other/x.dwg"));
+        let mut s = Session::new();
+        for own in ["E:/work/x.dwg", "E:\\work\\x.dwg", "e:/Work/X.dwg"] {
+            let st = s.state_mut().unwrap();
+            (st.path, st.title) = (Some(own.into()), "x.dwg".into());
+            let suggested = dwgout_default(&s, Version::R2018);
+            assert!(!same_file(&suggested, own) && suggested.ends_with("x-2018.dwg"), "{own}: {suggested}");
+        }
+        let st = s.state_mut().unwrap();
+        (st.path, st.title) = (Some("E:/work/x.dxf".into()), "x.dxf".into());
+        assert!(dwgout_default(&s, Version::R2018).ends_with("x.dwg"), "a DXF drawing's copy keeps its name");
     }
 
     #[test]

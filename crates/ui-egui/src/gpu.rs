@@ -366,51 +366,112 @@ pub fn build_mesh(list: &DisplayList, origin: Vec2, bg: Rgb, lwdisplay: bool) ->
 /// Vertex data drawing primitives `prims` of `list` in `color` (the selection highlight), as on
 /// the CPU path: lines `width` points wide, and fills filled, or with `dashed` (SELECTIONEFFECT 0;
 /// the callback's `dash` dashes the lines) outlined. A wipeout is always outlined, since filling it
-/// would hide the drawing; infinite lines are left to the CPU (they are clipped per frame). It sits
-/// at the nearest depth, over everything.
-pub fn build_highlight_mesh(list: &DisplayList, prims: &[usize], origin: Vec2, color: [u8; 4], width: f32, dashed: bool) -> MeshData {
+/// would hide the drawing; infinite lines are left to the CPU (they are clipped per frame).
+/// A solid's shaded faces keep their shading, as in Rhino: its outline against the view and its
+/// edges light up instead, the edges from `edges` (the selected solids built with them, for a
+/// plain Shaded list), else from `list` (Shaded with Edges, Hidden). Everything sits at the list's
+/// own depths, so in a depth-buffered 3D view what the faces hide stays hidden; other lists sit at
+/// the nearest depth, over everything.
+pub fn build_highlight_mesh(
+    list: &DisplayList,
+    prims: &[usize],
+    origin: Vec2,
+    color: [u8; 4],
+    width: f32,
+    dashed: bool,
+    edges: Option<&DisplayList>,
+) -> MeshData {
     let mut m = MeshData::default();
-    for prim in prims.iter().filter_map(|&i| list.prims.get(i)) {
-        let pts = list.points(prim);
-        match prim.kind {
-            Kind::Polyline => {
-                let mut run = 0.0;
-                for s in pts.windows(2) {
-                    if let [a, b] = s {
-                        push_instance(&mut m.quads, rel(*a, origin), rel(*b, origin), color, width, run as f32, [0.0; 2]);
-                        run += a.dist(*b);
-                    }
-                }
+    let depth = Depth::of(list);
+    let mut solids = std::collections::HashSet::new();
+    let quads = |m: &mut MeshData, pts: &[Vec2], z: &dyn Fn(usize) -> f32| {
+        let mut run = 0.0;
+        for (k, s) in pts.windows(2).enumerate() {
+            if let [a, b] = s {
+                push_instance(&mut m.quads, rel(*a, origin), rel(*b, origin), color, width, run as f32, [z(k), z(k + 1)]);
+                run += a.dist(*b);
             }
+        }
+    };
+    for &i in prims {
+        let Some(prim) = list.prims.get(i) else { continue };
+        let pts = list.points(prim);
+        let at = prim.start as usize;
+        let face = is_face(list, i);
+        match prim.kind {
+            Kind::Polyline => quads(&mut m, pts, &|k| depth.vert(at + k)),
             Kind::Point => {
                 if let Some(q) = pts.first() {
-                    let p = rel(*q, origin);
-                    push_instance(&mut m.quads, p, p, color, 3.0, 0.0, [0.0; 2]);
+                    let (p, z) = (rel(*q, origin), depth.vert(at));
+                    push_instance(&mut m.quads, p, p, color, 3.0, 0.0, [z, z]);
                 }
             }
-            Kind::Tris if !dashed => {
+            Kind::Tris if !dashed && !face => {
                 let fill = translucent(color, HIGHLIGHT_FILL_ALPHA);
-                for t in pts.as_chunks::<3>().0 {
-                    for q in t {
-                        push_vertex(&mut m.tris, rel(*q, origin), fill, 0.0);
-                    }
+                for (j, q) in pts.as_chunks::<3>().0.iter().flatten().enumerate() {
+                    push_vertex(&mut m.tris, rel(*q, origin), fill, depth.tri(at + j));
                 }
+            }
+            // Outlined with the solid's other faces, below.
+            Kind::Tris | Kind::Mask if face => {
+                solids.insert(prim.handle);
             }
             Kind::Tris | Kind::Mask => {
+                // The outline's points are the triangles' own corners: they keep their depths.
+                let z: std::collections::HashMap<(u64, u64), f32> = pts.iter().enumerate().map(|(j, q)| (bits(q), depth.tri(at + j))).collect();
                 for line in list.fill_outlines(prim) {
-                    let mut run = 0.0;
-                    for s in line.windows(2) {
-                        if let [a, b] = s {
-                            push_instance(&mut m.quads, rel(*a, origin), rel(*b, origin), color, width, run as f32, [0.0; 2]);
-                            run += a.dist(*b);
-                        }
-                    }
+                    quads(&mut m, &line, &|k| line.get(k).and_then(|q| z.get(&bits(q))).copied().unwrap_or(0.0));
                 }
             }
             Kind::Infinite { .. } => {}
         }
     }
+    for line in face_outlines(list, prims) {
+        let pts: Vec<Vec2> = line.iter().map(|p| p.0).collect();
+        quads(&mut m, &pts, &|k| line.get(k).and_then(|p| p.1).map_or(0.0, |t| depth.tri(t)));
+    }
+    let from = edges.unwrap_or(list);
+    if depth.any() {
+        for e in from.edges.iter().filter(|e| solids.contains(&e.handle)) {
+            let at = e.start as usize;
+            quads(&mut m, from.points(e), &|k| depth.z(from.vert_depth.get(at + k).copied()));
+        }
+    }
     m
+}
+
+/// A point's key: its bits, -0.0 as 0.0 (as the outlines have them).
+fn bits(q: &Vec2) -> (u64, u64) {
+    ((q.x + 0.0).to_bits(), (q.y + 0.0).to_bits())
+}
+
+/// The outlines against the view of the solids whose shaded faces are among primitives `prims`
+/// of `list`, each point with its index in `list.tris` (its depth): a solid's faces are outlined
+/// together, so neither the edges between their triangles (drawn in depth order, in many runs) nor
+/// a curved face's shading bands show.
+pub(crate) fn face_outlines(list: &DisplayList, prims: &[usize]) -> Vec<Vec<(Vec2, Option<usize>)>> {
+    let mut groups: std::collections::HashMap<cadcraft_doc::Handle, (Rgb, Vec<usize>)> = std::collections::HashMap::new();
+    for &i in prims {
+        let Some(p) = list.prims.get(i).filter(|p| is_face(list, i) && matches!(p.kind, Kind::Tris | Kind::Mask)) else { continue };
+        let at = p.start as usize;
+        groups.entry(p.handle).or_insert((p.color, Vec::new())).1.extend(at..at + list.points(p).len() / 3 * 3);
+    }
+    let mut out = Vec::new();
+    for (handle, (color, idx)) in groups {
+        let tris: Vec<Vec2> = idx.iter().filter_map(|&k| list.tris.get(k).copied()).collect();
+        let at: std::collections::HashMap<(u64, u64), usize> = tris.iter().zip(&idx).map(|(q, &k)| (bits(q), k)).collect();
+        let Ok(len) = u32::try_from(tris.len()) else { continue };
+        let one = cadcraft_render::DPrim { handle, color, aci7: false, lw: 0.0, transparency: 0, kind: Kind::Tris, start: 0, len };
+        let solid = DisplayList { tris, ..Default::default() };
+        out.extend(solid.fill_outlines(&one).into_iter().map(|line| line.into_iter().map(|q| (q, at.get(&bits(&q)).copied())).collect()));
+    }
+    out
+}
+
+/// Whether primitive `i` of `list` is one of a solid's shaded faces ([`DisplayList::faces`]).
+pub(crate) fn is_face(list: &DisplayList, i: usize) -> bool {
+    let k = list.faces.partition_point(|r| r.end as usize <= i);
+    list.faces.get(k).is_some_and(|r| r.start as usize <= i)
 }
 
 /// The vertex origin for a display list seen at `view_center` / `view_height`: the list's centre
@@ -1064,7 +1125,7 @@ mod tests {
     fn highlight_dashes_run_on_along_each_polyline() {
         let l = list();
         // The 3-point polyline (two unit segments) and the point marker.
-        let m = build_highlight_mesh(&l, &[0, 2], Vec2::new(1e6, 1e6), [1, 2, 3, 255], 1.5, true);
+        let m = build_highlight_mesh(&l, &[0, 2], Vec2::new(1e6, 1e6), [1, 2, 3, 255], 1.5, true, None);
         assert_eq!(m.quad_instances(), 3);
         let start = |i: usize| {
             let o = i * INSTANCE_SIZE + 24;
@@ -1078,11 +1139,11 @@ mod tests {
     fn highlight_fills_fills_and_outlines_wipeouts() {
         let mut l = list();
         // The filled triangle (0,0) (1,0) (0,1) is filled in the highlight colour...
-        let m = build_highlight_mesh(&l, &[1], Vec2::ZERO, [1, 2, 3, 255], 1.5, false);
+        let m = build_highlight_mesh(&l, &[1], Vec2::ZERO, [1, 2, 3, 255], 1.5, false, None);
         assert_eq!((m.tri_vertices(), m.quad_instances()), (3, 0));
         assert_eq!(&m.tris[8..12], &[1, 1, 2, 128], "in the highlight colour, see-through (premultiplied)");
         // ...or, dashed (SELECTIONEFFECT 0), outlined by its three edges, the dash running on.
-        let m = build_highlight_mesh(&l, &[1], Vec2::ZERO, [1, 2, 3, 255], 1.5, true);
+        let m = build_highlight_mesh(&l, &[1], Vec2::ZERO, [1, 2, 3, 255], 1.5, true, None);
         assert_eq!((m.tri_vertices(), m.quad_instances()), (0, 3));
         let start = |i: usize| {
             let o = i * INSTANCE_SIZE + 24;
@@ -1095,8 +1156,46 @@ mod tests {
         if let Some(p) = l.prims.get_mut(1) {
             p.kind = Kind::Mask;
         }
-        let m = build_highlight_mesh(&l, &[1], Vec2::ZERO, [1, 2, 3, 255], 1.5, false);
+        let m = build_highlight_mesh(&l, &[1], Vec2::ZERO, [1, 2, 3, 255], 1.5, false, None);
         assert_eq!((m.tri_vertices(), m.quad_instances()), (0, 3));
+    }
+
+    /// A selected solid keeps its shading (no tint over its faces, as in Rhino): its faces'
+    /// outline and its edges light up instead, each point at its own depth.
+    #[test]
+    fn a_selected_solid_lights_its_outline_and_edges_not_its_faces() {
+        let l = shaded_list();
+        let m = build_highlight_mesh(&l, &[0], Vec2::ZERO, [255, 255, 0, 255], 2.0, false, None);
+        assert_eq!(m.tri_vertices(), 0, "no tint over the shaded face");
+        assert_eq!(m.quad_instances(), 4 + 3, "the square face's four sides and the solid's three edges");
+        let at = |i: usize, o: usize| f32_at(&m.quads, i * INSTANCE_SIZE + o);
+        let corner = (0..m.quad_instances()).find(|&i| (at(i, 0), at(i, 4)) == (16.0, 16.0)).unwrap();
+        assert_eq!(at(corner, 28), 0.5, "(16, 16) lies at depth 3 of 0..=6, as the face draws it");
+        // The face drawn in two runs (its triangles sort by depth among the solid's others): still
+        // its four sides, no diagonal between its triangles.
+        let mut split = shaded_list();
+        let second = DPrim { start: 3, len: 3, ..split.prims[0] };
+        split.prims[0].len = 3;
+        split.prims.insert(1, second);
+        split.faces = vec![0..2];
+        assert_eq!(build_highlight_mesh(&split, &[0, 1], Vec2::ZERO, [255, 255, 0, 255], 2.0, false, None).quad_instances(), 4 + 3);
+        // A plain Shaded list has no edges: they come from the solids built with them, at the
+        // list's depths.
+        let mut plain = shaded_list();
+        let built = DisplayList {
+            edges: std::mem::take(&mut plain.edges),
+            verts: plain.verts.clone(),
+            vert_depth: plain.vert_depth.clone(),
+            ..Default::default()
+        };
+        assert_eq!(build_highlight_mesh(&plain, &[0], Vec2::ZERO, [255, 255, 0, 255], 2.0, false, None).quad_instances(), 4, "the outline alone");
+        let m2 = build_highlight_mesh(&plain, &[0], Vec2::ZERO, [255, 255, 0, 255], 2.0, false, Some(&built));
+        let edges = |m: &MeshData| m.quads.get(4 * INSTANCE_SIZE..).map(<[u8]>::to_vec);
+        assert_eq!(edges(&m2), edges(&m), "the same edges (after the outline) at the same depths");
+        // A fill that isn't a solid's face (a hatch) is still filled.
+        let mut flat = shaded_list();
+        flat.faces.clear();
+        assert_eq!(build_highlight_mesh(&flat, &[0], Vec2::ZERO, [255, 255, 0, 255], 2.0, false, None).tri_vertices(), 6);
     }
 
     #[test]

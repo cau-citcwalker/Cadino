@@ -148,6 +148,16 @@ mod ffi {
         messages: Vec<String>,
     }
 
+    /// An object of an exchange file: its shape, and the name and layer other modellers show it
+    /// with (empty: none) and its colour (sRGB 0 to 1; negative: none of its own).
+    #[derive(Clone, Debug)]
+    struct ObjectIn {
+        shape: ShapeIn,
+        name: String,
+        layer: String,
+        color: [f64; 3],
+    }
+
     unsafe extern "C++" {
         include!("cadrhino_occt.hxx");
 
@@ -187,5 +197,10 @@ mod ffi {
         /// `guides`: none (the spine is a path through the sections) or one (kept in contact).
         fn pipe_loft(sections: &[WireIn], spine: &WireIn, solid: bool) -> Result<String>;
         fn guided_loft(sections: &[WireIn], guides: &[WireIn], solid: bool) -> Result<String>;
+        /// `op` 0 union, 1 subtract, 2 intersect. `merge`: faces left on one surface merged and a
+        /// result that isn't valid refused; else the boolean's own result, healed where it can be.
+        fn boolean(a: &ShapeIn, b: &ShapeIn, op: u8, merge: bool) -> Result<String>;
+        /// The text of an IGES (BRep mode) or STEP file of the objects and curves, in millimetres.
+        fn exchange(objects: &[ObjectIn], curves: &[WireIn], iges: bool) -> Result<String>;
     }
 }

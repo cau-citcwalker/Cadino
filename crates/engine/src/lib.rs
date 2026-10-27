@@ -167,6 +167,8 @@ pub struct ModelTile {
     pub active: bool,
     /// The tile's construction plane (CPLANE): its coordinates → world; identity = World.
     pub cplane: cadcraft_geom::Mat4,
+    /// The grid it shows: its own, else the drawing's ([`Session::grid`]).
+    pub grid: cadcraft_doc::TileGrid,
 }
 
 /// A layout viewport VPMAX maximized: VPMIN brings back the sheet's view and the viewport's.
@@ -495,6 +497,11 @@ pub struct Settings {
     pub gridunit: Vec2,
     /// Major grid line every N minor lines (GRIDMAJOR).
     pub gridmajor: u32,
+    /// GRIDLINECOUNT (Rhino's grid line count): the grid reaches this many spacings each way
+    /// from the origin; 0 fills the view.
+    pub gridlinecount: u32,
+    /// GRIDAXES: the grid's x (red) and y (green) axes show.
+    pub gridaxes: bool,
     /// ZOOMFACTOR: how far one mouse wheel step zooms (3..=100).
     pub zoomfactor: u32,
     /// -VIEW sEttings > Layer snapshot: named views save the layer settings with them.
@@ -613,6 +620,8 @@ impl Default for Settings {
             osnapz: false,
             gridunit: Vec2::new(0.5, 0.5),
             gridmajor: 5,
+            gridlinecount: 0,
+            gridaxes: true,
             zoomfactor: 60,
             view_layer_snapshot: true,
             dynmode: true,
@@ -662,6 +671,15 @@ impl Default for Settings {
             lwunits_mm: true,
             ucsicon: true,
         }
+    }
+}
+
+impl Settings {
+    /// These settings with grid `g` (a viewport's: [`Session::grid`]).
+    pub fn with_grid(mut self, g: &cadcraft_doc::TileGrid) -> Settings {
+        (self.gridmode, self.gridunit, self.snapunit, self.gridmajor, self.gridlinecount, self.gridaxes) =
+            (g.on, g.unit, g.snap, g.major, g.count, g.axes);
+        self
     }
 }
 
@@ -986,14 +1004,21 @@ impl Session {
     pub fn doc_mut(&mut self) -> Result<&mut Drawing> {
         Ok(Arc::make_mut(&mut self.state_mut()?.doc))
     }
-    /// Settings for the active drawing, without caching drawing variables in the profile.
+    /// Settings for the active drawing, without caching drawing variables in the profile: the
+    /// grid and snap spacing the current viewport shows ([`Session::grid`]).
     pub fn drafting_settings(&self) -> Settings {
-        let mut settings = self.settings.clone();
-        if let Ok(d) = self.doc() {
-            settings.snapunit = d.header.snap_unit();
-            settings.gridunit = d.header.grid_unit();
-        }
-        settings
+        self.settings.clone().with_grid(&self.grid())
+    }
+    /// The drawing's grid: every viewport's but one with a grid of its own. GRIDUNIT and
+    /// SNAPUNIT are the drawing's (its header), the rest session settings kept in the profile.
+    pub fn drawing_grid(&self) -> cadcraft_doc::TileGrid {
+        let st = &self.settings;
+        let (unit, snap) = self.doc().map_or((st.gridunit, st.snapunit), |d| (d.header.grid_unit(), d.header.snap_unit()));
+        cadcraft_doc::TileGrid { on: st.gridmode, unit, snap, major: st.gridmajor, count: st.gridlinecount, axes: st.gridaxes }
+    }
+    /// The grid the current viewport shows: its own ([`Session::tile_grid`]) or the drawing's.
+    pub fn grid(&self) -> cadcraft_doc::TileGrid {
+        self.tile_grid().unwrap_or_else(|| self.drawing_grid())
     }
     /// The space commands act on (model space while working inside a layout viewport).
     pub fn space(&self) -> Space {

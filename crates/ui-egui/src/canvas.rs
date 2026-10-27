@@ -382,9 +382,10 @@ fn close_view_window(app: &mut CadApp, xf: &Xf, at: Pos2, shift: bool) -> cadcra
 pub(crate) const ORBIT_DEG_PER_PX: f64 = 0.4;
 
 /// What a display list was built from: drawing uid, revision, tessellation band, hatch level of
-/// detail band, lineweight display, document, active viewport view and visual style, and view
-/// direction (see [`ensure_list`]).
-type ListKey = (u64, u64, i32, i32, bool, bool, usize, u64, [u64; 3]);
+/// detail band, lineweight display, document, active viewport view and visual style, view
+/// direction, and Options ▸ Display Detail ([`crate::options::DisplayDetail::key`]) (see
+/// [`ensure_list`]).
+type ListKey = (u64, u64, i32, i32, bool, bool, usize, u64, [u64; 3], u64);
 
 /// [`ListKey`]'s last field for projection `v`: its direction's bits, mixed with its camera's in
 /// perspective and its twist and clipping planes (DVIEW).
@@ -405,7 +406,8 @@ fn dir_key(v: &ViewDir) -> [u64; 3] {
     k
 }
 
-/// Whether two list keys are for the same drawing content (they may differ only in the view).
+/// Whether two list keys are for the same drawing content (they may differ only in the view or
+/// the level of detail, which build again in the background).
 fn same_content(a: &ListKey, b: &ListKey) -> bool {
     (a.0, a.1, a.4, a.5, a.6, a.7) == (b.0, b.1, b.4, b.5, b.6, b.7)
 }
@@ -447,6 +449,9 @@ pub struct CanvasState {
     hl_origin: Vec2,
     /// Selected infinite lines (clipped and drawn on the CPU each frame).
     hl_infinite: Vec<usize>,
+    /// The selected solids built with their edges for a plain Shaded highlight ([`solid_edges`]),
+    /// and what they were built from.
+    sel_edges: SolidEdges,
     /// The selection and hover highlights inside the active MSPACE viewport (see [`VpHighlight`]).
     vp_sel: VpHighlight,
     vp_hover: VpHighlight,
@@ -670,6 +675,7 @@ fn ensure_list(app: &mut CadApp, xf: &Xf, views: &[(Bounds2, f64)], ctx: &egui::
         std::sync::Arc::as_ptr(&st.doc) as usize,
         vp_view,
         dir_key(&view_dir),
+        app.options.detail.key(),
     );
     // A background build that finished: use it unless the drawing has changed since it started
     // (or the list was dropped to force a rebuild).
@@ -711,11 +717,7 @@ fn ensure_list(app: &mut CadApp, xf: &Xf, views: &[(Bounds2, f64)], ctx: &egui::
     // dropping it cancels it.
     app.canvas.job = None;
     let t0 = crate::now_ms();
-    let opts = cadcraft_render::Options {
-        tolerance: 2f64.powi(band(px)) * 0.5,
-        // Two pixels at the band's finest zoom: the list serves every zoom in the band, so its
-        // level of detail must hold at the finest one.
-        min_dash: 2f64.powi(lod_band) * 2.0,
+    let mut opts = cadcraft_render::Options {
         text: true,
         fill: true,
         lineweights: lwdisplay,
@@ -727,6 +729,9 @@ fn ensure_list(app: &mut CadApp, xf: &Xf, views: &[(Bounds2, f64)], ctx: &egui::
         view_dir,
         ..cadcraft_render::Options::look(st.shaded, st.shaded_edges, st.hide)
     };
+    // Chords for the band; dashes, hatches and text at the band's finest zoom: the list serves
+    // every zoom in the band, so its level of detail must hold at the finest one.
+    app.options.detail.apply(&mut opts, 2f64.powi(band(px)), 2f64.powi(lod_band));
     if view_only {
         let t = Tokens::get();
         let mesh = app.canvas.gpu.is_some().then(|| rebuild::MeshRequest {
@@ -799,8 +804,8 @@ const VP_SETTLE_MS: f64 = 150.0;
 struct VpContent {
     list: DisplayList,
     /// What the list was built from: drawing, revision, document, viewport, tessellation band,
-    /// lineweight and transparency display, and visual style.
-    key: Option<(u64, u64, usize, Handle, i32, bool, bool, bool, bool)>,
+    /// lineweight and transparency display, visual style and level of detail.
+    key: Option<(u64, u64, usize, Handle, i32, bool, bool, bool, bool, u64)>,
     /// The viewport's view (centre, height) the list was built for, and the paper area it covers.
     view: (Vec2, f64),
     area: Bounds2,
@@ -851,6 +856,7 @@ struct VpFrame {
 /// Build or reuse the active viewport's [`VpContent`] for this frame.
 fn ensure_vp_content(app: &mut CadApp, xf_paper: &Xf, ctx: &egui::Context) -> Option<VpFrame> {
     let (lwdisplay, transparency) = (app.session.settings.lwdisplay, app.session.settings.transparency_display);
+    let detail = app.options.detail;
     let stencil = stencil_clip(app);
     let c = &mut app.canvas.vp;
     let Some((st, (h, vp, clip))) = app.session.state().ok().and_then(|st| Some((st, split_viewport(st, stencil)?))) else {
@@ -867,8 +873,18 @@ fn ensure_vp_content(app: &mut CadApp, xf_paper: &Xf, ctx: &egui::Context) -> Op
     };
     let px = 1.0 / xf_paper.scale.max(1e-300);
     let band = px.max(1e-300).log2().floor() as i32;
-    let key =
-        (st.uid, st.revision, std::sync::Arc::as_ptr(&st.doc) as usize, h, band, lwdisplay, transparency, st.shaded, st.shaded_edges || st.hide);
+    let key = (
+        st.uid,
+        st.revision,
+        std::sync::Arc::as_ptr(&st.doc) as usize,
+        h,
+        band,
+        lwdisplay,
+        transparency,
+        st.shaded,
+        st.shaded_edges || st.hide,
+        detail.key(),
+    );
     let now = crate::now_ms();
     let view = (vp.view_center, vp.view_height);
     if view != c.last_view {
@@ -893,9 +909,7 @@ fn ensure_vp_content(app: &mut CadApp, xf_paper: &Xf, ctx: &egui::Context) -> Op
         // The viewport with half its larger side of margin all round: panning by up to that much
         // only moves the geometry.
         let area = rect.expand(rect.width().max(rect.height()) * 0.5);
-        let opts = cadcraft_render::Options {
-            tolerance: 2f64.powi(band) * 0.5,
-            min_dash: 2f64.powi(band) * 2.0,
+        let mut opts = cadcraft_render::Options {
             text: true,
             fill: true,
             lineweights: lwdisplay,
@@ -907,6 +921,7 @@ fn ensure_vp_content(app: &mut CadApp, xf_paper: &Xf, ctx: &egui::Context) -> Op
             view_dir: cadcraft_geom::ViewDir::PLAN,
             ..cadcraft_render::Options::look(st.shaded, st.shaded_edges, st.hide)
         };
+        detail.apply(&mut opts, 2f64.powi(band), 2f64.powi(band));
         c.list = cadcraft_render::viewport_content(&st.doc, &st.space, h, area, &opts);
         c.key = Some(key);
         c.view = view;
@@ -1077,7 +1092,8 @@ fn build_window(views: &[(Bounds2, f64)]) -> Option<Bounds2> {
     (!w.is_empty()).then_some(w)
 }
 
-/// Grid spacing adapted to the zoom: multiply the unit until lines are at least `min_px` apart.
+/// Grid spacing adapted to the zoom: multiply the unit until lines are at least `min_px` apart
+/// (0: the unit as it is).
 fn adaptive(unit: f64, scale: f64, min_px: f64) -> f64 {
     let mut u = unit.max(1e-12);
     let mut guard = 0;
@@ -1088,125 +1104,172 @@ fn adaptive(unit: f64, scale: f64, min_px: f64) -> f64 {
     u
 }
 
-fn draw_grid(app: &CadApp, p: &egui::Painter, xf: &Xf) {
+/// The most lines a grid draws each way.
+const MAX_GRID_LINES: f64 = 2000.0;
+
+/// The closest (pixels) the lines of a grid spanning `span` pixels may come before it would need
+/// more than [`MAX_GRID_LINES`]: a grid that is not simplified (Options ▸ Display Detail) is
+/// thinned from there instead of vanishing when zoomed far out.
+fn densest(span: f64) -> f64 {
+    span / (MAX_GRID_LINES - 2.0)
+}
+
+/// A viewport's grid as Rhino's grid options set it (Options ▸ Grid).
+struct GridSpec {
+    /// Minor spacing: GRIDUNIT X, or SNAPUNIT X when that is 0.
+    unit: f64,
+    /// How far the grid reaches from the origin each way: GRIDLINECOUNT spacings; `None` (0)
+    /// fills the view.
+    reach: Option<f64>,
+    /// GRIDAXES: the grid's x and y axes show.
+    axes: bool,
+    /// Coarsened while its lines are closer on screen than this (Options ▸ Display Detail; 0:
+    /// never).
+    min_px: f64,
+}
+
+impl GridSpec {
+    /// From the viewport's settings `s` (its grid: [`cadcraft_engine::Session::grid`]).
+    fn of(app: &CadApp, s: &cadcraft_engine::Settings) -> GridSpec {
+        let unit = if s.gridunit.x == 0.0 { s.snapunit.x } else { s.gridunit.x };
+        // A file's tile grid is untrusted: the count is clamped as SETVAR would.
+        let count = s.gridlinecount.min(1000);
+        let reach = Some(unit * f64::from(count)).filter(|r| count > 0 && r.is_finite() && *r > 0.0);
+        GridSpec { unit, reach, axes: s.gridaxes, min_px: app.options.detail.grid_min_px() }
+    }
+
+    /// The part of `view` the grid covers.
+    fn area(&self, view: Bounds2) -> Bounds2 {
+        let Some(r) = self.reach else { return view };
+        let (min, max) = (view.min.max(Vec2::new(-r, -r)), view.max.min(Vec2::new(r, r)));
+        if min.x <= max.x && min.y <= max.y { Bounds2 { min, max } } else { Bounds2::EMPTY }
+    }
+}
+
+/// The indices of the multiples of `step` in `lo..=hi` (a hair of slack for a reach that is a
+/// whole number of steps); `None` for more than [`MAX_GRID_LINES`] or non-finite ones.
+fn grid_span(lo: f64, hi: f64, step: f64) -> Option<(i64, i64)> {
+    let (a, b) = ((lo / step - 1e-9).ceil(), (hi / step + 1e-9).floor());
+    (a.is_finite() && b.is_finite() && b - a <= MAX_GRID_LINES).then_some((a as i64, b as i64))
+}
+
+/// Draw the grid of a viewport whose settings are `s` (the current one's:
+/// [`cadcraft_engine::Session::drafting_settings`]; another tile may have a grid of its own).
+fn draw_grid(app: &CadApp, p: &egui::Painter, xf: &Xf, s: &cadcraft_engine::Settings) {
     // ponytail: in a UCS moved or turned in plan the grid follows the UCS but is never isometric
     // (SNAPSTYL 1 draws the rectangular one there); turn `iso::grid_lines` with it if asked.
     if !xf.flat() {
-        draw_cplane_grid(app, p, xf);
+        draw_cplane_grid(app, p, xf, s);
         return;
     }
     let t = Tokens::get();
-    let s = app.session.drafting_settings();
-    let wb = xf.view_bounds();
+    let g = GridSpec::of(app, s);
+    let wb = g.area(xf.view_bounds());
+    if wb.is_empty() {
+        return;
+    }
+    let to = |x: f64, y: f64| xf.to_screen(Vec2::new(x, y));
     if s.gridmode && s.isodraft {
-        draw_iso_grid(app, p, xf);
+        draw_iso_grid(app, p, xf, wb, g.min_px, s);
     } else if s.gridmode {
-        let major_n = f64::from(s.gridmajor.max(1));
-        let unit = if s.gridunit.x == 0.0 { s.snapunit.x } else { s.gridunit.x };
-        let minor = adaptive(unit, xf.scale, 8.0);
-        let major = minor * major_n;
+        let span = f64::from(xf.rect.width().max(xf.rect.height()));
+        let minor = adaptive(g.unit, xf.scale, g.min_px.max(densest(span)));
+        let major = minor * f64::from(s.gridmajor.max(1));
+        let kind = |v: f64| if ((v / major) - (v / major).round()).abs() < 1e-6 { t.grid_major } else { t.grid_minor };
         let mut lines = Vec::new();
-        let x0 = (wb.min.x / minor).floor() as i64;
-        let x1 = (wb.max.x / minor).ceil() as i64;
-        let y0 = (wb.min.y / minor).floor() as i64;
-        let y1 = (wb.max.y / minor).ceil() as i64;
-        if (x1 - x0) < 2000 && (y1 - y0) < 2000 {
+        if let (Some((x0, x1)), Some((y0, y1))) = (grid_span(wb.min.x, wb.max.x, minor), grid_span(wb.min.y, wb.max.y, minor)) {
             for i in x0..=x1 {
                 let x = i as f64 * minor;
-                let is_major = (x / major).round() * major - x == 0.0 || ((x / major) - (x / major).round()).abs() < 1e-6;
-                let sx = xf.to_screen(Vec2::new(x, 0.0)).x;
-                lines.push(Shape::line_segment(
-                    [pos2(sx, xf.rect.top()), pos2(sx, xf.rect.bottom())],
-                    Stroke::new(1.0, if is_major { t.grid_major } else { t.grid_minor }),
-                ));
+                lines.push(Shape::line_segment([to(x, wb.min.y), to(x, wb.max.y)], Stroke::new(1.0, kind(x))));
             }
             for j in y0..=y1 {
                 let y = j as f64 * minor;
-                let is_major = ((y / major) - (y / major).round()).abs() < 1e-6;
-                let sy = xf.to_screen(Vec2::new(0.0, y)).y;
-                lines.push(Shape::line_segment(
-                    [pos2(xf.rect.left(), sy), pos2(xf.rect.right(), sy)],
-                    Stroke::new(1.0, if is_major { t.grid_major } else { t.grid_minor }),
-                ));
+                lines.push(Shape::line_segment([to(wb.min.x, y), to(wb.max.x, y)], Stroke::new(1.0, kind(y))));
             }
         }
         p.extend(lines);
     }
     // Axes through the origin.
-    let o = xf.to_screen(Vec2::ZERO);
-    if xf.rect.y_range().contains(o.y) {
-        p.line_segment([pos2(xf.rect.left(), o.y), pos2(xf.rect.right(), o.y)], Stroke::new(1.0, t.axis_x));
-    }
-    if xf.rect.x_range().contains(o.x) {
-        p.line_segment([pos2(o.x, xf.rect.top()), pos2(o.x, xf.rect.bottom())], Stroke::new(1.0, t.axis_y));
+    if g.axes {
+        if (wb.min.y..=wb.max.y).contains(&0.0) {
+            p.line_segment([to(wb.min.x, 0.0), to(wb.max.x, 0.0)], Stroke::new(1.0, t.axis_x));
+        }
+        if (wb.min.x..=wb.max.x).contains(&0.0) {
+            p.line_segment([to(0.0, wb.min.y), to(0.0, wb.max.y)], Stroke::new(1.0, t.axis_y));
+        }
     }
 }
 
 /// The construction plane's grid in a 3D view, as Rhino draws it: minor and major lines (GRIDMODE,
-/// GRIDUNIT, GRIDMAJOR) about the point of the plane at the view's centre, its x axis red and its
-/// y axis green. Nothing where the view sees the plane edge-on.
-/// ponytail: the grid reaches a view's size around the centre point; a plane receding to the
-/// horizon in a steep view ends there (Rhino's grid has a fixed extent too).
-fn draw_cplane_grid(app: &CadApp, p: &egui::Painter, xf: &Xf) {
+/// GRIDUNIT, GRIDMAJOR), its x axis red and its y axis green (GRIDAXES). With GRIDLINECOUNT it
+/// reaches that many spacings each way from the plane's origin, as Rhino's; without, a view's
+/// size each way from the point of the plane at the view's centre. Nothing where the view sees
+/// the plane edge-on.
+/// ponytail: without GRIDLINECOUNT a plane receding to the horizon in a steep view ends at that
+/// reach.
+fn draw_cplane_grid(app: &CadApp, p: &egui::Painter, xf: &Xf, s: &cadcraft_engine::Settings) {
     if xf.edge_on() {
         return;
     }
     let t = Tokens::get();
-    let s = app.session.drafting_settings();
-    let unit = if s.gridunit.x == 0.0 { s.snapunit.x } else { s.gridunit.x };
+    let g = GridSpec::of(app, s);
     // Spaced for the more foreshortened axis.
     let short = xf.plane.apply_vec(Vec2::X).len().min(xf.plane.apply_vec(Vec2::Y).len()).max(0.2);
-    let minor = adaptive(unit, xf.scale * short, 8.0);
+    let span = f64::from(xf.rect.width().max(xf.rect.height()));
+    // Without a reach the grid spans the view's size each way: twice the view across.
+    let floor = if g.reach.is_some() { 0.0 } else { densest(2.0 * span) };
+    let minor = adaptive(g.unit, xf.scale * short, g.min_px.max(floor));
     let major = minor * f64::from(s.gridmajor.max(1));
-    let c = xf.to_world(xf.rect.center());
-    let reach = f64::from(xf.rect.width().max(xf.rect.height())) / xf.scale / short;
-    let span = |v: f64| (((v - reach) / minor).floor(), ((v + reach) / minor).ceil());
-    let ((i0, i1), (j0, j1)) = (span(c.x), span(c.y));
-    if !(i1 - i0 < 2000.0 && j1 - j0 < 2000.0 && i0.is_finite() && j0.is_finite()) {
-        return;
-    }
-    let (x0, x1, y0, y1) = (i0 * minor, i1 * minor, j0 * minor, j1 * minor);
+    let (lo, hi) = match g.reach {
+        Some(r) => (Vec2::new(-r, -r), Vec2::new(r, r)),
+        None => {
+            let c = xf.to_world(xf.rect.center());
+            let reach = span / xf.scale / short;
+            (c - Vec2::new(reach, reach), c + Vec2::new(reach, reach))
+        }
+    };
+    // Counted steps (at most MAX_GRID_LINES each way): far from the origin, adding 1.0 to a huge
+    // float no longer changes it, so a float loop would never end.
+    let (Some((i0, i1)), Some((j0, j1))) = (grid_span(lo.x, hi.x, minor), grid_span(lo.y, hi.y, minor)) else { return };
     // In perspective only what is in front of the eye.
     let seg = |a: Vec2, b: Vec2, col: Color32| xf.segment_to_screen(a, b).map_or(Shape::Noop, |s| Shape::line_segment(s, Stroke::new(1.0, col)));
     let kind = |v: f64| if ((v / major) - (v / major).round()).abs() < 1e-6 { t.grid_major } else { t.grid_minor };
     let mut lines = Vec::new();
     if s.gridmode {
-        // Counted steps (at most 2000 each way, checked above): far from the origin, adding 1.0
-        // to a huge float no longer changes it, so a float loop would never end.
-        let (ni, nj) = ((i1 - i0).max(0.0) as usize, (j1 - j0).max(0.0) as usize);
-        for k in 0..=ni {
-            let x = (i0 + k as f64) * minor;
-            lines.push(seg(Vec2::new(x, y0), Vec2::new(x, y1), kind(x)));
+        for i in i0..=i1 {
+            let x = i as f64 * minor;
+            lines.push(seg(Vec2::new(x, lo.y), Vec2::new(x, hi.y), kind(x)));
         }
-        for k in 0..=nj {
-            let y = (j0 + k as f64) * minor;
-            lines.push(seg(Vec2::new(x0, y), Vec2::new(x1, y), kind(y)));
+        for j in j0..=j1 {
+            let y = j as f64 * minor;
+            lines.push(seg(Vec2::new(lo.x, y), Vec2::new(hi.x, y), kind(y)));
         }
     }
-    if (y0..=y1).contains(&0.0) {
-        lines.push(seg(Vec2::new(x0, 0.0), Vec2::new(x1, 0.0), t.axis_x));
+    if g.axes && (lo.y..=hi.y).contains(&0.0) {
+        lines.push(seg(Vec2::new(lo.x, 0.0), Vec2::new(hi.x, 0.0), t.axis_x));
     }
-    if (x0..=x1).contains(&0.0) {
-        lines.push(seg(Vec2::new(0.0, y0), Vec2::new(0.0, y1), t.axis_y));
+    if g.axes && (lo.x..=hi.x).contains(&0.0) {
+        lines.push(seg(Vec2::new(0.0, lo.y), Vec2::new(0.0, hi.y), t.axis_y));
     }
     p.extend(lines);
 }
 
-/// The isometric grid (SNAPSTYL 1): lines at 30°, 90° and 150° through the snap lattice, GRIDUNIT
-/// Y apart along the axes, coarsened while they would crowd closer than 8 pixels.
-fn draw_iso_grid(app: &CadApp, p: &egui::Painter, xf: &Xf) {
+/// The isometric grid (SNAPSTYL 1) in `area`: lines at 30°, 90° and 150° through the snap
+/// lattice, GRIDUNIT Y apart along the axes, coarsened while they would crowd closer than
+/// `min_px` pixels (or too close to draw them all).
+fn draw_iso_grid(app: &CadApp, p: &egui::Painter, xf: &Xf, area: Bounds2, min_px: f64, s: &cadcraft_engine::Settings) {
     use cadcraft_engine::snap::iso;
     let t = Tokens::get();
-    let s = app.session.drafting_settings();
+    let min_px = min_px.max(densest(f64::from(xf.rect.width() + xf.rect.height())));
     let mut d = s.gridunit.y.max(1e-12);
     for _ in 0..40 {
-        if d * 0.866 * xf.scale >= 8.0 {
+        if d * 0.866 * xf.scale >= min_px {
             break;
         }
         d *= 5.0;
     }
     let (origin, angle) = app.session.doc().map(cadcraft_engine::snap::grid_frame).unwrap_or((Vec2::ZERO, 0.0));
-    let lines = iso::grid_lines(xf.view_bounds(), d, origin, angle, s.gridmajor);
+    let lines = iso::grid_lines(area, d, origin, angle, s.gridmajor);
     p.extend(
         lines.into_iter().map(|l| {
             Shape::line_segment([xf.to_screen(l.a), xf.to_screen(l.b)], Stroke::new(1.0, if l.major { t.grid_major } else { t.grid_minor }))
@@ -1300,7 +1363,8 @@ pub(crate) fn draw_list(p: &egui::Painter, xf: &Xf, list: &DisplayList, bg: Rgb,
 /// Draw the selection highlight (as `look` says) through the GPU: its vertex data is
 /// rebuilt only when the display list, the selection or the vertex origin changes. Dashing every
 /// selected line and tessellating it as egui shapes each frame made large selections sluggish.
-/// `prims`: the selection's primitives in `list`, asked for only when the vertex data is rebuilt.
+/// `prims`: the selection's primitives in `list` and, for a plain Shaded list, its solids built
+/// with their edges ([`solid_edges`]), asked for only when the vertex data is rebuilt.
 /// `stencil`: [`crate::gpu::Stencil::Inside`] keeps it inside a clipped viewport's outline.
 #[allow(clippy::too_many_arguments)]
 fn draw_highlight_gpu(
@@ -1308,7 +1372,7 @@ fn draw_highlight_gpu(
     xf: &Xf,
     list: &DisplayList,
     list_gen: u64,
-    prims: impl FnOnce() -> Vec<usize>,
+    prims: impl FnOnce() -> (Vec<usize>, Option<std::sync::Arc<DisplayList>>),
     sel: &[Handle],
     color: Color32,
     look: Look,
@@ -1324,8 +1388,8 @@ fn draw_highlight_gpu(
         h.finish()
     };
     if *hl_key != Some(key) {
-        let prims = prims();
-        let mesh = crate::gpu::build_highlight_mesh(list, &prims, origin, color.to_array(), look.width, look.dashed);
+        let (prims, edges) = prims();
+        let mesh = crate::gpu::build_highlight_mesh(list, &prims, origin, color.to_array(), look.width, look.dashed, edges.as_deref());
         *hl_infinite = prims.into_iter().filter(|&i| list.prims.get(i).is_some_and(|p| matches!(p.kind, Kind::Infinite { .. }))).collect();
         if let Ok(mut slot) = hl_slot.lock() {
             *slot = Some(mesh);
@@ -1517,7 +1581,7 @@ pub(crate) struct Look {
 impl Look {
     /// Selected objects (HIGHLIGHT, SELECTIONEFFECT); `None`: not highlighted.
     pub(crate) fn selection(s: &cadcraft_engine::Settings) -> Option<Look> {
-        s.highlight.then_some(Look { width: 1.5, dashed: s.selectioneffect == 0 })
+        s.highlight.then_some(Look { width: 2.0, dashed: s.selectioneffect == 0 })
     }
     /// The object under the cursor (PREVIEWEFFECT: 0 dashed, 1 thicker, 2 both).
     pub(crate) fn preview(s: &cadcraft_engine::Settings) -> Look {
@@ -1540,7 +1604,8 @@ pub(crate) fn draw_highlight(p: &egui::Painter, xf: &Xf, list: &DisplayList, pri
     let mut shapes = Vec::new();
     let mut fill = egui::Mesh::default();
     let fill_color = color.gamma_multiply(crate::gpu::HIGHLIGHT_FILL_ALPHA);
-    for prim in prims.iter().filter_map(|&i| list.prims.get(i)) {
+    for &i in prims {
+        let Some(prim) = list.prims.get(i) else { continue };
         let pts = list.points(prim);
         match prim.kind {
             Kind::Polyline => line(pts.iter().map(|q| xf.view_to_screen(*q)).collect(), &mut shapes),
@@ -1556,6 +1621,8 @@ pub(crate) fn draw_highlight(p: &egui::Painter, xf: &Xf, list: &DisplayList, pri
                     shapes.push(Shape::circle_stroke(xf.view_to_screen(*q), 3.0, Stroke::new(1.0, color)));
                 }
             }
+            // A solid's shaded faces keep their shading, as in Rhino: their outlines light up, below.
+            Kind::Tris | Kind::Mask if crate::gpu::is_face(list, i) => {}
             Kind::Tris if !look.dashed => {
                 for q in pts.as_chunks::<3>().0.iter().flatten() {
                     let i = fill.vertices.len() as u32;
@@ -1570,10 +1637,68 @@ pub(crate) fn draw_highlight(p: &egui::Painter, xf: &Xf, list: &DisplayList, pri
             }
         }
     }
+    for outline in crate::gpu::face_outlines(list, prims) {
+        line(outline.iter().map(|q| xf.view_to_screen(q.0)).collect(), &mut shapes);
+    }
     if !fill.is_empty() {
         shapes.push(Shape::mesh(fill));
     }
     p.extend(shapes);
+}
+
+/// [`solid_edges`]' last build: what it was built from (drawing, revision, solids, direction) and
+/// the list.
+type SolidEdges = Option<(u64, std::sync::Arc<DisplayList>)>;
+
+/// For the selection highlight of a plain Shaded list, which draws no edges: the solids among
+/// primitives `prims` of `list` built with their edges, along the list's direction `dir`, so they
+/// light up as Rhino's do ([`crate::gpu::build_highlight_mesh`]). `None` when the list has edges
+/// (Shaded with Edges, Hidden) or no solid is among them. Built once per drawing, selection and
+/// direction (`cache`): a new zoom band, a list landing from the background or a deep-zoom pan
+/// only uploads the highlight again.
+/// ponytail: the render has no edges-only build, so the solids' faces are built too (and not
+/// used); add one if a large selection's first highlight is slow.
+fn solid_edges(
+    s: &cadcraft_engine::Session,
+    list: &DisplayList,
+    dir: ViewDir,
+    prims: &[usize],
+    cache: &mut SolidEdges,
+) -> Option<std::sync::Arc<DisplayList>> {
+    if !list.edges.is_empty() {
+        return None;
+    }
+    let mut hs: Vec<Handle> = prims.iter().filter(|&&i| crate::gpu::is_face(list, i)).filter_map(|&i| list.prims.get(i).map(|p| p.handle)).collect();
+    hs.sort_unstable();
+    hs.dedup();
+    if hs.is_empty() {
+        return None;
+    }
+    let st = s.state().ok()?;
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (st.uid, st.revision, std::sync::Arc::as_ptr(&st.doc) as usize, &hs, dir_key(&dir)).hash(&mut h);
+        h.finish()
+    };
+    if let Some((k, edges)) = cache.as_ref()
+        && *k == key
+    {
+        return Some(edges.clone());
+    }
+    let doc = &st.doc;
+    let opts = cadcraft_render::Options { view_dir: dir, ..cadcraft_render::Options::look(true, true, false) };
+    let edges = std::sync::Arc::new(cadcraft_render::build_entities(doc, hs.iter().filter_map(|h| doc.entity(*h)).map(|e| e.as_ref()), &opts));
+    *cache = Some((key, edges.clone()));
+    Some(edges)
+}
+
+/// The colour selected objects are highlighted in on background `bg`: the user's (OPTIONS
+/// selectionColor), else Rhino's yellow, darkened to an olive on a light drawing area or the paper
+/// so it stays legible there.
+fn selection_color(t: &Tokens, bg: Rgb) -> Color32 {
+    let light = crate::theme::luminance(Color32::from_rgb(bg.0, bg.1, bg.2)) > 0.5;
+    if light && t.selection == Tokens::DARK.selection { Color32::from_rgb(0x8a, 0x80, 0x00) } else { t.selection }
 }
 
 /// The fill of a selection window or crossing area (SELECTIONAREA, WINDOWAREACOLOR,
@@ -2185,7 +2310,9 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
             if let Err(e) = result {
                 app.session.echo(e.to_string());
             }
-        } else if let Some(g) = crate::dyngrips::at(app, &xf, hover_pos) {
+        } else if !gumball::replaces_grips(app, &xf)
+            && let Some(g) = crate::dyngrips::at(app, &xf, hover_pos)
+        {
             crate::dyngrips::click(app, g);
         } else if let Some(g) = grip_at(app, &xf, hover_pos) {
             click_grip(app, g, mods.shift);
@@ -2214,7 +2341,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         && let Some(origin) = ui.input(|i| i.pointer.press_origin())
         && rect.contains(origin)
         && grip_at(app, &xf, Some(origin)).is_none()
-        && crate::dyngrips::at(app, &xf, Some(origin)).is_none()
+        && (gumball::replaces_grips(app, &xf) || crate::dyngrips::at(app, &xf, Some(origin)).is_none())
     {
         app.canvas.drag_window = begin_view_window(app, &xf, origin);
     }
@@ -2320,7 +2447,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         }
         None => {
             blockedit::wash(app, &painter, rect);
-            draw_grid(app, &painter, &xf);
+            draw_grid(app, &painter, &xf, &app.session.drafting_settings());
             Rgb(t.canvas.r(), t.canvas.g(), t.canvas.b())
         }
     };
@@ -2328,6 +2455,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     // How the object under the cursor and the selected ones are highlighted (PREVIEWEFFECT,
     // HIGHLIGHT, SELECTIONEFFECT); with HIGHLIGHT off only their grips show.
     let (preview_look, selection_look) = (Look::preview(&app.session.settings), Look::selection(&app.session.settings));
+    let sel_color = selection_color(&t, bg);
     // The active viewport's contents, drawn apart from the layout's list, under its own objects.
     // `masked`: its outline is in the stencil buffer this frame.
     let mut masked = false;
@@ -2384,19 +2512,34 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
                 let list = &c.vp_sel.list;
                 let all = || (0..list.prims.len()).collect::<Vec<_>>();
                 if c.gpu.is_some() {
+                    let all = || (all(), None);
                     // Shares the GPU highlight layer with the layout's own selection; the high bit
                     // keeps this list's generations apart from the layout list's.
                     let list_id = c.vp_sel.list_gen | 1 << 63;
                     let stencil = if masked { crate::gpu::Stencil::Inside } else { crate::gpu::Stencil::Off };
                     let hl = (&mut c.hl_key, &c.hl_slot, &mut c.hl_origin, &mut c.hl_infinite);
-                    draw_highlight_gpu(&clipped, &xf, list, list_id, all, &sel, t.selection, look, hl, stencil);
-                    draw_highlight(&clipped, &xf, list, &c.hl_infinite, t.selection, look);
+                    draw_highlight_gpu(&clipped, &xf, list, list_id, all, &sel, sel_color, look, hl, stencil);
+                    draw_highlight(&clipped, &xf, list, &c.hl_infinite, sel_color, look);
                 } else {
-                    draw_highlight(&clipped, &xf, list, &all(), t.selection, look);
+                    draw_highlight(&clipped, &xf, list, &all(), sel_color, look);
                 }
             }
         }
-    } else if let CanvasState { list: Some(list), list_gen, prim_index, hover, gpu, hl_key, hl_slot, hl_origin, hl_infinite, .. } = &mut app.canvas {
+    } else if let CanvasState {
+        list: Some(list),
+        list_gen,
+        list_dir,
+        prim_index,
+        hover,
+        gpu,
+        hl_key,
+        hl_slot,
+        hl_origin,
+        hl_infinite,
+        sel_edges,
+        ..
+    } = &mut app.canvas
+    {
         if let Some(h) = *hover
             && !sel.contains(&h)
         {
@@ -2411,16 +2554,20 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
                     &xf,
                     list,
                     list_id,
-                    || prim_index.prims(list_id, list, &sel),
+                    || {
+                        let prims = prim_index.prims(list_id, list, &sel);
+                        let edges = solid_edges(&app.session, list, *list_dir, &prims, sel_edges);
+                        (prims, edges)
+                    },
                     &sel,
-                    t.selection,
+                    sel_color,
                     look,
                     hl,
                     crate::gpu::Stencil::Off,
                 );
-                draw_highlight(&painter, &xf, list, hl_infinite, t.selection, look);
+                draw_highlight(&painter, &xf, list, hl_infinite, sel_color, look);
             } else {
-                draw_highlight(&painter, &xf, list, &prim_index.prims(*list_gen, list, &sel), t.selection, look);
+                draw_highlight(&painter, &xf, list, &prim_index.prims(*list_gen, list, &sel), sel_color, look);
             }
         }
     }
@@ -2455,6 +2602,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     }
     if (!app.session.prompting() || grip_edit)
         && app.session.shows_grips(sel.len())
+        && !gumball::replaces_grips(app, &xf)
         && let Ok(doc) = app.session.pick_doc()
     {
         let gs = app.session.settings.gripsize as f32;
@@ -2624,14 +2772,21 @@ fn draw_tiles(app: &mut CadApp, ui: &egui::Ui, tiles: &[(Rect, cadcraft_engine::
     let t = Tokens::get();
     let bg = Rgb(t.canvas.r(), t.canvas.g(), t.canvas.b());
     let others = || tiles.iter().enumerate().filter(|(_, (r, tile))| !tile.active && r.width() >= 1.0 && r.height() >= 1.0);
+    // The selection lights up in every tile, as in Rhino.
+    let sel = app.session.selection();
+    let (look, color) = (Look::selection(&app.session.settings), selection_color(&t, bg));
     for (_, (r, tile)) in others() {
+        let prims = if look.is_some() { tiles::selected(app, tile, &sel) } else { Vec::new() };
         let p = ui.painter_at(*r);
         let (list, dir) = tiles::list_for(app, tile);
         let xf = tile_xf(*r, tile, dir);
         p.rect_filled(*r, 0.0, t.canvas);
-        draw_grid(app, &p, &xf);
+        draw_grid(app, &p, &xf, &app.session.drafting_settings().with_grid(&tile.grid));
         if let Some(list) = list {
             draw_list(&p, &xf, list, bg, app.session.settings.lwdisplay);
+            if let Some(look) = look {
+                draw_highlight(&p, &xf, list, &prims, color, look);
+            }
         }
     }
     let p = ui.painter();
@@ -3252,7 +3407,8 @@ fn grip_at(app: &CadApp, xf: &Xf, hover: Option<Pos2>) -> Option<(Handle, usize)
     let doc = app.session.pick_doc().ok()?;
     let gs = app.session.settings.gripsize as f32 + 3.0;
     let sel = app.session.selection();
-    if !app.session.shows_grips(sel.len()) {
+    // A 3D view shows the gumball instead, as Rhino does.
+    if !app.session.shows_grips(sel.len()) || gumball::replaces_grips(app, xf) {
         return None;
     }
     for h in sel.iter().take(200) {
@@ -3372,6 +3528,44 @@ pub(crate) mod tests {
         assert_eq!(selection_area_fill(&s, false), Some(rgb(cadcraft_color::aci_rgb(150))));
         s.selectionarea = false;
         assert_eq!(selection_area_fill(&s, false), None, "Indicate selection area off: no fill");
+    }
+
+    /// Selected objects are Rhino's yellow by default, an olive on a light drawing area or the
+    /// paper; the user's selectionColor stays as chosen. A solid's shaded face keeps its shading
+    /// (outlined, not tinted); a hatch's fill is still tinted.
+    #[test]
+    fn selection_is_rhinos_yellow_and_keeps_shaded_faces() {
+        let t = Tokens::DARK;
+        assert_eq!(selection_color(&t, Rgb(0x22, 0x28, 0x2f)), Color32::from_rgb(0xff, 0xff, 0x00));
+        let olive = selection_color(&t, Rgb(255, 255, 255));
+        assert!(crate::theme::luminance(olive) < 0.5 && olive.b() == 0, "a dark yellow: {olive:?}");
+        let mine = Tokens { selection: Color32::from_rgb(0xff, 0x80, 0x00), ..t };
+        assert_eq!(selection_color(&mine, Rgb(255, 255, 255)), mine.selection);
+        let tri = [Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0), Vec2::new(0.0, 10.0)];
+        let prim = cadcraft_render::DPrim {
+            handle: Handle(1),
+            color: Rgb(200, 200, 200),
+            aci7: false,
+            lw: 0.0,
+            transparency: 0,
+            kind: Kind::Tris,
+            start: 0,
+            len: 3,
+        };
+        let mut l = DisplayList { prims: vec![prim], tris: tri.to_vec(), faces: std::iter::once(0..1).collect(), ..Default::default() };
+        let xf = Xf::new(Rect::from_min_size(Pos2::ZERO, vec2(100.0, 100.0)), Vec2::ZERO, 1.0);
+        // The shapes painted: (fills, lines).
+        let painted = |l: &DisplayList| {
+            let mut out = egui::Context::default().run_ui(egui::RawInput::default(), |ui| {
+                draw_highlight(ui.painter(), &xf, l, &[0], Color32::YELLOW, Look { width: 2.0, dashed: false });
+            });
+            out.textures_delta.clear();
+            let count = |f: fn(&Shape) -> bool| out.shapes.iter().filter(|c| f(&c.shape)).count();
+            (count(|s| matches!(s, Shape::Mesh(_))), count(|s| matches!(s, Shape::Path(_))))
+        };
+        assert_eq!(painted(&l), (0, 1), "the face's outline, no tint");
+        l.faces.clear();
+        assert_eq!(painted(&l), (1, 0), "a hatch's fill is tinted");
     }
 
     #[test]
@@ -3788,6 +3982,162 @@ pub(crate) mod tests {
         app
     }
 
+    /// The line segments [`draw_grid`] paints for `xf`, with their colours.
+    fn painted_grid(app: &CadApp, xf: &Xf) -> Vec<([Pos2; 2], Color32)> {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| draw_grid(app, ui.painter(), xf, &app.session.drafting_settings()));
+        out.textures_delta.clear();
+        let line = |c: egui::epaint::ClippedShape| match c.shape {
+            Shape::LineSegment { points, stroke } => Some((points, stroke.color)),
+            _ => None,
+        };
+        out.shapes.into_iter().filter_map(line).collect()
+    }
+
+    /// Rhino's grid options (Options ▸ Grid): 200 lines each way 1 apart with a major line every
+    /// 10 reach 200 from the origin, the axes show or not, in plan and in 3D; with Display Detail's
+    /// grid simplification off the grid keeps its spacing zoomed out.
+    #[test]
+    fn rhino_grid_options_shape_the_grid() {
+        let mut app = CadApp::new(cadcraft_engine::Session::new(), crate::Services::default());
+        app.run("options", serde_json::json!({"GRIDUNIT": [1, 1], "GRIDMAJOR": 10, "GRIDLINECOUNT": 200, "GRIDMODE": 1})).unwrap();
+        let t = Tokens::get();
+        // A plan view showing ±300 on 1000 px: 1.7 px per unit, so lines every 5 (8.3 px).
+        let xf = Xf::new(Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 1000.0)), Vec2::ZERO, 1000.0 / 600.0);
+        let lines = painted_grid(&app, &xf);
+        let grid = |l: &[([Pos2; 2], Color32)]| l.iter().filter(|(_, c)| *c == t.grid_minor || *c == t.grid_major).count();
+        assert_eq!(grid(&lines), 2 * 81, "every 5 from -200 to 200");
+        let (lo, hi) = (xf.to_screen(Vec2::new(-200.0, -200.0)), xf.to_screen(Vec2::new(200.0, 200.0)));
+        let inside = |q: &Pos2| (lo.x - 0.5..=hi.x + 0.5).contains(&q.x) && (hi.y - 0.5..=lo.y + 0.5).contains(&q.y);
+        assert!(lines.iter().all(|(p, _)| p.iter().all(inside)), "the grid ends 200 from the origin");
+        assert_eq!(lines.iter().filter(|(_, c)| *c == t.axis_x || *c == t.axis_y).count(), 2, "the axes show");
+        // Fixed spacing and no axes.
+        app.run("options", serde_json::json!({"displayDetail": {"grid": {"simplify": false}}, "GRIDAXES": 0})).unwrap();
+        let lines = painted_grid(&app, &xf);
+        assert_eq!(lines.len(), 2 * 401, "every unit, no axes");
+        assert_eq!(lines.iter().filter(|(_, c)| *c == t.grid_major).count(), 2 * 41, "a major line every 10");
+        // A 3D view draws the whole grid about the origin.
+        let iso = xf.looking(ViewDir::new(cadcraft_geom::Vec3::new(-1.0, -1.0, 1.0)));
+        assert_eq!(grid(&painted_grid(&app, &iso)), 2 * 401);
+        // GRIDLINECOUNT 0: the grid fills the view again (every 5 across ±300 once simplified).
+        app.run("options", serde_json::json!({"displayDetail": {"grid": {"simplify": true}}, "GRIDLINECOUNT": 0})).unwrap();
+        assert_eq!(grid(&painted_grid(&app, &xf)), 2 * 121);
+    }
+
+    /// A grid kept at its spacing (Display Detail's grid simplification off) zoomed out until it
+    /// would need more lines than are drawn thins, 5× at a time, instead of vanishing.
+    #[test]
+    fn a_fixed_grid_zoomed_far_out_thins_instead_of_vanishing() {
+        let mut app = CadApp::new(cadcraft_engine::Session::new(), crate::Services::default());
+        app.run(
+            "options",
+            serde_json::json!({"GRIDUNIT": [1, 1], "GRIDLINECOUNT": 0, "GRIDMODE": 1, "displayDetail": {"grid": {"simplify": false}}}),
+        )
+        .unwrap();
+        let t = Tokens::get();
+        let grid = |l: &[([Pos2; 2], Color32)]| l.iter().filter(|(_, c)| *c == t.grid_minor || *c == t.grid_major).count();
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(2560.0, 1440.0));
+        // 1000 units across: every unit, 2.56 px apart (1001 lines across, 563 down).
+        assert_eq!(grid(&painted_grid(&app, &Xf::new(rect, Vec2::ZERO, 2560.0 / 1000.0))), 1001 + 563);
+        // 2500 across would be 2501 lines 1 px apart: every 5 instead (501 across, 281 down).
+        assert_eq!(grid(&painted_grid(&app, &Xf::new(rect, Vec2::ZERO, 2560.0 / 2500.0))), 501 + 281);
+        // In 3D too.
+        let iso = Xf::new(rect, Vec2::ZERO, 2560.0 / 2500.0).looking(ViewDir::new(cadcraft_geom::Vec3::new(-1.0, -1.0, 1.0)));
+        assert!(grid(&painted_grid(&app, &iso)) > 0);
+    }
+
+    /// The selected solids' edges a plain Shaded highlight draws are built once per drawing,
+    /// selection and direction: a list rebuilt for another zoom band (or landing from the
+    /// background) reuses them.
+    #[test]
+    fn selected_solids_edges_are_built_once_per_selection_and_direction() {
+        let g = cadcraft_geom::Vec3::new;
+        let verts: Vec<cadcraft_geom::Vec3> = (0..8)
+            .map(|i| g(if i & 1 == 0 { 0.0 } else { 10.0 }, if i & 2 == 0 { 0.0 } else { 10.0 }, if i & 4 == 0 { 0.0 } else { 10.0 }))
+            .collect();
+        let quads = [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]];
+        let tris = quads.iter().flat_map(|[a, b, c, d]| [[*a, *b, *c], [*a, *c, *d]]).collect();
+        let edges = [(0, 1), (1, 3), (3, 2), (2, 0), (4, 5), (5, 7), (7, 6), (6, 4), (0, 4), (1, 5), (2, 6), (3, 7)]
+            .iter()
+            .map(|(a, b): &(usize, usize)| vec![verts[*a], verts[*b]])
+            .collect();
+        let mesh = cadcraft_geom::Mesh3 { verts, tris, edges, open: false };
+        let solid = cadcraft_doc::Solid3d { brep: "".into(), mesh: std::sync::Arc::new(mesh), ..Default::default() };
+        let mut s = cadcraft_engine::Session::new();
+        s.doc_mut().unwrap().add(&cadcraft_doc::Space::Model, cadcraft_doc::Common::default(), cadcraft_doc::EntityKind::Solid3d(solid)).unwrap();
+        let shaded = |dir: ViewDir, tolerance: f64| {
+            let opts = cadcraft_render::Options { view_dir: dir, tolerance, ..cadcraft_render::Options::look(true, false, false) };
+            cadcraft_render::build(&s.state().unwrap().doc, &cadcraft_doc::Space::Model, &opts)
+        };
+        let iso = ViewDir::new(g(-1.0, -1.0, 1.0));
+        let (list, coarser) = (shaded(iso, 0.01), shaded(iso, 0.04));
+        assert!(list.edges.is_empty() && !list.faces.is_empty(), "plain Shaded draws no edges");
+        let all = |l: &DisplayList| (0..l.prims.len()).collect::<Vec<_>>();
+        let mut cache = None;
+        let first = solid_edges(&s, &list, iso, &all(&list), &mut cache).unwrap();
+        assert!(!first.edges.is_empty());
+        let again = solid_edges(&s, &coarser, iso, &all(&coarser), &mut cache).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &again), "built once");
+        let front = ViewDir::new(g(0.0, -1.0, 0.0));
+        let turned = solid_edges(&s, &shaded(front, 0.01), front, &all(&shaded(front, 0.01)), &mut cache).unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&first, &turned), "another direction is built again");
+    }
+
+    /// The painted shapes of one frame.
+    fn painted(f: &mut Frames, app: &mut CadApp) -> Vec<egui::epaint::ClippedShape> {
+        f.time += 0.1;
+        app.logic(&f.ctx);
+        let raw =
+            egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))), time: Some(f.time), ..Default::default() };
+        let mut out = f.ctx.run_ui(raw, |ui| app.ui(ui));
+        out.textures_delta.clear();
+        out.shapes
+    }
+
+    /// Selected objects light up in every model tile, as in Rhino, not only in the current one.
+    #[test]
+    fn the_selection_lights_up_in_every_tile() {
+        let mut f = Frames::default();
+        let mut app = app_looking(&mut f, [0.0, 0.0, 1.0]);
+        app.run("line", serde_json::json!({"points": [[0, 0], [10, 10]]})).unwrap();
+        app.run("zoom", serde_json::json!({"mode": "extents"})).unwrap();
+        app.run("-vports", serde_json::json!({"option": "2"})).unwrap();
+        let line = app.session.state().unwrap().doc.model.handles();
+        app.session.set_selection(line);
+        f.run(&mut app, Vec::new());
+        let yellow = selection_color(&Tokens::get(), Rgb(Tokens::get().canvas.r(), Tokens::get().canvas.g(), Tokens::get().canvas.b()));
+        let lit: std::collections::BTreeSet<[u32; 4]> = painted(&mut f, &mut app)
+            .into_iter()
+            .filter(|c| matches!(&c.shape, Shape::Path(p) if p.stroke.color == egui::epaint::ColorMode::Solid(yellow)))
+            .map(|c| [c.clip_rect.min.x, c.clip_rect.min.y, c.clip_rect.max.x, c.clip_rect.max.y].map(f32::to_bits))
+            .collect();
+        assert_eq!(app.session.model_tiles().len(), 2);
+        assert!(lit.len() >= 2, "the line is yellow in both tiles: {lit:?}");
+    }
+
+    /// Rhino's "Apply grid changes to the active viewport only": the current tile turns its own
+    /// grid off, the other tile keeps showing the drawing's.
+    #[test]
+    fn each_tile_draws_its_own_grid() {
+        let mut f = Frames::default();
+        let mut app = app_looking(&mut f, [0.0, 0.0, 1.0]);
+        app.run("-vports", serde_json::json!({"option": "2"})).unwrap();
+        let t = Tokens::get();
+        let grid_clips = |shapes: Vec<egui::epaint::ClippedShape>| -> std::collections::BTreeSet<[u32; 4]> {
+            shapes
+                .into_iter()
+                .filter(|c| matches!(c.shape, Shape::LineSegment { stroke, .. } if stroke.color == t.grid_minor || stroke.color == t.grid_major))
+                .map(|c| [c.clip_rect.min.x, c.clip_rect.min.y, c.clip_rect.max.x, c.clip_rect.max.y].map(f32::to_bits))
+                .collect()
+        };
+        f.run(&mut app, Vec::new());
+        let both = grid_clips(painted(&mut f, &mut app));
+        app.run("options", serde_json::json!({"gridViewport": "active", "GRIDMODE": 0})).unwrap();
+        let one = grid_clips(painted(&mut f, &mut app));
+        assert!(app.session.settings.gridmode, "the drawing's grid stays on");
+        assert!(both.len() >= 2 && one.len() == both.len() - 1, "{both:?} then {one:?}");
+    }
+
     /// A view far from the origin (a hostile drawing's extents) draws its CPlane grid and
     /// finishes: stepping a huge float by 1.0 doesn't change it, so the grid counts its lines.
     #[test]
@@ -4047,6 +4397,32 @@ pub(crate) mod tests {
         assert!(!now.is_plan());
         assert_eq!(app.canvas.list_dir, app.session.state().unwrap().view_dir);
         assert!(now.to_world(now.rect.center()).dist(target) < 1e-6);
+    }
+
+    /// A new level of detail (Options ▸ Display Detail) is no drawing change: the list on screen
+    /// stays while the new one builds in the background, as for a new view, so dragging its
+    /// values never rebuilds the drawing on the UI thread.
+    #[test]
+    fn a_new_display_detail_builds_in_the_background() {
+        let mut f = Frames::default();
+        let mut app = app_looking(&mut f, [0.0, 0.0, 1.0]);
+        app.run("circle", serde_json::json!({"center": [0, 0], "radius": 50})).unwrap();
+        f.run(&mut app, Vec::new());
+        let (rev, first) = (app.session.state().unwrap().revision, app.canvas.list_gen);
+        assert!(app.canvas.list.is_some());
+        app.run("options", serde_json::json!({"displayDetail": {"curves": {"pixels": 2}}})).unwrap();
+        assert_eq!(app.session.state().unwrap().revision, rev, "the drawing did not change");
+        f.run(&mut app, Vec::new());
+        assert!(app.canvas.list.is_some() && app.canvas.list_gen == first, "the list on screen stays");
+        assert!(app.canvas.building(), "the new one builds in the background");
+        for _ in 0..500 {
+            if !app.canvas.building() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            f.run(&mut app, Vec::new());
+        }
+        assert_eq!(app.canvas.key.9, app.options.detail.key(), "built with the new detail");
     }
 
     /// The Front construction plane: x along world X, y up world Z, its normal toward -Y.
@@ -4488,6 +4864,8 @@ pub(crate) mod tests {
     /// A polyline 20 above the ground, seen from the south-west, selected.
     fn raised_polyline(f: &mut Frames) -> (CadApp, Handle) {
         let mut app = app_looking(f, [-1.0, -1.0, 1.0]);
+        // Grips in a 3D view: the gumball off (see `gumball::replaces_grips`).
+        app.ui.gumball = false;
         let st = app.session.state_mut().unwrap();
         let center = st.view_dir.project(cadcraft_geom::Vec3::new(5.0, 0.0, 10.0));
         st.set_view_quiet(cadcraft_engine::View { center, height: 80.0 });
@@ -4546,6 +4924,8 @@ pub(crate) mod tests {
         let g = cadcraft_geom::Vec3::new;
         let mut f = Frames::default();
         let mut app = app_looking(&mut f, [-1.0, -1.0, 1.0]);
+        // Grips in a 3D view: the gumball off (see `gumball::replaces_grips`).
+        app.ui.gumball = false;
         app.session.settings.osmode = 0;
         app.session.settings.polarmode = false;
         let st = app.session.state_mut().unwrap();
@@ -4584,6 +4964,8 @@ pub(crate) mod tests {
         let g = cadcraft_geom::Vec3::new;
         let mut f = Frames::default();
         let mut app = app_looking(&mut f, [-1.0, -1.0, 1.0]);
+        // Grips in a 3D view: the gumball off (see `gumball::replaces_grips`).
+        app.ui.gumball = false;
         app.session.settings.osmode = 0;
         app.session.settings.polarmode = false;
         let st = app.session.state_mut().unwrap();
@@ -4746,6 +5128,8 @@ pub(crate) mod tests {
     fn a_tilted_references_dynamic_grip_drags_on_its_plane() {
         let mut f = Frames::default();
         let (mut app, h) = door(&mut f);
+        // Grips in a 3D view: the gumball off (see `gumball::replaces_grips`).
+        app.ui.gumball = false;
         app.session.doc_mut().unwrap().modify_entity(h, |e| e.common.extrusion = cadcraft_geom::Vec3::new(0.0, -0.6, 0.8)).unwrap();
         let st = app.session.state_mut().unwrap();
         st.view_dir = ViewDir::new(cadcraft_geom::Vec3::new(-1.0, -1.0, 1.0));
@@ -4831,10 +5215,11 @@ pub(crate) mod tests {
         assert_eq!(app.canvas.snap, None);
     }
 
-    /// A grip under a gumball handle stays AutoCAD's: a click on a line's end grip (on the X
-    /// arrow) starts stretching it, it doesn't move the line.
+    /// A 3D view shows the gumball instead of AutoCAD's grips, as Rhino does: no grip at a line's
+    /// end (on the X arrow). With the gumball off the grips are back there, and the end grip
+    /// stretches the line.
     #[test]
-    fn grips_win_over_gumball_handles() {
+    fn the_gumball_stands_in_for_grips_in_3d_views() {
         let g = cadcraft_geom::Vec3::new;
         let mut f = Frames::default();
         let (mut app, h, _) = gumball_on_a_line(&mut f, [0.0, -1.0, 0.0]);
@@ -4844,7 +5229,10 @@ pub(crate) mod tests {
         f.run(&mut app, Vec::new());
         let xf = app.canvas.xf.unwrap();
         let (o, end) = (xf.world_to_screen(g(5.0, 0.0, 0.0)), xf.world_to_screen(g(10.0, 0.0, 0.0)));
-        assert!(end.x - o.x > 20.0 && end.x - o.x < 75.0, "the end grip is on the X arrow");
+        assert!(end.x - o.x > 20.0 && end.x - o.x < 75.0, "the end is on the X arrow");
+        assert_eq!(grip_at(&app, &xf, Some(end)), None, "no grips in a 3D view");
+        app.run("ui.gumball", serde_json::json!({ "on": false })).unwrap();
+        assert_eq!(grip_at(&app, &xf, Some(end)), Some((h, 2)));
         f.click(&mut app, end);
         assert_eq!(app.session.running.as_ref().map(|r| r.id.as_str()), Some("grip"));
         f.click(&mut app, end + vec2(30.0, 0.0));

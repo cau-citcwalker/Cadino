@@ -7,6 +7,14 @@ use crate::{Accept, Input, Interactive, Prompt, Result, Session, Step};
 
 pub(super) mod iso;
 
+/// GRID (F7): the current viewport's grid on or off (its own grid, else the drawing's).
+fn run_grid(s: &mut Session, p: &Value) -> Result<Value> {
+    let on = p.get("on").and_then(Value::as_bool).unwrap_or(!s.grid().on);
+    crate::sysvars::set(s, "GRIDMODE", &json!(on))?;
+    s.touch();
+    Ok(json!({ "on": on, "message": format!("<Grid {}>", if on { "on" } else { "off" }) }))
+}
+
 fn toggle(s: &mut Session, p: &Value, get: fn(&mut crate::Settings) -> &mut bool, name: &str) -> Result<Value> {
     let v = get(&mut s.settings);
     *v = p.get("on").and_then(Value::as_bool).unwrap_or(!*v);
@@ -23,12 +31,7 @@ pub fn specs() -> Vec<CommandSpec> {
             .enabled(always)
             .noundo()
             .transparent(),
-        CommandSpec::new("grid", "Grid Display", |s, p| toggle(s, p, |st| &mut st.gridmode, "Grid"))
-            .key("F7")
-            .params("{on?: bool}")
-            .enabled(always)
-            .noundo()
-            .transparent(),
+        CommandSpec::new("grid", "Grid Display", run_grid).key("F7").params("{on?: bool}").enabled(always).noundo().transparent(),
         CommandSpec::new("snap", "Snap Mode", |s, p| toggle(s, p, |st| &mut st.snapmode, "Snap"))
             .key("F9")
             .params("{on?: bool}")
@@ -266,7 +269,7 @@ fn run_dsettings(s: &mut Session, p: &Value) -> Result<Value> {
         s.settings.polarang = a.to_radians();
     }
     if let Some(m) = p.get("gridmajor").and_then(Value::as_u64) {
-        s.settings.gridmajor = (m as u32).clamp(1, 100);
+        crate::sysvars::set(s, "GRIDMAJOR", &json!(m.min(100)))?;
     }
     s.touch();
     Ok(serde_json::to_value(s.drafting_settings()).unwrap_or(Value::Null))

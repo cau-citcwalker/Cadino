@@ -251,6 +251,7 @@ fn file_commands_are_real_and_complete() {
         ("-linetype", "`file` is a file key"),
         ("hatch.patterns", "`file` is a file key"),
         ("tableexport", "`path` is a file key; otherwise the CSV comes back as text"),
+        ("dwgout", "`path` is a file key; otherwise the DWG comes back as base64 data"),
         ("sweep", "`path` is a curve's handle"),
         ("array", "`path` is a curve's handle"),
         ("arraypath", "`path` is a curve's handle"),
@@ -288,4 +289,122 @@ fn copy_takes_a_z_delta_as_the_prompts_say() {
     let lines = tool(&mut s, "query_entities", json!({"type": "Line"}));
     let raised = lines["entities"].as_array().unwrap().iter().find(|e| e["handle"] == copy["handles"][0]).unwrap();
     assert_eq!((raised["geometry"]["a"]["z"].clone(), raised["geometry"]["b"]["z"].clone()), (json!(400.0), json!(400.0)), "{raised}");
+}
+
+/// The command ids a text names: `execute id …` and `id {…}` in inline code, the same at the
+/// start of a line in a code block, and `"command": "id"`.
+fn named_commands(text: &str) -> Vec<String> {
+    const TOOLS: &[&str] = &[
+        "command_line",
+        "script",
+        "execute",
+        "list_commands",
+        "inspect_drawing",
+        "query_entities",
+        "render",
+        "find_text",
+        "new_drawing",
+        "open",
+        "save",
+        "cancel",
+        "screenshot",
+        "ui_inspect",
+        "ui_click",
+    ];
+    let id_of = |code: &str| {
+        let code = code.trim();
+        let code = code.strip_prefix("execute ").unwrap_or(code);
+        let (word, rest) = code.split_once(' ')?;
+        let id = word.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-' | '_'));
+        (id && rest.starts_with('{') && !TOOLS.contains(&word)).then(|| word.to_string())
+    };
+    let mut ids = Vec::new();
+    let mut fenced = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+        } else if fenced {
+            ids.extend(id_of(line));
+        } else {
+            ids.extend(line.split('`').skip(1).step_by(2).filter_map(id_of));
+        }
+    }
+    ids.extend(text.split("\"command\": \"").skip(1).filter_map(|t| t.split('"').next()).map(str::to_string));
+    ids
+}
+
+/// Every command the prompts and the Cadino skill tell a model to run is in the catalog, by id or
+/// alias.
+#[test]
+fn prompts_and_skill_name_real_commands() {
+    use cadcraft_ai::prompt::{COMPACT, MCP_INSTRUCTIONS, SYSTEM};
+    let catalog = crate::Backend::call(&mut Headless::default(), "engine.commands", json!({})).unwrap();
+    let known: Vec<String> = catalog
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|c| c["id"].as_str().into_iter().chain(c["aliases"].as_array().into_iter().flatten().filter_map(Value::as_str)))
+        .map(str::to_ascii_lowercase)
+        .collect();
+    let texts = [
+        ("SYSTEM", SYSTEM),
+        ("COMPACT", COMPACT),
+        ("MCP_INSTRUCTIONS", MCP_INSTRUCTIONS),
+        ("SKILL.md", include_str!("../../../skills/cadino/SKILL.md")),
+        ("recipes.md", include_str!("../../../skills/cadino/references/recipes.md")),
+        ("AGENTS.md", include_str!("../../../skills/cadino/AGENTS.md")),
+    ];
+    for (name, text) in texts {
+        let ids = named_commands(text);
+        assert!(ids.len() >= 10, "{name}: found only {ids:?}");
+        let unknown: Vec<&String> = ids.iter().filter(|id| !known.contains(id)).collect();
+        assert!(unknown.is_empty(), "{name} names commands that don't exist: {unknown:?}");
+    }
+    let skill = named_commands(include_str!("../../../skills/cadino/SKILL.md"));
+    for id in ["panel", "extrude", "join", "interfere", "erase", "viewbase", "rhinoout", "cutlist"] {
+        assert!(skill.iter().any(|s| s == id), "the skill shows `{id}`");
+    }
+    assert_eq!(named_commands("`execute zoom {\"mode\": \"e\"}`, `render {}`, `box 0,0 1,1`\n```\npanel {}\n```"), ["zoom", "panel"]);
+}
+
+/// What the prompts and the skill say about profiles holds: a rectangle typed as lines extrudes
+/// into four loose surfaces (the lines stay, and query_entities says so); joined into one closed
+/// polyline it makes one solid and the profile is gone.
+#[test]
+fn lines_extrude_into_surfaces_and_a_joined_profile_into_a_solid() {
+    if !cadcraft_engine::kernel::available() {
+        return;
+    }
+    let mut s = Server::new(Box::new(Headless::default()));
+    tool(&mut s, "command_line", json!({"text": "line 0,0 @100,0 @0,50 @-100,0 c"}));
+    let lines: Vec<Value> =
+        tool(&mut s, "query_entities", json!({"type": "Line"}))["entities"].as_array().unwrap().iter().map(|e| e["handle"].clone()).collect();
+    assert_eq!(lines.len(), 4);
+    let loose = tool(&mut s, "execute", json!({"command": "extrude", "params": {"handles": lines, "height": 18}}));
+    assert_eq!(loose["handles"].as_array().map(Vec::len), Some(4));
+    let solids = tool(&mut s, "query_entities", json!({"type": "3D Solid"}));
+    assert!(
+        solids["entities"].as_array().unwrap().iter().all(|e| e["geometry"]["mesh"].as_str().is_some_and(|m| m.contains("open: a surface"))),
+        "{solids}"
+    );
+    assert_eq!(tool(&mut s, "query_entities", json!({"type": "Line"}))["count"], 4, "the lines stay");
+    tool(&mut s, "execute", json!({"command": "undo", "params": {"count": 1}}));
+    let profile = tool(&mut s, "execute", json!({"command": "join", "params": {"handles": lines}}));
+    let solid = tool(&mut s, "execute", json!({"command": "extrude", "params": {"handles": [profile["handle"]], "height": 18}}));
+    assert_eq!(solid["handles"].as_array().map(Vec::len), Some(1));
+    let counts = tool(&mut s, "inspect_drawing", json!({"entities": false}))["counts"].clone();
+    assert_eq!(counts, json!({"3D Solid": 1}));
+    let mesh = tool(&mut s, "query_entities", json!({"type": "3D Solid"}))["entities"][0]["geometry"]["mesh"].clone();
+    assert!(mesh.as_str().is_some_and(|m| !m.contains("open")), "{mesh}");
+}
+
+/// tools/list carries the annotations clients use to run read-only tools without asking.
+#[test]
+fn tools_list_carries_annotations() {
+    let mut s = Server::new(Box::new(Headless::default()));
+    let tools = call(&mut s, 1, "tools/list", json!({}));
+    let tools = tools["result"]["tools"].as_array().unwrap();
+    let find = |n: &str| tools.iter().find(|t| t["name"] == n).unwrap()["annotations"].clone();
+    assert_eq!(find("query_entities")["readOnlyHint"], true);
+    assert_eq!((find("execute")["readOnlyHint"].clone(), find("execute")["destructiveHint"].clone()), (json!(false), json!(true)));
 }

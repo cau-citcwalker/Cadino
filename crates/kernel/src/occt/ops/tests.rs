@@ -671,3 +671,20 @@ fn a_big_mesh_converts_quickly() {
     assert!(!s.mesh.open && (volume(&s.mesh) - 4.0 / 3.0 * PI * 125_000.0).abs() < 2000.0, "{}", volume(&s.mesh));
     assert!(took < 30.0, "{took} s for {} triangles", tris.len());
 }
+
+/// A boolean whose merged result can't be finished (merging spoiled it, or the checker refuses
+/// it) gives the boolean's own result, as booleans did before faces were merged: here the touching
+/// boxes' ten faces, those they share a plane on left split. An empty result stays an error.
+#[test]
+fn a_boolean_merging_cant_finish_falls_back_to_its_own_result() {
+    let (a, b) = (block(), cube(v(10.0, 0.0, 0.0), v(20.0, 20.0, 30.0)));
+    let (sa, sb) = (super::placed(p(&a)), super::placed(p(&b)));
+    let faces = |r: &Built| crate::topology(p(r)).unwrap().faces.len();
+    let run = |merge| super::text(super::x::boolean(&sa, &sb, 0, merge));
+    assert_eq!(faces(&run(true).unwrap()), 6);
+    assert_eq!(faces(&run(false).unwrap()), 10);
+    let spoiled = super::merged_else_raw(|merge| if merge { Err(KernelError::Failed("made a shape that isn't valid".into())) } else { run(false) });
+    assert_eq!(faces(&spoiled.unwrap()), 10);
+    let far = super::placed(p(&cube(v(50.0, 0.0, 0.0), v(60.0, 1.0, 1.0))));
+    assert!(super::merged_else_raw(|merge| super::text(super::x::boolean(&sa, &far, 2, merge))).is_err());
+}
